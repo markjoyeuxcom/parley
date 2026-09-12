@@ -177,6 +177,13 @@ question, or the refusal is a bare error.
   pack, and the app stays responsive the whole time.
   **Fail:** Parley stops responding after confirming. v0.1.40 froze here until
   it was force-quit.
+- After **Ask with Context**: Status Center shows one new Ask (Questions
+  count 1, Live shows it waiting), the delivered pack ends with a
+  `parley answer <id>` instruction, and when the target answers that id the
+  answer arrives as the returned result on that handoff and Status Center
+  opens on it. The review shows Completed and names the Ask.
+  **Fail:** Questions stays 0 and the reply only appears in the target's
+  terminal. That is what v0.1.41 did.
 - Discard a draft; delete a saved context record.
 - A `done --file` result: open **Show returned file**.
 
@@ -204,6 +211,14 @@ question, or the refusal is a bare error.
   and is not carried to the vendor.
 - A profile requiring approval for execution: the agent gets a permission
   prompt before a shell command.
+  **Codex note:** if `~/.codex/config.toml` sets
+  `approvals_reviewer = "auto_review"`, Codex sends sandbox escalations to its
+  own automatic reviewer and shows no prompt; that is Codex's documented
+  behaviour, not Parley's. Parley still shows PERMISSION REPORTED because
+  Codex's hook fires when it prepares the request. An escalation the reviewer
+  allows still runs inside the sandbox: Codex documents auto-review as "a
+  reviewer swap, not a permission grant", so a network command still fails
+  under a network-restricted profile. Remove that line to see Codex's prompt.
 - A container pane with **Bypass vendor permissions**: badge, review, Status
   Center and Team Sessions all disclose it.
 
@@ -231,7 +246,13 @@ question, or the refusal is a bare error.
 
 ## P3.2 Roles, lead and mobility
 
-- Assign a role; address it as `@reviewer` and as `workspace/@reviewer`.
+- Assign a role with the pane's More menu → Set Routing Role. The pane header
+  must show `@reviewer` straight away. Address it as `@reviewer` and as
+  `workspace/@reviewer`.
+- Set the same role on a second pane in the same workspace: an alert must say
+  the role is already assigned, and the second pane must show no role. The
+  same role on a pane in another workspace is allowed by design.
+  **Fail:** no badge after the first set, or no alert on the second.
 - Mark a workspace lead; address `lead`.
 - Refuse a role collision on move; refuse moving the last source pane.
 

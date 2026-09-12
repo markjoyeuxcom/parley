@@ -206,12 +206,18 @@ public struct AgentContextReviewApproval: Codable, Equatable, Sendable {
     public let name: String
     public let note: String
     public let parts: [AgentContextPartApproval]
+    /// The key the native UI minted for the correlated Ask a direct send
+    /// becomes, so it can reveal that exact handoff afterwards. Absent from
+    /// older callers and approvals of an agent's own Ask; the core derives one
+    /// from the review when it is missing.
+    public let idempotencyKey: String?
 
     public init(
         reviewID: String,
         expectedUpdatedAt: Date,
         targetPaneID: String,
-        pack: ContextPack
+        pack: ContextPack,
+        idempotencyKey: String? = nil
     ) {
         self.reviewID = reviewID
         self.expectedUpdatedAt = expectedUpdatedAt
@@ -219,6 +225,7 @@ public struct AgentContextReviewApproval: Codable, Equatable, Sendable {
         self.name = pack.name
         self.note = pack.note
         self.parts = pack.parts.map { AgentContextPartApproval(id: $0.id, text: $0.text) }
+        self.idempotencyKey = idempotencyKey
     }
 }
 

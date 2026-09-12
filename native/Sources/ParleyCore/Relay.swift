@@ -461,7 +461,6 @@ public final class RelayBroker: @unchecked Sendable {
     public typealias Panes = () throws -> [WorkbenchPane]
     public typealias Paste = (_ paneID: String, _ text: String) throws -> Void
     public typealias Submit = (_ paneID: String, _ text: String) throws -> Void
-    public typealias DirectContextSubmit = (_ sourcePaneID: String, _ targetPaneID: String, _ text: String) throws -> Void
     public typealias SelectedText = (_ paneID: String) throws -> String
     public typealias VendorSignal = (_ paneID: String, _ signal: VendorHookSignal, _ occurredAt: Date) throws -> Void
     public typealias Clock = () -> Date
@@ -478,7 +477,6 @@ public final class RelayBroker: @unchecked Sendable {
     private let paste: Paste
     private let submit: Submit
     private let contextSubmit: Submit
-    private let directContextSubmit: DirectContextSubmit
     private let selectedText: SelectedText?
     private let vendorSignal: VendorSignal
     private let gitFacts: GitFacts?
@@ -520,7 +518,6 @@ public final class RelayBroker: @unchecked Sendable {
         paste: @escaping Paste,
         submit: @escaping Submit,
         contextSubmit: Submit? = nil,
-        directContextSubmit: DirectContextSubmit? = nil,
         selectedText: SelectedText? = nil,
         vendorSignal: VendorSignal? = nil,
         gitFacts: GitFacts? = nil,
@@ -539,9 +536,6 @@ public final class RelayBroker: @unchecked Sendable {
         self.paste = paste
         self.submit = submit
         self.contextSubmit = contextSubmit ?? submit
-        self.directContextSubmit = directContextSubmit ?? { _, targetPaneID, text in
-            try (contextSubmit ?? submit)(targetPaneID, text)
-        }
         self.selectedText = selectedText
         self.vendorSignal = vendorSignal ?? { _, _, _ in }
         self.gitFacts = gitFacts
@@ -1113,10 +1107,20 @@ public final class RelayBroker: @unchecked Sendable {
         }
     }
 
+    /// A person's Ask One Pane on an agent-staged draft. The reviewed pack
+    /// becomes one correlated Ask from the draft's source pane to the chosen
+    /// target through the same engine as the toolbar Ask, so the target
+    /// answers with `parley answer <id>` and Status Center records the
+    /// question and the returned result. Until v0.1.41 this route pasted the
+    /// pack directly and recorded no handoff, so the reply only ever appeared
+    /// in the target's terminal. The review is approved before any terminal
+    /// input, completed once the Ask is accepted, returned to draft when the
+    /// Ask is refused before delivery, and failed when delivery itself fails.
+    /// The call returns when the answer arrives or the consultation times out.
     public func completeContextDraft(_ approval: AgentContextReviewApproval) -> RelayTextResponse {
+        let prepared: (source: WorkbenchPane, target: WorkbenchPane, rendered: String, key: String)
         do {
             let livePanes = try panes()
-            let prepared: (source: WorkbenchPane, target: WorkbenchPane, rendered: String)
             consultationCondition.lock()
             guard var review = contextReviewRecords[approval.reviewID], review.state == .draft else {
                 consultationCondition.unlock()
@@ -1131,9 +1135,12 @@ public final class RelayBroker: @unchecked Sendable {
                 return RelayTextResponse(status: 409, text: "the reviewed source or selected target pane is no longer available")
             }
             let pack: ContextPack
+            let rendered: String
+            let key: String
             do {
                 pack = try reviewedContextPackLocked(approval, review: review)
-                prepared = (source, target, try contextPackBuilder.render(pack))
+                rendered = try contextPackBuilder.render(pack)
+                key = try normalizeIdempotencyKey(approval.idempotencyKey ?? "context-\(review.id)")
             } catch {
                 consultationCondition.unlock()
                 throw error
@@ -1143,7 +1150,7 @@ public final class RelayBroker: @unchecked Sendable {
             review.requestedTargetPaneID = target.id
             review.requestedTargetName = target.displayName
             review.updatedAt = Date()
-            review.detail = "Direct context delivery was approved by the person using Parley."
+            review.detail = "Approved by the person using Parley; submitting as a correlated Ask."
             do {
                 try contextReviewStore?.record(review)
                 contextReviewRecords[review.id] = review
@@ -1153,53 +1160,94 @@ public final class RelayBroker: @unchecked Sendable {
             }
             noteChangeLocked()
             consultationCondition.unlock()
-
-            do {
-                try directContextSubmit(prepared.source.id, prepared.target.id, prepared.rendered)
-            } catch {
-                let detail = "Context delivery failed: \(error.localizedDescription). Check the target before retrying."
-                consultationCondition.lock()
-                if var failed = contextReviewRecords[approval.reviewID] {
-                    failed.state = .failed
-                    failed.updatedAt = Date()
-                    failed.detail = detail
-                    contextReviewRecords[failed.id] = failed
-                    try? contextReviewStore?.record(failed)
-                }
-                noteChangeLocked()
-                consultationCondition.unlock()
-                return RelayTextResponse(status: 409, text: detail)
-            }
-
-            consultationCondition.lock()
-            guard var completed = contextReviewRecords[approval.reviewID], completed.state == .approved else {
-                consultationCondition.unlock()
-                return RelayTextResponse(
-                    status: 202,
-                    text: "Context was delivered, but its durable review changed unexpectedly. Do not resend it."
-                )
-            }
-            completed.state = .completed
-            completed.updatedAt = Date()
-            completed.detail = "Reviewed and sent directly by the person using Parley."
-            contextReviewRecords[completed.id] = completed
-            do {
-                try contextReviewStore?.record(completed)
-                noteChangeLocked()
-                consultationCondition.unlock()
-                return RelayTextResponse(status: 200, text: completed.detail ?? "Context draft sent.")
-            } catch {
-                let detail = "Context was delivered to \(prepared.target.displayName), but Parley could not persist its completion: \(error.localizedDescription). Do not resend it."
-                completed.detail = detail
-                contextReviewRecords[completed.id] = completed
-                noteChangeLocked()
-                consultationCondition.unlock()
-                return RelayTextResponse(status: 202, text: detail)
-            }
+            prepared = (source, target, rendered, key)
         } catch let error as BrokerFailure {
             return RelayTextResponse(status: error.status, text: error.message)
         } catch {
             return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+
+        let sourceToken: String
+        do {
+            sourceToken = try credentials.token(for: prepared.source.id)
+        } catch {
+            let detail = "Not sent: could not resolve the source pane credential: \(error.localizedDescription)"
+            _ = updateContextReview(approval.reviewID, state: .draft, detail: detail)
+            return RelayTextResponse(status: 409, text: detail)
+        }
+
+        let completionPersistence = LockedBox<Error?>(nil)
+        let response = handleAsk(
+            token: sourceToken,
+            target: prepared.target.id,
+            text: prepared.rendered,
+            idempotencyKey: prepared.key,
+            humanInitiated: true,
+            preserveFormatting: true,
+            transitionOrigin: .human,
+            onAccepted: { [weak self] handoffID in
+                guard let self else { return }
+                completionPersistence.set(self.updateContextReview(
+                    approval.reviewID,
+                    state: .completed,
+                    detail: "Reviewed and sent by the person using Parley as correlated Ask \(handoffID)."
+                ))
+            }
+        )
+
+        // onAccepted ran only if the Ask was created and delivered. Otherwise
+        // decide from the durable facts: a handoff that exists and failed is a
+        // delivery failure; no handoff means the Ask was refused before any
+        // terminal input, and the draft is still sendable.
+        consultationCondition.lock()
+        let reviewState = contextReviewRecords[approval.reviewID]?.state
+        let handoff = handoffRecords.values.first {
+            $0.idempotencyKey == prepared.key && $0.kind == .ask && $0.sourcePaneID == prepared.source.id
+        }
+        consultationCondition.unlock()
+        if reviewState == .approved {
+            if let handoff, handoff.state == .failed {
+                _ = updateContextReview(
+                    approval.reviewID,
+                    state: .failed,
+                    detail: "Context delivery failed: \(response.text). Check the target before retrying."
+                )
+            } else {
+                _ = updateContextReview(approval.reviewID, state: .draft, detail: "Not sent: \(response.text)")
+            }
+            return response
+        }
+        if response.status == 200, let persistence = completionPersistence.value {
+            return RelayTextResponse(
+                status: 202,
+                text: "Context was delivered to \(prepared.target.displayName) and answered, but Parley could not persist the review's completion: \(persistence.localizedDescription). Do not resend it."
+            )
+        }
+        return response
+    }
+
+    /// Moves one context review to a terminal or resendable state under the
+    /// broker lock and records it. Returns the persistence error, if any; the
+    /// in-memory record is updated either way so Status Center never shows a
+    /// review as still approved once its Ask has been accepted or refused.
+    private func updateContextReview(
+        _ reviewID: String,
+        state: AgentContextReviewState,
+        detail: String
+    ) -> Error? {
+        consultationCondition.lock()
+        defer { consultationCondition.unlock() }
+        guard var review = contextReviewRecords[reviewID] else { return nil }
+        review.state = state
+        review.updatedAt = Date()
+        review.detail = detail
+        contextReviewRecords[reviewID] = review
+        noteChangeLocked()
+        do {
+            try contextReviewStore?.record(review)
+            return nil
+        } catch {
+            return error
         }
     }
 
@@ -5054,4 +5102,18 @@ public enum RelayShim {
         ;;
     esac
     """
+}
+
+/// One value shared between a broker call and a callback it hands to the Ask
+/// engine, which runs that callback on the same thread but outside the
+/// broker lock.
+private final class LockedBox<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value
+
+    init(_ value: Value) { stored = value }
+
+    var value: Value { lock.withLock { stored } }
+
+    func set(_ value: Value) { lock.withLock { stored = value } }
 }

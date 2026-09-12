@@ -955,6 +955,19 @@ terminal input and failed delivery as terminal `.failed`. A delivery followed
 by persistence failure must state that delivery occurred and warn against
 resending. Keep rendered packs at 90 KB and control bodies at 200 KB.
 
+A person's **Ask One Pane** on an agent-staged draft (`completeContextDraft`)
+is one correlated Ask through the same engine as the toolbar Ask, from the
+draft's source pane to the chosen target with human origin and the key the UI
+minted, so the target answers with `parley answer <id>` and Status Center
+shows the question and the returned result. It is not a direct paste: v0.1.40
+pasted the pack and recorded no handoff, and the reply only ever appeared in
+the target's terminal. The review is approved before any terminal input,
+completed (naming the handoff) once the Ask is accepted, handed back to
+`.draft` with a "Not sent" detail when the Ask is refused before delivery (a
+busy target, for instance), and `.failed` when delivery itself fails. The
+call returns with the answer or the consultation timeout, which is why it is
+a tracked request and runs off the main actor.
+
 Every UI control request that uses `trackedResponseTimeout` (Ask, Ask-many,
 request changes, busy-draft send, context approve and context complete) runs
 inside `Task.detached`, never on the main actor. Those requests return only

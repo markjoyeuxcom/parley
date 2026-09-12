@@ -8612,11 +8612,12 @@ private func checkContextAddRacingCompletionHasOneDurableWinner() throws {
         panes: { panes },
         paste: { _, _ in },
         submit: { _, _ in },
-        directContextSubmit: { _, _, _ in },
+        livenessPollInterval: 0.01,
         contextReviewStore: try AgentContextReviewStore(
             file: directory.appendingPathComponent("context-reviews.json")
         )
     )
+    let targetToken = try credentials.token(for: "%2")
 
     for iteration in 0..<32 {
         let staged = broker.handleContextDraft(
@@ -8665,10 +8666,28 @@ private func checkContextAddRacingCompletionHasOneDurableWinner() throws {
             )))
             finished.leave()
         }
+        // Completion is a correlated Ask, so a winning completion blocks until
+        // its target answers. Answer it as soon as it appears, and stop
+        // waiting once the completion has lost the race instead.
+        finished.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            start.wait()
+            let deadline = Date().addingTimeInterval(4)
+            while Date() < deadline {
+                if let waiting = broker.consultations().first(where: { $0.targetPaneID == "%2" && $0.state == .awaitingAnswer }) {
+                    _ = broker.handleAnswer(token: targetToken, consultationID: waiting.id, text: "raced answer")
+                    break
+                }
+                if completionResult.value != nil { break }
+                usleep(2_000)
+            }
+            finished.leave()
+        }
+        start.signal()
         start.signal()
         start.signal()
         try expect(
-            finished.wait(timeout: .now() + 3) == .success,
+            finished.wait(timeout: .now() + 6) == .success,
             "add/completion context race did not finish"
         )
         let add = try require(addResult.value, "add/completion race lost its add response")
@@ -8858,11 +8877,20 @@ private func checkContextDraftDiscardIsOwnedReleasesAskAndCleansUpStaleDrafts() 
     )
 }
 
-private func checkDirectContextDraftCompletionOwnsDeliveryAndFailureState() throws {
+/// A person's Ask One Pane on an agent-staged draft is one correlated Ask:
+/// the target receives the reviewed pack with the answer instruction, a
+/// human-origin Ask handoff is recorded under the UI's key, the review is
+/// completed and names that handoff, and the answer comes back as the
+/// tracked result. A refusal before delivery hands the draft back; a
+/// delivery failure marks the review failed. Until v0.1.41 this route
+/// pasted the pack and recorded nothing, so the reply stayed in the
+/// target's terminal.
+private func checkContextDraftAskOnePaneIsACorrelatedAsk() throws {
     let directory = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
+    let targetToken = try credentials.token(for: "%2")
     let panes = [
         WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0"),
         WorkbenchPane(id: "%2", kind: .claude, customName: "Claude Reviewer", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: false, workspaceID: "@0"),
@@ -8873,7 +8901,9 @@ private func checkDirectContextDraftCompletionOwnsDeliveryAndFailureState() thro
         panes: { panes },
         paste: { _, _ in },
         submit: { _, _ in },
-        directContextSubmit: { _, paneID, text in delivered.set(paneID: paneID, text: text, submit: true) },
+        contextSubmit: { paneID, text in delivered.set(paneID: paneID, text: text, submit: true) },
+        consultationTimeout: 5,
+        livenessPollInterval: 0.01,
         contextReviewStore: try AgentContextReviewStore(
             file: directory.appendingPathComponent("context-reviews.json")
         )
@@ -8887,26 +8917,80 @@ private func checkDirectContextDraftCompletionOwnsDeliveryAndFailureState() thro
     let summary = try JSONDecoder().decode(AgentContextReviewSummary.self, from: Data(staged.text.utf8))
     let review = try require(
         broker.contextReviews().first(where: { $0.id == summary.id }),
-        "the direct-delivery context draft disappeared"
+        "the context draft disappeared"
     )
-    var reviewedPack = review.pack
-    reviewedPack.note = "Review this direct delivery."
-    let completed = broker.completeContextDraft(AgentContextReviewApproval(
-        reviewID: review.id,
-        expectedUpdatedAt: review.updatedAt,
-        targetPaneID: "%2",
-        pack: reviewedPack
-    ))
-    try expect(completed.status == 200, "the core could not complete a direct context delivery")
-    try expect(delivered.value?.paneID == "%2", "direct context completion did not own target delivery")
+    var editedPack = review.pack
+    editedPack.note = "Review this direct delivery."
+    let reviewedPack = editedPack
+    let completion = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        completion.set(broker.completeContextDraft(AgentContextReviewApproval(
+            reviewID: review.id,
+            expectedUpdatedAt: review.updatedAt,
+            targetPaneID: "%2",
+            pack: reviewedPack,
+            idempotencyKey: "context-ask-check-0001"
+        )))
+    }
+    try expect(eventually { broker.consultations().count == 1 }, "Ask One Pane did not create a correlated consultation")
+    try expect(completion.value == nil, "Ask One Pane returned before its target answered")
+    let handoff = try require(
+        broker.handoffs().first(where: { $0.idempotencyKey == "context-ask-check-0001" }),
+        "Ask One Pane recorded no handoff under the UI's key"
+    )
+    try expect(handoff.kind == .ask && handoff.sourcePaneID == "%1" && handoff.targetPaneID == "%2", "the context Ask has the wrong shape")
+    try expect(handoff.transitions.allSatisfy { $0.origin == .human }, "the context Ask was not attributed to the person")
+    try expect(delivered.value?.paneID == "%2", "the context Ask did not deliver to the chosen target")
     try expect(
         delivered.value?.text.contains("Review this direct delivery") == true,
-        "direct context completion submitted an unreviewed pack"
+        "the context Ask submitted an unreviewed pack"
     )
     try expect(
-        broker.contextReviews().first(where: { $0.id == review.id })?.state == .completed,
-        "successful direct context delivery did not become durably completed"
+        delivered.value?.text.contains("parley answer \(handoff.id)") == true,
+        "the delivered pack does not tell the target how to answer this exact Ask"
     )
+    let completedReview = try require(
+        broker.contextReviews().first(where: { $0.id == review.id }),
+        "the context review disappeared after delivery"
+    )
+    try expect(completedReview.state == .completed, "an accepted context Ask did not complete its review")
+    try expect(completedReview.detail?.contains(handoff.id) == true, "the completed review does not name its Ask")
+
+    let answered = broker.handleAnswer(token: targetToken, consultationID: handoff.id, text: "Correlated answer")
+    try expect(answered.status == 200, "the target could not answer the context Ask: \(answered.text)")
+    try expect(eventually { completion.value != nil }, "Ask One Pane stayed blocked after its answer")
+    let result = try require(completion.value, "Ask One Pane produced no response")
+    try expect(result.status == 200 && result.text == "Correlated answer", "the context Ask lost its correlated answer: \(result.status) \(result.text)")
+    try expect(
+        broker.handoffs().first(where: { $0.id == handoff.id })?.hasReturnedResult == true,
+        "the answered context Ask has no returned result on its handoff"
+    )
+
+    // A target that is already busy refuses before any terminal input, and
+    // the draft goes back to the person unchanged.
+    let busyStaged = broker.handleContextDraft(token: sourceToken, name: "Busy target", path: "Busy.swift", text: "let busy = true")
+    let busySummary = try JSONDecoder().decode(AgentContextReviewSummary.self, from: Data(busyStaged.text.utf8))
+    let busyReview = try require(broker.contextReviews().first(where: { $0.id == busySummary.id }), "the busy-target draft disappeared")
+    var busyPack = busyReview.pack
+    busyPack.note = "Try while busy."
+    let occupying = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        occupying.set(broker.handleAsk(token: sourceToken, target: "%2", text: "Keep the reviewer busy."))
+    }
+    try expect(eventually { broker.consultations().count == 1 }, "the occupying Ask did not start")
+    let refused = broker.completeContextDraft(AgentContextReviewApproval(
+        reviewID: busyReview.id,
+        expectedUpdatedAt: busyReview.updatedAt,
+        targetPaneID: "%2",
+        pack: busyPack,
+        idempotencyKey: "context-ask-check-busy"
+    ))
+    try expect(refused.status == 409 && refused.text.contains("awaiting an answer"), "a busy target did not refuse the context Ask: \(refused.status) \(refused.text)")
+    let handedBack = try require(broker.contextReviews().first(where: { $0.id == busyReview.id }), "the refused draft disappeared")
+    try expect(handedBack.state == .draft && handedBack.detail?.hasPrefix("Not sent") == true, "a refused context Ask did not hand the draft back: \(handedBack.state) \(handedBack.detail ?? "")")
+    try expect(!broker.handoffs().contains(where: { $0.idempotencyKey == "context-ask-check-busy" }), "a refused context Ask still recorded a handoff")
+    _ = broker.handleAnswer(token: targetToken, consultationID: "current", text: "free again")
+    try expect(eventually { occupying.value != nil }, "the occupying Ask never finished")
 
     let failingStore = try AgentContextReviewStore(file: directory.appendingPathComponent("failing-context-reviews.json"))
     let failingBroker = RelayBroker(
@@ -8914,7 +8998,7 @@ private func checkDirectContextDraftCompletionOwnsDeliveryAndFailureState() thro
         panes: { panes },
         paste: { _, _ in },
         submit: { _, _ in },
-        directContextSubmit: { _, _, _ in
+        contextSubmit: { _, _ in
             throw RelayFileTransportError.runtime("fixture delivery failed before input")
         },
         contextReviewStore: failingStore
@@ -8941,14 +9025,18 @@ private func checkDirectContextDraftCompletionOwnsDeliveryAndFailureState() thro
         targetPaneID: "%2",
         pack: failingPack
     ))
-    try expect(failed.status == 409 && failed.text.contains("fixture delivery failed"), "direct delivery failure was hidden")
+    try expect(failed.status == 409 && failed.text.contains("fixture delivery failed"), "context Ask delivery failure was hidden")
     let failedRecord = try require(
         failingBroker.contextReviews().first(where: { $0.id == failingReview.id }),
-        "failed direct delivery lost its durable review"
+        "failed context Ask delivery lost its durable review"
     )
     try expect(
         failedRecord.state == .failed && failedRecord.detail?.contains("fixture delivery failed") == true,
-        "failed direct delivery remained an apparently sendable draft"
+        "failed context Ask delivery remained an apparently sendable draft"
+    )
+    try expect(
+        failingBroker.handoffs().contains(where: { $0.kind == .ask && $0.state == .failed }),
+        "a failed context Ask delivery left no failed handoff for Status Center"
     )
 }
 
@@ -9078,6 +9166,7 @@ private func checkContextReviewTransportBoundsAndEscaping() throws {
     defer { try? FileManager.default.removeItem(at: directory) }
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
+    let targetToken = try credentials.token(for: "%2")
     let panes = [
         WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0"),
         WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0"),
@@ -9087,7 +9176,7 @@ private func checkContextReviewTransportBoundsAndEscaping() throws {
         panes: { panes },
         paste: { _, _ in },
         submit: { _, _ in },
-        directContextSubmit: { _, _, _ in },
+        livenessPollInterval: 0.01,
         contextReviewStore: try AgentContextReviewStore(
             file: directory.appendingPathComponent("context-reviews.json")
         )
@@ -9129,13 +9218,30 @@ private func checkContextReviewTransportBoundsAndEscaping() throws {
     )).count
     try expect(renderedBytes > 80_000, "escaping fixture did not reach the context-pack boundary")
     try expect(encodedBytes > 160_000 && encodedBytes < 200_000, "escaping fixture did not exercise the transport boundary")
-    let completed = try control.completeContextDraft(
-        reviewID: review.id,
-        expectedUpdatedAt: review.updatedAt,
-        pack: pack,
-        targetPaneID: "%2"
-    )
-    try expect(completed.status == 200, "valid near-limit JSON escaping failed across core control")
+    // Completion is a correlated Ask across core control: it returns only
+    // after the target answers, so answer it from the target side.
+    let approvedPack = pack
+    let completion = LockedAskResult()
+    DispatchQueue.global(qos: .utility).async {
+        do {
+            completion.set(try control.completeContextDraft(
+                reviewID: review.id,
+                expectedUpdatedAt: review.updatedAt,
+                pack: approvedPack,
+                targetPaneID: "%2",
+                idempotencyKey: "context-bounds-0001"
+            ))
+        } catch {
+            completion.set(RelayTextResponse(status: 599, text: error.localizedDescription))
+        }
+    }
+    try expect(eventually { broker.consultations().count == 1 }, "near-limit context did not become a correlated Ask")
+    let waiting = try require(broker.consultations().first, "near-limit context lost its consultation")
+    let answered = broker.handleAnswer(token: targetToken, consultationID: waiting.id, text: "bounds answer")
+    try expect(answered.status == 200, "the near-limit Ask could not be answered: \(answered.text)")
+    try expect(eventually { completion.value != nil }, "near-limit completion stayed blocked after its answer")
+    let completed = try require(completion.value, "near-limit completion produced no response")
+    try expect(completed.status == 200, "valid near-limit JSON escaping failed across core control: \(completed.status) \(completed.text)")
 
     let oversizedStage = broker.handleContextDraft(
         token: sourceToken,
@@ -9847,7 +9953,7 @@ let checks: [(String, () throws -> Void)] = [
     ("context add racing Ask has one durable winner", checkContextAddRacingAskHasOneDurableWinner),
     ("context add racing completion has one durable winner", checkContextAddRacingCompletionHasOneDurableWinner),
     ("context draft discard is owned and bounded", checkContextDraftDiscardIsOwnedReleasesAskAndCleansUpStaleDrafts),
-    ("direct context completion owns delivery state", checkDirectContextDraftCompletionOwnsDeliveryAndFailureState),
+    ("a person's Ask One Pane on an agent draft is a correlated Ask that owns its review state", checkContextDraftAskOnePaneIsACorrelatedAsk),
     ("trusted context capture preserves provenance", checkTrustedContextCaptureExtendsAgentDraftWithoutTrustingApproval),
     ("context review transport bounds and escaping", checkContextReviewTransportBoundsAndEscaping),
     ("context review shim round trip", checkContextReviewShimRoundTrip),

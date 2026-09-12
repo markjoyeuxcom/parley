@@ -187,17 +187,23 @@ public struct RelayCoreClient: Sendable {
         )
     }
 
+    /// Sends a person-reviewed agent draft as one correlated Ask. Returns when
+    /// the answer arrives or the consultation times out, so it must run off
+    /// the main thread like `askFromUI`; the key lets the UI reveal the exact
+    /// handoff afterwards.
     public func completeContextDraft(
         reviewID: String,
         expectedUpdatedAt: Date,
         pack: ContextPack,
-        targetPaneID: String
+        targetPaneID: String,
+        idempotencyKey: String? = nil
     ) throws -> RelayTextResponse {
         let body = try JSONEncoder().encode(AgentContextReviewApproval(
             reviewID: reviewID,
             expectedUpdatedAt: expectedUpdatedAt,
             targetPaneID: targetPaneID,
-            pack: pack
+            pack: pack,
+            idempotencyKey: idempotencyKey
         ))
         if let oversized = oversizedContextResponse(body) { return oversized }
         let response = try request(
