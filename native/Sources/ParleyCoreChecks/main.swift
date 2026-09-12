@@ -2006,15 +2006,48 @@ private func checkWorkspaceFolderAttachmentModel() throws {
     )
 }
 
+/// Removes the preference file an isolated check domain left behind.
+///
+/// `removePersistentDomain` empties the domain but leaves a 42-byte stub in
+/// `~/Library/Preferences`, and these suite names carry a fresh UUID per run,
+/// so every `npm test` left two more behind permanently. That reached 1,626
+/// files before anyone looked. Only a file this process named is removed, and
+/// the domain is synchronised first so `cfprefsd` does not write it back.
+private func removeIsolatedPreferenceFile(_ domain: String) {
+    CFPreferencesAppSynchronize(domain as CFString)
+    let file = URL(fileURLWithPath: NSHomeDirectory())
+        .appendingPathComponent("Library/Preferences")
+        .appendingPathComponent("\(domain).plist")
+    try? FileManager.default.removeItem(at: file)
+}
+
 private func checkLegacyPreferencesMigration() throws {
-    let currentDomain = "parley-check-current-\(UUID().uuidString)"
-    let legacyDomain = "parley-check-legacy-\(UUID().uuidString)"
+    // Fixed domain names, not a UUID per run.
+    //
+    // These suites live in ~/Library/Preferences, and a unique name per run
+    // meant every `npm test` left two more files there permanently: 1,626 had
+    // accumulated before anyone looked. Deleting the file is not sufficient on
+    // its own, because `cfprefsd` can write an emptied domain back out after
+    // the check returns — an isolated run left nothing, a full suite run still
+    // left two. Bounding the names is what actually stops the growth; the file
+    // removal below is best effort on top of it.
+    //
+    // The trade is that two check processes running at once would share these
+    // domains. Checks are serial within a process, and the domain is cleared on
+    // the way in as well as out, so a crashed previous run cannot poison this
+    // one.
+    let currentDomain = "parley-check-current"
+    let legacyDomain = "parley-check-legacy"
     guard let defaults = UserDefaults(suiteName: currentDomain) else {
         throw CheckFailure(description: "could not create isolated preferences")
     }
+    defaults.removePersistentDomain(forName: currentDomain)
+    defaults.removePersistentDomain(forName: legacyDomain)
     defer {
         defaults.removePersistentDomain(forName: currentDomain)
         defaults.removePersistentDomain(forName: legacyDomain)
+        removeIsolatedPreferenceFile(currentDomain)
+        removeIsolatedPreferenceFile(legacyDomain)
     }
 
     defaults.setPersistentDomain([
