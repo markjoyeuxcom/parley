@@ -762,7 +762,14 @@ available without the usual vendor permission prompts.
 UID/GID, four exact host mounts (project and own endpoint writable; protocol
 and Linux shim read-only), plus the reviewed shared Git directory for a linked
 worktree, one private named home volume, disabled Docker
-output logging and an explicit vendor entrypoint. Only allowlisted Parley
+output logging and an explicit vendor entrypoint. An optional reviewed port
+(`ContainerConfiguration.publishedPort`, nil in every record written before it
+existed) is published as `127.0.0.1:<port>:<port>` — loopback only, one port,
+1024–65535, network mode unchanged — so a vendor's browser sign-in callback can
+reach the container. Codex listens on 1455; its device-code sign-in needs none,
+and Claude's paste-code sign-in needs none. Only the native review sets it,
+agents cannot supply it to team add, it is part of exact configuration
+comparisons, and the pane badge and Status Center container records show it. Only allowlisted Parley
 metadata reaches the container. The Docker socket, host vendor configuration
 and sibling pane endpoints are never mounted. The container is the vendor's
 boundary; Seatbelt remains around the host Docker client but cannot constrain

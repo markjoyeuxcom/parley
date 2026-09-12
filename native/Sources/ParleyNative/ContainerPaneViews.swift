@@ -12,6 +12,7 @@ struct ContainerLaunchOptionsView: View {
     @State private var image: String
     @State private var legacy: Bool
     @State private var bypass: Bool
+    @State private var port: String
     private let onBypassChange: (Bool) -> Void
     @State private var checking = false
     @State private var message: String?
@@ -21,7 +22,17 @@ struct ContainerLaunchOptionsView: View {
         _image = State(initialValue: existing?.imageName ?? "")
         _legacy = State(initialValue: existing?.legacyCodexSandbox ?? false)
         _bypass = State(initialValue: existing?.bypassVendorPermissions ?? false)
+        _port = State(initialValue: existing?.publishedPort.map(String.init) ?? "")
         self.onBypassChange = onBypassChange
+    }
+
+    /// The typed port, or nil for none. `.some(nil)` is "leave it empty";
+    /// `nil` means the text is not a port at all.
+    private var parsedPort: Int?? {
+        let trimmed = port.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return .some(nil) }
+        guard let value = Int(trimmed) else { return nil }
+        return .some(value)
     }
 
     var body: some View {
@@ -48,7 +59,17 @@ struct ContainerLaunchOptionsView: View {
                         .disabled(bypass)
                         .onChange(of: legacy) { _, _ in configuration = nil; message = nil }
                     Text("Codex has deprecated this option and plans to remove it. Use it only for testing a compatible image when its default Bubblewrap sandbox cannot start. This option applies only while vendor permissions are enabled.")
-                    Text("For Codex sign-in, choose Sign in with Device Code and open the supplied link in your Mac browser. This container does not publish the browser-login callback port.")
+                }
+                TextField("Published port (optional)", text: $port).textFieldStyle(.roundedBorder)
+                    .onChange(of: port) { _, _ in configuration = nil; message = nil }
+                Text(vendor == .codex
+                    ? "Codex’s browser sign-in returns to localhost:1455, which cannot reach a container unless that port is published. Enter 1455 to sign in through your Mac browser. Leave it empty to use Sign in with Device Code, which needs no port."
+                    : "Claude’s paste-code sign-in needs no port. Leave this empty unless the image runs something a browser on this Mac must reach.")
+                if case .some(.some(let value)) = parsedPort {
+                    Text("Port \(value) on this Mac will forward to port \(value) inside the container, on 127.0.0.1 only — nothing on your network can reach it. If another process on this Mac is already listening on \(value), Docker refuses to start the container.")
+                        .foregroundStyle(.orange)
+                } else if parsedPort == nil {
+                    Text("The published port must be a whole number between 1024 and 65535.").foregroundStyle(.orange)
                 }
                 HStack {
                     Button(checking ? "Checking…" : "Check Image and Daemon", action: check)
@@ -84,18 +105,26 @@ struct ContainerLaunchOptionsView: View {
         let selectedBypass = bypass
         let selectedFolder = folder
         let selectedCommon = plannedCommonDirectory
+        let selectedPortText = port
+        guard case .some(let selectedPort) = parsedPort else {
+            message = "The published port must be a whole number between 1024 and 65535."
+            return
+        }
         checking = true; configuration = nil; message = nil
         Task {
             do {
                 let preview = try await Task.detached(priority: .userInitiated) {
-                    var preview = try service.preview(image: selectedImage, vendor: vendor, legacyCodexSandbox: selectedLegacy, bypassVendorPermissions: selectedBypass)
+                    var preview = try service.preview(image: selectedImage, vendor: vendor, legacyCodexSandbox: selectedLegacy,
+                        bypassVendorPermissions: selectedBypass, publishedPort: selectedPort)
                     preview.gitAccess = try selectedCommon.map { try ContainerGitAccess.planned(folder: selectedFolder, commonDirectory: $0) }
                         ?? ContainerGitAccess.inspect(folder: selectedFolder)
                     return preview
                 }.value
-                if enabled && image == selectedImage && legacy == selectedLegacy && bypass == selectedBypass && folder == selectedFolder && plannedCommonDirectory == selectedCommon { configuration = preview }
+                if enabled && image == selectedImage && legacy == selectedLegacy && bypass == selectedBypass && port == selectedPortText
+                    && folder == selectedFolder && plannedCommonDirectory == selectedCommon { configuration = preview }
             } catch {
-                if enabled && image == selectedImage && legacy == selectedLegacy && bypass == selectedBypass && folder == selectedFolder && plannedCommonDirectory == selectedCommon { message = error.localizedDescription }
+                if enabled && image == selectedImage && legacy == selectedLegacy && bypass == selectedBypass && port == selectedPortText
+                    && folder == selectedFolder && plannedCommonDirectory == selectedCommon { message = error.localizedDescription }
             }
             checking = false
         }
@@ -124,6 +153,9 @@ struct ContainerRecordsView: View {
                         .font(.system(size: 12, weight: .medium))
                     Text("\(record.configuration.imageName) · generation \(record.generation) · \(record.runtime)")
                     Text(record.configuration.permissionModeLabel)
+                    if let port = record.configuration.publishedPort {
+                        Text("Port \(port) forwarded from this Mac’s loopback into the container")
+                    }
                     Text(record.removed ? "Container removed · vendor state retained" : "Creation recorded · running state not inferred")
                     if let id = record.containerID { Text(String(id.prefix(16))).font(.system(size: 10, design: .monospaced)) }
                     HStack {

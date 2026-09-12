@@ -21,6 +21,7 @@ private func requireContainerControllerShell() throws {
 
 var containerPaneChecks: [(String, () throws -> Void)] { [
     ("container reviewed bypass stays inside the container", checkContainerReviewedBypass),
+    ("container reviewed port forwards loopback only and never widens the boundary", checkContainerPublishedPort),
     ("container bypass preflight checks vendor startup without an inner sandbox", checkContainerBypassPreflight),
     ("container bypass controller binds review and restores host permissions", checkContainerBypassController),
     ("container Git review canonicalizes planned aliases and names submodule refusal", checkContainerGitReviewRefusals),
@@ -821,6 +822,48 @@ func checkContainerReviewedBypass() throws {
     let old = try JSONDecoder().decode(ContainerConfiguration.self, from: JSONSerialization.data(withJSONObject: json))
     let oldJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as! [String: Any]
     try containerExpect(oldJSON["bypassVendorPermissions"] as? Bool != true, "older configuration acquired bypass")
+}
+
+/// A reviewed port forwards one loopback port on the Mac to the same port in
+/// the container — enough for a vendor's browser sign-in callback (Codex:
+/// 1455) — and nothing else: loopback only, one port, the network mode,
+/// mounts and capabilities unchanged, privileged ports refused, and an older
+/// record without the field publishing nothing.
+func checkContainerPublishedPort() throws {
+    let base = ContainerConfiguration(dockerExecutable: "/fixture/docker", daemonEndpoint: "unix:///tmp/docker.sock",
+        daemonID: "daemon-one", imageID: "sha256:" + String(repeating: "c", count: 64), imageName: "fixture", legacyCodexSandbox: false)
+    let facts = ContainerLaunchFacts(paneID: "pane-fixture", generation: 1, vendor: .codex, folder: "/project",
+        endpoint: "/transport/fixture", protocolDirectory: "/runtime/protocol", shimDirectory: "/runtime/bin",
+        uid: 501, gid: 20, volume: "fixture-home", owner: "fixture-owner", runtime: "DEV")
+
+    let plain = try ContainerLaunchProjection.createArguments(configuration: base, facts: facts, vendorArguments: [])
+    try containerExpect(!plain.contains("--publish") && !plain.contains("-p"), "a container with no reviewed port published one")
+
+    var reviewed = base
+    reviewed.publishedPort = 1455
+    let args = try ContainerLaunchProjection.createArguments(configuration: reviewed, facts: facts, vendorArguments: [])
+    guard let publish = args.firstIndex(of: "--publish") else { throw NSError(domain: "reviewed port 1455 was not published", code: 1) }
+    try containerExpect(args[publish + 1] == "127.0.0.1:1455:1455", "the published port is not loopback-only on the same port: \(args[publish + 1])")
+    try containerExpect(args.filter { $0 == "--publish" }.count == 1, "more than one port was published")
+    try containerExpect(publish < args.firstIndex(of: reviewed.imageID)!, "the port reached the vendor command instead of Docker")
+    try containerExpect(args.contains("--network=bridge"), "publishing a port changed the network mode")
+    try containerExpect(args.filter { $0.hasPrefix("type=bind,") }.count == 4 && args.contains("--cap-drop=ALL")
+        && args.contains("--security-opt=no-new-privileges=true"), "publishing a port widened mounts or capabilities")
+
+    for bad in [0, 80, 443, 1023, 65536, -1] {
+        var config = base
+        config.publishedPort = bad
+        do { _ = try ContainerLaunchProjection.createArguments(configuration: config, facts: facts, vendorArguments: []); throw NSError(domain: "accepted port \(bad)", code: 1) }
+        catch is ContainerPaneError {}
+    }
+
+    let roundtrip = try JSONSerialization.jsonObject(with: JSONEncoder().encode(reviewed)) as! [String: Any]
+    try containerExpect(roundtrip["publishedPort"] as? Int == 1455, "the reviewed port was lost on persistence")
+    var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(base)) as! [String: Any]
+    json.removeValue(forKey: "publishedPort")
+    let old = try JSONDecoder().decode(ContainerConfiguration.self, from: JSONSerialization.data(withJSONObject: json))
+    try containerExpect(old.publishedPort == nil, "an older configuration acquired a published port")
+    try containerExpect(old != reviewed, "a reviewed port does not distinguish the exact configuration")
 }
 
 func checkContainerBypassPreflight() throws {

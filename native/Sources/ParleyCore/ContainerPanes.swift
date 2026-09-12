@@ -15,10 +15,15 @@ public struct ContainerConfiguration: Codable, Equatable, Sendable {
     public var gitAccess: ContainerGitAccess?
     public var legacyCodexSandbox: Bool
     public var bypassVendorPermissions: Bool
+    /// One port on this Mac's loopback interface forwarded to the same port
+    /// inside the container, so a vendor's browser sign-in can reach its
+    /// callback listener. Codex listens on 1455. Nil publishes nothing, which
+    /// is the default and what every record written before this field decodes to.
+    public var publishedPort: Int?
     public var permissionModeLabel: String { bypassVendorPermissions ? "Vendor permissions bypassed" : "Vendor permissions enabled" }
 
     private enum CodingKeys: String, CodingKey {
-        case dockerExecutable, daemonEndpoint, daemonID, imageID, imageName, gitAccess, legacyCodexSandbox, bypassVendorPermissions
+        case dockerExecutable, daemonEndpoint, daemonID, imageID, imageName, gitAccess, legacyCodexSandbox, bypassVendorPermissions, publishedPort
     }
 
     public init(from decoder: Decoder) throws {
@@ -31,11 +36,13 @@ public struct ContainerConfiguration: Codable, Equatable, Sendable {
         gitAccess = try values.decodeIfPresent(ContainerGitAccess.self, forKey: .gitAccess)
         legacyCodexSandbox = try values.decode(Bool.self, forKey: .legacyCodexSandbox)
         bypassVendorPermissions = try values.decodeIfPresent(Bool.self, forKey: .bypassVendorPermissions) ?? false
+        publishedPort = try values.decodeIfPresent(Int.self, forKey: .publishedPort)
     }
-    public init(dockerExecutable: String, daemonEndpoint: String, daemonID: String, imageID: String, imageName: String, legacyCodexSandbox: Bool, gitAccess: ContainerGitAccess? = nil, bypassVendorPermissions: Bool = false) {
+    public init(dockerExecutable: String, daemonEndpoint: String, daemonID: String, imageID: String, imageName: String, legacyCodexSandbox: Bool, gitAccess: ContainerGitAccess? = nil, bypassVendorPermissions: Bool = false, publishedPort: Int? = nil) {
         self.dockerExecutable = dockerExecutable; self.daemonEndpoint = daemonEndpoint; self.daemonID = daemonID
         self.imageID = imageID; self.imageName = imageName; self.legacyCodexSandbox = legacyCodexSandbox; self.gitAccess = gitAccess
         self.bypassVendorPermissions = bypassVendorPermissions
+        self.publishedPort = publishedPort
     }
 }
 
@@ -70,6 +77,13 @@ public enum ContainerLaunchProjection {
     public static func validate(_ config: ContainerConfiguration) throws {
         guard !config.bypassVendorPermissions || !config.legacyCodexSandbox else {
             throw ContainerPaneError.refused("Choose vendor permissions with legacy Landlock or bypass vendor permissions, not both.")
+        }
+        if let port = config.publishedPort {
+            // Below 1024 is privileged on the host and unbindable by the
+            // container's non-root user anyway; nothing legitimate needs it.
+            guard (1024...65535).contains(port) else {
+                throw ContainerPaneError.refused("A published port must be between 1024 and 65535. Codex's browser sign-in uses 1455.")
+            }
         }
         guard config.dockerExecutable.hasPrefix("/"), !config.dockerExecutable.contains("\n"),
               config.daemonEndpoint.hasPrefix("unix:///"), !config.daemonEndpoint.contains("\n"),
@@ -133,6 +147,11 @@ public enum ContainerLaunchProjection {
             "--user", "\(facts.uid):\(facts.gid)", "--workdir", facts.folder]
         for (key, value) in [(ownerLabel, facts.owner), (runtimeLabel, facts.runtime), (paneLabel, facts.paneID), (generationLabel, String(facts.generation))] {
             args += ["--label", "\(key)=\(value)"]
+        }
+        if let port = configuration.publishedPort {
+            // Bound to loopback: the listener exists for this Mac's browser to
+            // complete a vendor sign-in, never for anything on the network.
+            args += ["--publish", "127.0.0.1:\(port):\(port)"]
         }
         args += ["--mount", "type=bind,source=\(facts.folder),target=\(facts.folder)",
             "--mount", "type=bind,source=\(facts.endpoint),target=\(facts.endpoint)",
