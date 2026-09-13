@@ -286,13 +286,16 @@ public struct WorktreeCleanupFacts: Equatable, Sendable {
     public var mergedIntoPrimary: Bool
     public var statusUncertain: Bool
     public var path: String
+    /// Git lists the recorded path as the repository's primary checkout. A
+    /// tracked record can point there; removal never can.
+    public var isPrimary: Bool
 
     public init(parleyCreated: Bool, creationTokenVerified: Bool, registered: Bool, registryReadable: Bool, pathInspectable: Bool, pathExists: Bool, pathIsDirectory: Bool,
                 recordInventoryReadable: Bool, recordPresentInInventory: Bool, recordUnchangedInInventory: Bool, locked: Bool, prunable: Bool,
                 nestedWorktreePaths: [String], livePaneFolders: [String],
                 otherRuntimePaneFolders: [String], otherRuntimeStateUnreadable: Bool, modifiedPaths: [String], untrackedPaths: [String],
                 ignoredPaths: [String], ignoredListTruncated: Bool, upstreamAheadCount: Int, hasUpstream: Bool, mergedIntoPrimary: Bool,
-                statusUncertain: Bool, path: String) {
+                statusUncertain: Bool, path: String, isPrimary: Bool = false) {
         self.parleyCreated = parleyCreated
         self.creationTokenVerified = creationTokenVerified
         self.registered = registered
@@ -318,6 +321,7 @@ public struct WorktreeCleanupFacts: Equatable, Sendable {
         self.mergedIntoPrimary = mergedIntoPrimary
         self.statusUncertain = statusUncertain
         self.path = path
+        self.isPrimary = isPrimary
     }
 }
 
@@ -351,8 +355,11 @@ public enum WorktreeCleanupPolicy {
 
     public static func refusals(for facts: WorktreeCleanupFacts) -> [String] {
         var reasons: [String] = []
-        if !facts.parleyCreated { reasons.append("this worktree was not created by Parley; open it, but never remove it here") }
-        else if !facts.creationTokenVerified { reasons.append("the tree at this path no longer carries Parley's creation marker, so it may have been recreated by someone else") }
+        // A tracked tree has no marker to compare: Git's registry entry at the
+        // recorded path is its identity, checked below. A Parley-created tree
+        // must still carry the marker it was created with.
+        if facts.parleyCreated, !facts.creationTokenVerified { reasons.append("the tree at this path no longer carries Parley's creation marker, so it may have been recreated by someone else") }
+        if facts.isPrimary { reasons.append("this is the repository's primary checkout, not a linked worktree; Parley never removes it") }
         if !facts.nestedWorktreePaths.isEmpty {
             reasons.append("it contains another registered worktree, which would be deleted with it: " + facts.nestedWorktreePaths.prefix(5).joined(separator: ", "))
         }
@@ -990,7 +997,8 @@ public struct ManagedWorktreeService: Sendable {
             livePaneFolders: livePaneFolders, otherRuntimePaneFolders: other, otherRuntimeStateUnreadable: otherUnreadable, modifiedPaths: modified,
             untrackedPaths: untracked, ignoredPaths: ignored, ignoredListTruncated: truncated, upstreamAheadCount: upstream.ahead ?? 0,
             hasUpstream: upstream.hasUpstream ?? false, mergedIntoPrimary: merged,
-            statusUncertain: uncertain || upstream.hasUpstream == nil || (upstream.hasUpstream == true && upstream.ahead == nil), path: record.path)
+            statusUncertain: uncertain || upstream.hasUpstream == nil || (upstream.hasUpstream == true && upstream.ahead == nil), path: record.path,
+            isPrimary: registered?.isPrimary ?? false)
     }
 
     // MARK: Helpers

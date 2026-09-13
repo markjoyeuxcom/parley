@@ -324,6 +324,11 @@ question, or the refusal is a bare error.
   reads IN USE; after Stop with no pane inside it reads IDLE (commits ahead)
   or INTEGRATED, as the facts say. A count Git could not read shows as
   unknown, never as 0.
+- Tracked tree: make a worktree with Git yourself, **Track Existing…** it in
+  Browse, then **Remove…**. The preview says Parley did not create it and is
+  using Git's registry entry at the recorded path; a dirty or unmerged
+  tracked tree is refused like any other; a clean, integrated one is removed
+  with its branch kept. INTEGRATED rows show **Integrate…** disabled.
 - Integrate…: commit in the tree, press **Integrate…**. The Requested
   command runs sheet opens on a run headed "Proposed by you" with the exact
   `git merge --no-ff --no-edit --end-of-options <branch>` argv and the primary

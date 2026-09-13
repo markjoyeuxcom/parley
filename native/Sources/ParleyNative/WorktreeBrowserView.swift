@@ -196,13 +196,9 @@ struct WorktreeBrowserView: View {
                                     .disabled(!row.canIntegrate || model.managedWorktreeMutation != nil)
                                     .help("Propose git merge --no-ff of this branch into the primary checkout as a reviewed command run: you approve the exact command in the same preview an agent's request gets, it runs in a new Shell pane, and Parley records the captured result. Parley runs no merge itself.")
                                 Button("Finish…") { lifecycleID = record.id; tab = 1 }.controlSize(.small)
-                                if record.parleyCreated {
-                                    Button("Remove…") { model.removeManagedWorktree(record) }.controlSize(.small)
-                                        .disabled(model.managedWorktreeMutation != nil)
-                                        .help("Refuses nested worktrees, live panes, modified or untracked files, commits ahead of the upstream's local tracking state (or, without an upstream, not contained in the primary), locks and anything Git cannot answer; never uses --force and never deletes the branch.")
-                                } else {
-                                    Text("person-owned").font(.system(size: 9)).foregroundStyle(.secondary)
-                                }
+                                Button("Remove…") { model.removeManagedWorktree(record) }.controlSize(.small)
+                                    .disabled(model.managedWorktreeMutation != nil)
+                                    .help("Refuses nested worktrees, live panes, modified or untracked files, commits ahead of the upstream's local tracking state (or, without an upstream, not contained in the primary), locks and anything Git cannot answer; never uses --force and never deletes the branch. A tree Parley did not create is identified by Git's registry entry at the recorded path.")
                             }
                         }
                     }

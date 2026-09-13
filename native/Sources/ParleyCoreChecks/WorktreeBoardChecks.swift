@@ -51,8 +51,13 @@ func worktreeBoardDerivationChecks() throws {
     try boardExpect(derive(boardFacts(), [boardPane("a", started: true), boardPane("b", started: false)], nil).runningPaneCount == 1
         && derive(boardFacts(), [boardPane("a", started: true), boardPane("b", started: false)], nil).stoppedPaneCount == 1,
         "pane counts were wrong")
-    // Integrate needs a tree Git still lists, nothing more.
-    try boardExpect(derive(boardFacts(), [], nil).canIntegrate && derive(boardFacts(ahead: 0), [], nil).canIntegrate, "a listed tree could not be integrated")
+    // Integrate needs a tree Git still lists with something to merge; an
+    // integrated tree (contained, nothing ahead) has no merge to propose,
+    // while unreadable counts leave the offer to Git.
+    try boardExpect(derive(boardFacts(ahead: 2, contained: false), [], nil).canIntegrate, "a tree with commits ahead could not be integrated")
+    try boardExpect(derive(boardFacts(ahead: nil, behind: nil, contained: nil), [], nil).canIntegrate, "unreadable divergence hid Integrate")
+    try boardExpect(!derive(boardFacts(), [], nil).canIntegrate && !derive(boardFacts(changed: 3, ahead: 0, contained: true), [], nil).canIntegrate,
+        "Integrate was offered on a tree already contained in the primary with nothing ahead")
     try boardExpect(!derive(boardFacts(registered: false), [], nil).canIntegrate && !derive(nil, [], nil).canIntegrate
         && !derive(boardFacts(registered: nil), [], nil).canIntegrate, "Integrate was offered without a listed tree")
     // Labels say exactly what was read.

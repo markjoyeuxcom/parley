@@ -2024,6 +2024,9 @@ final class AppModel: ObservableObject {
                     "Branch \(record.branch) is kept; only the checkout is removed. Recorded base \(record.baseCommit.map { String($0.prefix(12)) } ?? "not recorded").",
                     "Checked just now: " + preview.preservationSummary + ".",
                 ]
+                if !record.parleyCreated {
+                    lines.append("Parley did not create this tree, so there is no creation marker to compare. Its identity for this removal is Git's registry entry at the recorded path, checked just now.")
+                }
                 if ignored.isEmpty {
                     lines.append("No ignored files were found; Git removes only tracked content.")
                 } else {

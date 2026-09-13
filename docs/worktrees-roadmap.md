@@ -39,6 +39,12 @@ read.
   Integrated once its HEAD is contained in the primary's HEAD, and the
   existing removal checks pass on their own.
 
+- **Tracked trees are removable** (decided 13 September 2026, after the
+  board listed five fully integrated trees an older Parley had created).
+  Identity is Git's registry entry at the recorded path, the preview says
+  so, every other refusal is unchanged and the branch is kept. Integrate…
+  is not offered on a tree that already reads Integrated.
+
 ## Later, only if the beta week's reports ask for it
 
 - **Delegate with a worktree.** `parley delegate <target> --worktree <branch>`

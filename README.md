@@ -314,7 +314,7 @@ branch from a previewed base commit under `<repository>/.worktrees/`; a Team
 Session approval offers the same choice, and every pane the session creates
 then shares that tree. Parley records the base commit the tree was created
 from and shows it on panes, in Team Sessions and beside a delegation's Git
-facts. Removing a Parley-created worktree is an explicit action. It refuses
+facts. Removing a recorded worktree is an explicit action, for tracked trees too. It refuses
 nested worktrees, live panes, modified or untracked files and locks; it also
 refuses a branch with commits ahead of its upstream according to local
 remote-tracking state (Parley never contacts the remote), or, when there is
@@ -342,7 +342,9 @@ are not estimates of space reclaimed.
 
 Recovery explains missing or externally changed trees and can update a moved
 record only when its original creation marker identifies the new path.
-**Track Existing** keeps unrecorded trees person-owned. A merge-conflict
+**Track Existing** keeps unrecorded trees person-owned; removing one goes
+through the same preview and refusals, identified by Git's registry entry at
+the recorded path. A merge-conflict
 preview compares exact commits using isolated Git defaults and temporary
 objects; it changes no checkout or branch and can differ from a real merge
 with project-specific behavior. Vendor-selected permission guidance explains
