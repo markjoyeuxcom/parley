@@ -160,7 +160,8 @@ public struct WorktreeBoardRow: Equatable, Sendable {
         case pane(name: String, presence: PanePresence)
         /// Created by the person from the browser, with no requester.
         case you
-        /// Selected or tracked rather than created; Parley never removes it.
+        /// Selected or tracked rather than created: no base and no creation
+        /// marker; removal identifies it by Git's registry entry at its path.
         case person
     }
 
@@ -198,9 +199,13 @@ public struct WorktreeBoardRow: Equatable, Sendable {
     public let stoppedPaneCount: Int
 
     /// Integrate proposes a merge of the tree's branch; that needs a tree
-    /// Git still lists. It is offered even at zero ahead, because Git says
-    /// "Already up to date" itself and the preview shows the exact command.
-    public var canIntegrate: Bool { facts?.registered == true }
+    /// Git still lists and something to merge. A tree already contained in
+    /// the primary with nothing ahead has no merge to propose; when the
+    /// counts could not be read the offer stands and Git gives the answer.
+    public var canIntegrate: Bool {
+        guard let facts, facts.registered == true else { return false }
+        return !(facts.containedInPrimary == true && facts.aheadOfPrimary == 0)
+    }
 
     public var ownerLabel: String {
         switch owner {

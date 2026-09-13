@@ -311,8 +311,8 @@ func managedWorktreeCleanupChecks() throws {
     try wtExpect(try preview().refusals.contains { $0.contains("locked") }, "a locked tree did not refuse")
     try fixture.git(["worktree", "unlock", record.path], in: fixture.repo)
     let attached = try fixture.service.attach(existingPath: fixture.repo.path, in: fixture.repo.path, baseRef: nil)
-    try wtExpect(try fixture.service.cleanupPreview(attached, livePaneFolders: [], otherRuntimeStateFiles: []).refusals.contains { $0.contains("not created by Parley") },
-        "a user-owned tree was cleanable")
+    try wtExpect(try fixture.service.cleanupPreview(attached, livePaneFolders: [], otherRuntimeStateFiles: []).refusals.contains { $0.contains("primary checkout") },
+        "the tracked primary checkout was cleanable")
     try "late".write(to: tree.appendingPathComponent("late.txt"), atomically: true, encoding: .utf8)
     try wtExpect(removal(acknowledged: [".env", "build/"]).contains("untracked"), "removal did not revalidate before mutating")
     try FileManager.default.removeItem(at: tree.appendingPathComponent("late.txt"))
@@ -412,7 +412,17 @@ func worktreeCleanupPolicyChecks() throws {
     f = facts; f.registered = false; f.registryReadable = false; f.pathExists = false
     try wtExpect(WorktreeCleanupPolicy.decision(for: f) != .clearRecordOnly && WorktreeCleanupPolicy.refusals(for: f).contains { $0.contains("could not be read") },
         "an unreadable registry with a missing folder became record-only cleanup")
-    for mutate in [{ (x: inout WorktreeCleanupFacts) in x.parleyCreated = false }, { $0.creationTokenVerified = false }, { $0.registered = false }, { $0.locked = true }, { $0.prunable = true },
+    // A tracked tree (not Parley-created, no marker) is removable on the same
+    // facts; only a Parley-created tree that lost its marker is refused.
+    f = facts; f.parleyCreated = false; f.creationTokenVerified = false
+    try wtExpect(WorktreeCleanupPolicy.refusals(for: f).isEmpty, "a clean tracked tree was refused for not being Parley-created")
+    f = facts; f.parleyCreated = false; f.creationTokenVerified = false; f.registered = false
+    try wtExpect(WorktreeCleanupPolicy.refusals(for: f).contains { $0.contains("identity is uncertain") }, "a tracked tree Git does not register was allowed")
+    f = facts; f.parleyCreated = false; f.creationTokenVerified = false; f.untrackedPaths = ["notes.txt"]
+    try wtExpect(!WorktreeCleanupPolicy.refusals(for: f).isEmpty, "a dirty tracked tree was allowed")
+    f = facts; f.parleyCreated = false; f.creationTokenVerified = false; f.isPrimary = true
+    try wtExpect(WorktreeCleanupPolicy.refusals(for: f).contains { $0.contains("primary checkout") }, "a tracked primary checkout was allowed")
+    for mutate in [{ (x: inout WorktreeCleanupFacts) in x.creationTokenVerified = false }, { $0.registered = false }, { $0.locked = true }, { $0.prunable = true },
                    { $0.otherRuntimeStateUnreadable = true }, { $0.otherRuntimePaneFolders = ["/r/.worktrees/x"] }, { $0.modifiedPaths = ["a"] }, { $0.untrackedPaths = ["b"] }] {
         var g = facts; mutate(&g)
         try wtExpect(!WorktreeCleanupPolicy.refusals(for: g).isEmpty, "a refusal condition was ignored")
@@ -734,6 +744,7 @@ let managedWorktreeChecks: [(String, () throws -> Void)] = [
     ("managed worktree creation validates names, refs, paths and records the base", managedWorktreeCreationChecks),
     ("managed worktree creation reports hook failures without retry", managedWorktreeHookOutcomeChecks),
     ("managed worktree cleanup refuses live, dirty, unpushed, locked, foreign and unreviewed ignored trees", managedWorktreeCleanupChecks),
+    ("managed worktree removal of a tracked tree uses Git's registry as identity and the same refusals", managedWorktreeTrackedRemovalChecks),
     ("worktree cleanup policy decision table", worktreeCleanupPolicyChecks),
     ("managed worktree evidence is captured with delegation git facts", managedWorktreeEvidenceChecks),
 ]
@@ -902,4 +913,46 @@ func managedWorktreeDivergenceFactsChecks() throws {
     // Removal after integration passes the existing policy on its own: HEAD is contained in the primary.
     let preview = try f.service.cleanupPreview(record, livePaneFolders: [], otherRuntimeStateFiles: [])
     try wtExpect(preview.decision == .removeTree, "an integrated, clean tree was still refused removal: \(preview.decision)")
+}
+
+/// A tree the person made with Git and then tracked has no creation marker.
+/// Removal identifies it by Git's registry entry at the recorded path and
+/// applies every other refusal unchanged: a clean, merged tracked tree is
+/// removed with its branch kept, a dirty one is refused, and a Parley-created
+/// tree whose marker is gone stays refused.
+func managedWorktreeTrackedRemovalChecks() throws {
+    let f = try WorktreeFixture()
+    defer { f.cleanup() }
+    let treePath = f.root.appendingPathComponent("tracked-one").path
+    try f.git(["worktree", "add", "-q", "-b", "tracked/one", treePath, "main"], in: f.repo)
+    let tracked = try f.service.attach(existingPath: treePath, in: f.repo.path, baseRef: nil)
+    try wtExpect(!tracked.parleyCreated && tracked.creationToken == nil, "attach claimed creation")
+    let preview = try f.service.cleanupPreview(tracked, livePaneFolders: [], otherRuntimeStateFiles: [])
+    try wtExpect(preview.decision == .removeTree, "a clean tracked tree at the base was refused: \(preview.refusals)")
+    try wtExpect(!preview.facts.creationTokenVerified && preview.facts.registered, "tracked facts misreported identity")
+    // The same refusals still apply to a tracked tree.
+    let notes = URL(fileURLWithPath: treePath).appendingPathComponent("notes.txt")
+    try "uncommitted\n".write(to: notes, atomically: true, encoding: .utf8)
+    let dirty = try f.service.cleanupPreview(tracked, livePaneFolders: [], otherRuntimeStateFiles: [])
+    try wtExpect(dirty.refusals.contains { $0.contains("untracked files") }, "a dirty tracked tree was not refused: \(dirty.refusals)")
+    _ = try wtRejects("a dirty tracked tree was removed") {
+        _ = try f.service.remove(tracked, acknowledgedIgnoredPaths: dirty.ignoredPaths, livePaneFolders: [], otherRuntimeStateFiles: [])
+    }
+    try FileManager.default.removeItem(at: notes)
+    let live = try f.service.cleanupPreview(tracked, livePaneFolders: [treePath + "/src"], otherRuntimeStateFiles: [])
+    try wtExpect(live.refusals.contains { $0.contains("live pane") }, "a pane inside a tracked tree was not refused: \(live.refusals)")
+    // Clean again: removed through Git, record cleared, branch kept.
+    let outcome = try f.service.remove(tracked, acknowledgedIgnoredPaths: preview.ignoredPaths, livePaneFolders: [], otherRuntimeStateFiles: [])
+    try wtExpect(outcome.state == .removed && outcome.recordRemoved, "tracked removal did not complete: \(outcome.detail)")
+    try wtExpect(!FileManager.default.fileExists(atPath: treePath), "the tracked tree's folder remains")
+    try wtExpect(try f.store.record(path: treePath) == nil, "the tracked record was not cleared")
+    try wtExpect(try f.git(["branch", "--list", "tracked/one"], in: f.repo).contains("tracked/one"), "the tracked tree's branch was deleted")
+    let identity = try f.service.identity(of: f.repo.path)
+    try wtExpect(!(try f.service.registeredWorktrees(of: identity)).contains { $0.path == GitWorktreeResolver.canonicalPath(treePath) }, "Git still registers the removed tracked tree")
+    // A Parley-created tree that lost its marker is still refused: someone else may own what is at that path now.
+    let created = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "feat/marked", baseRef: "main"))
+    let marker = URL(fileURLWithPath: f.repo.appendingPathComponent(".git/worktrees").path).appendingPathComponent(URL(fileURLWithPath: created.path).lastPathComponent).appendingPathComponent(ManagedWorktreeService.creationMarkerName)
+    try FileManager.default.removeItem(at: marker)
+    let unmarked = try f.service.cleanupPreview(created, livePaneFolders: [], otherRuntimeStateFiles: [])
+    try wtExpect(unmarked.refusals.contains { $0.contains("creation marker") }, "a Parley-created tree without its marker was not refused: \(unmarked.refusals)")
 }

@@ -281,7 +281,7 @@ private struct TeamSessionApproval: View {
                         Text("\(tree.shortIdentity) · \(tree.path)").tag(tree.path)
                     }
                 }
-                Text("Selecting an existing tree binds the team to exactly that folder. Parley records no ownership and no base for it, and never removes it.")
+                Text("Selecting an existing tree binds the team to exactly that folder. Parley records no base for it; removing it later goes through the same preview and refusals as any other tree, and its branch is kept.")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
             }
         case .create:

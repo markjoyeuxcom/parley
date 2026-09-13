@@ -197,11 +197,13 @@ struct WorktreeLifecycleView: View {
                     Text("• \(reason)").foregroundStyle(.secondary)
                 }
                 Text("Removal rechecks current facts and separately confirms ignored files. The Git branch is kept.")
-                if record.parleyCreated {
-                    Button(reading.cleanup.decision == .clearRecordOnly ? "Clear absent worktree record…" : "Preview removal…") {
-                        model.removeManagedWorktree(record)
-                    }.disabled(busy || loading || model.managedWorktreeMutation != nil || reading.usage.hasActiveTeam)
-                } else { Text("Person-owned tree: remove it with Git when you choose.") }
+                if !record.parleyCreated {
+                    Text("Parley did not create this tree. Its identity for removal is Git's registry entry at the recorded path; the same refusals apply and the branch is kept.")
+                        .foregroundStyle(.secondary)
+                }
+                Button(reading.cleanup.decision == .clearRecordOnly ? "Clear absent worktree record…" : "Preview removal…") {
+                    model.removeManagedWorktree(record)
+                }.disabled(busy || loading || model.managedWorktreeMutation != nil || reading.usage.hasActiveTeam)
             }.font(.caption).frame(maxWidth: .infinity, alignment: .leading)
         }
     }

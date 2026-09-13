@@ -702,9 +702,14 @@ Generic `whoami`, `panes` and events stay path-free. Pane rows look the pane
 up through the background scan's exact worktree root and cached records; no
 filesystem work happens at render time.
 
-Cleanup is person-triggered from the worktree browser, for Parley-created
-trees only. `cleanupPreview` and `remove` each read every fact fresh:
-registered and token-verified identity, lock and prunable state, other
+Cleanup is person-triggered from the worktree browser, for any recorded
+tree. A Parley-created tree must still carry its creation marker; a tracked
+tree has no marker, so Git's registry entry at the recorded path is its
+identity and the preview says so (Mark's decision on 13 September 2026,
+after the board showed five fully integrated trees Parley refused to touch
+only because an older Parley had created them). `cleanupPreview` and
+`remove` each read every fact fresh: registered identity (marker-verified
+for Parley-created trees), lock and prunable state, other
 registered worktrees or Parley-known trees nested inside the tree, this
 runtime's pane folders (started or stopped, re-read again right before the
 mutation) and the other Production/Development runtime's `workbench-state.json`
@@ -716,7 +721,9 @@ a nested registered or known worktree, any live or placeholder pane inside
 the tree, modified or untracked files, commits ahead of the upstream's local
 remote-tracking state (a pushed but unmerged branch is allowed; the remote
 is never contacted), no upstream and not contained in the primary's HEAD,
-locked, prunable, unregistered, unverified identity, a non-directory item
+locked, prunable, unregistered, the repository's primary checkout (a
+tracked record can point there), a Parley-created tree whose marker no
+longer matches, a non-directory item
 at the recorded path, a path that cannot be inspected (only a confirmed
 "no such file" is an absence), an unreadable state file, an unreadable worktree
 registry, an unreadable record store, a target record missing from or
@@ -769,7 +776,8 @@ running pane inside or an active team), Integrated (HEAD contained in the
 primary's HEAD and the tree clean) or Idle. The facts pass also reads
 `rev-list --left-right --count` and `merge-base --is-ancestor` against the
 primary checkout's HEAD; a failed read stays nil and is shown as unknown,
-never as zero. Nothing about the board is stored. **Integrate…** proposes
+never as zero. Nothing about the board is stored. **Integrate…** is not
+offered on a tree that already reads Integrated. It proposes
 `git merge --no-ff --no-edit --end-of-options <branch>` in the primary
 checkout as a person-proposed reviewed command run (see Reviewed command
 runs); when that run ends the facts are re-read for every record so the row
@@ -798,8 +806,9 @@ the same repository carries its original creation token, and a store-locked
 compare-and-replace still matches the reviewed record with no destination
 collision. Only the record path changes; historical evidence and live pane
 folders remain unchanged. Missing/foreign/unknown states get guidance and
-existing guarded actions. Track Existing preserves person ownership for
-unrecorded creations and never grants cleanup authority.
+existing guarded actions. Track Existing records an existing tree as
+person-owned with no base; removal is offered through the same preview and
+refusals, identified by Git's registry entry at the recorded path.
 
 Merge previews resolve the chosen integration ref and the tree's HEAD to
 immutable commits, then use fixed-argv Git merge-tree in a private bare
