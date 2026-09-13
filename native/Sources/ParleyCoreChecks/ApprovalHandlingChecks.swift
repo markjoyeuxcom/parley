@@ -34,9 +34,10 @@ func approvalHandlingLaunchPlanChecks() throws {
         let profile = try PermissionProfileResolver.resolve(definition: definition, paneFolder: folder, approvals: approvals)
         return PermissionProfileAdapter.launchPlan(for: kind, profile: profile)
     }
+    // Any adjacent pair: a Codex launch carries several `-c` values, so the
+    // first `-c` is not the one that matters.
     func hasPair(_ arguments: [String], _ flag: String, _ value: String) -> Bool {
-        guard let index = arguments.firstIndex(of: flag), index + 1 < arguments.count else { return false }
-        return arguments[index + 1] == value
+        zip(arguments, arguments.dropFirst()).contains { $0 == flag && $1 == value }
     }
 
     // Claude: auto mode replaces the edit mode; plan mode stays plan.
@@ -49,6 +50,18 @@ func approvalHandlingLaunchPlanChecks() throws {
     try approvalExpect(claudePlan.detail.contains("not enabled"), "Claude's plan-mode detail does not say auto mode is off")
     try approvalExpect(hasPair(try plan(.claude, flexible, .person).arguments, "--permission-mode", "acceptEdits"),
         "the person answering changed Claude's edit mode")
+
+    // Flexible carries no shell restriction for any vendor: Claude gets only
+    // the allow rules for Parley's command, never an ask or deny for Bash.
+    let flexibleProfile = try PermissionProfileResolver.resolve(definition: flexible, paneFolder: folder)
+    try approvalExpect(PermissionProfileAdapter.shellCommandRule(flexibleProfile) == .allow, "Flexible restricts shell execution again")
+    let flexibleClaude = try JSONSerialization.jsonObject(with: Data(VendorHookAdapter.claudeSettingsJSON(
+        shimExecutable: "/tmp/parley", shellCommandRule: PermissionProfileAdapter.shellCommandRule(flexibleProfile)).utf8)) as! [String: Any]
+    let flexiblePermissions = flexibleClaude["permissions"] as? [String: [String]]
+    try approvalExpect(flexiblePermissions?["ask"] == nil && flexiblePermissions?["deny"] == nil,
+        "Flexible gave Claude a Bash restriction: \(flexiblePermissions ?? [:])")
+    try approvalExpect(flexiblePermissions?["allow"]?.contains("Bash(parley:*)") == true,
+        "Flexible did not pre-allow Parley's command for Claude: \(flexiblePermissions ?? [:])")
 
     // Codex: auto review is added; sandbox and on-request stay.
     let codex = try plan(.codex, flexible, .vendorReviewer)
@@ -70,16 +83,37 @@ func approvalHandlingLaunchPlanChecks() throws {
     try approvalExpect(agyReviewer.arguments == agyPerson.arguments, "Agy's launch changed although it has no reviewer: \(agyReviewer.arguments)")
     try approvalExpect(agyReviewer.detail.contains("no automatic reviewer"), "Agy's plan does not say it has no reviewer")
 
+    // The host Codex launch takes HostAgentPermissions, not the plan above, so
+    // the choice has to be carried there too or a host Codex pane never sees it.
+    func hostCodex(_ definition: PermissionProfileDefinition, _ approvals: PermissionApprovalHandling) throws -> [String] {
+        let profile = try PermissionProfileResolver.resolve(definition: definition, paneFolder: folder, approvals: approvals)
+        return HostAgentPermissions(
+            applicationDirectory: URL(fileURLWithPath: "/tmp/parley-app"), protocolDirectory: URL(fileURLWithPath: "/tmp/parley-protocol"),
+            shimDirectory: URL(fileURLWithPath: "/tmp/parley-shim"), transportDirectory: URL(fileURLWithPath: "/tmp/parley-transport"),
+            endpointDirectory: URL(fileURLWithPath: "/tmp/parley-endpoint"), profile: profile
+        ).launchArguments
+    }
+    let hostReviewer = try hostCodex(flexible, .vendorReviewer)
+    try approvalExpect(hasPair(hostReviewer, "-c", "approvals_reviewer=auto_review"), "the host Codex launch did not carry auto review: \(hostReviewer)")
+    try approvalExpect(hasPair(hostReviewer, "--ask-for-approval", "on-request"), "the host Codex launch lost its approval policy: \(hostReviewer)")
+    try approvalExpect(!(try hostCodex(flexible, .person)).contains("approvals_reviewer=auto_review"),
+        "the host Codex launch enabled auto review for the person answering")
+
     // Invariant 3: no skip-all flag reaches any host launch, whichever choice.
     let forbidden = ["--yolo", "--full-auto", "--allow-all", "--allow-all-tools", "--allow-all-paths", "--allow-all-urls"]
+    func assertNoSkipAll(_ arguments: [String], _ label: String) throws {
+        try approvalExpect(!arguments.contains { argument in
+            argument.hasPrefix("--dangerously") || forbidden.contains(argument)
+                || argument.contains("danger-full-access") || argument.contains("bypassPermissions")
+        }, "\(label) carried a skip-all flag: \(arguments)")
+    }
     for kind in PaneKind.allCases where kind.isAgent {
         for definition in [flexible, reviewOnly] {
             for approvals in PermissionApprovalHandling.allCases {
-                let arguments = try plan(kind, definition, approvals).arguments
-                try approvalExpect(!arguments.contains { argument in
-                    argument.hasPrefix("--dangerously") || forbidden.contains(argument)
-                        || argument.contains("danger-full-access") || argument.contains("bypassPermissions")
-                }, "\(kind.label) with \(approvals.rawValue) carried a skip-all flag: \(arguments)")
+                try assertNoSkipAll(try plan(kind, definition, approvals).arguments, "\(kind.label) with \(approvals.rawValue)")
+                if kind == .codex {
+                    try assertNoSkipAll(try hostCodex(definition, approvals), "host Codex with \(approvals.rawValue)")
+                }
             }
         }
     }

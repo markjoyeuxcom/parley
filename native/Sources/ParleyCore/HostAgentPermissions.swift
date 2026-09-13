@@ -8,6 +8,9 @@ public struct HostAgentPermissions: Sendable {
     public let workspaceRoots: [String]
     public let writable: Bool
     public let profileName: String
+    /// Who answers Codex's escalation prompts. The vendor reviewer is Codex's
+    /// own auto review inside the same sandbox; it is not a bypass.
+    public let approvals: PermissionApprovalHandling
 
     public init(applicationDirectory: URL, protocolDirectory: URL, shimDirectory: URL,
                 transportDirectory: URL, endpointDirectory: URL, profile: EffectivePermissionProfile,
@@ -27,6 +30,7 @@ public struct HostAgentPermissions: Sendable {
         workspaceRoots = profile.approvedRoots.sorted()
         writable = profile.definition.rule(for: .projectWrite) == .allow
         self.profileName = profileName
+        approvals = profile.approvals
     }
 
     /// One TOML table override: quoted path fragments in dotted CLI keys are
@@ -38,8 +42,11 @@ public struct HostAgentPermissions: Sendable {
         return ["-c", "permissions.\(profileName)=\(table)", "-c", "default_permissions=\(literal(profileName))"]
     }
 
+    /// The host Codex launch takes these, not the generic launch plan, so the
+    /// approvals choice has to be carried here or it never reaches Codex.
     public var launchArguments: [String] {
         configurationArguments + ["--ask-for-approval", "on-request"]
+            + (approvals == .vendorReviewer ? ["-c", "approvals_reviewer=auto_review"] : [])
     }
 
     private func literal(_ value: String) -> String {

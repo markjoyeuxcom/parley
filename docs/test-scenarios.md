@@ -274,9 +274,16 @@ question, or the refusal is a bare error.
 - Stop team panes; confirm a pane you restarted yourself is skipped and reported.
 - An Agy host member keeps its own approval prompts; a run that needs them is
   not unattended, by design. Container bypass exists for Claude and Codex only.
-- A Claude host member on Flexible runs `parley whoami` with no prompt, and
-  still prompts for `ls`. **Fail:** a `parley` command prompts, or an unrelated
-  command runs without one.
+- A Claude host member on **Flexible** or **Broad workspace** runs
+  `parley whoami` with no prompt and still prompts for `ls`, which is Claude's
+  own acceptEdits behaviour, not a Parley rule. Neither profile carries a Bash
+  restriction. With Approvals set to the vendor's reviewer, `ls` runs too.
+  On **Default** or **Workspace folders** every shell command asks, `parley`
+  included: those profiles ask before local processes, Claude carries that as
+  an ask rule for all of Bash, and Claude's ask rules beat allow rules even in
+  auto mode.
+  **Fail:** a `parley` command prompts on Flexible, or a Default pane runs a
+  shell command without asking.
 - After Stop: **Close stopped team panes…** in the sheet names each stopped
   placeholder, closes only those, and leaves the requester, unrelated panes
   and any pane you restarted alone.

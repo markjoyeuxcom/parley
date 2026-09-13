@@ -497,7 +497,7 @@ func trackedRequestRefusedOnMainThreadChecks() throws {
     // No core is listening on this socket: a request that reaches it fails to
     // connect, which is how the two halves below are told apart.
     let client = RelayCoreClient(infoFile: root.appendingPathComponent("relay.json"), controlToken: "main-thread-control")
-    func tracked() throws -> RelayTextResponse {
+    @Sendable func tracked() throws -> RelayTextResponse {
         try client.askFromUI(sourcePaneID: "pane-a", targetPaneID: "pane-b", text: "hello", idempotencyKey: "main-thread-check-0001")
     }
 
@@ -508,15 +508,21 @@ func trackedRequestRefusedOnMainThreadChecks() throws {
             "a tracked request on the main thread was not refused: \(onMain.map { String(describing: $0) } ?? "it returned")"])
     }
 
-    var offMain: Error?
+    final class ErrorBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: Error?
+        var value: Error? { lock.withLock { stored } }
+        func set(_ error: Error) { lock.withLock { stored = error } }
+    }
+    let offMainBox = ErrorBox()
     let group = DispatchGroup()
     group.enter()
     DispatchQueue.global(qos: .userInitiated).async {
         defer { group.leave() }
-        do { _ = try tracked() } catch { offMain = error }
+        do { _ = try tracked() } catch { offMainBox.set(error) }
     }
     try pathExpect(group.wait(timeout: .now() + 10) == .success, "the off-main request did not return")
-    guard let offMain else {
+    guard let offMain = offMainBox.value else {
         throw NSError(domain: "CallbackHotPath", code: 1, userInfo: [NSLocalizedDescriptionKey: "the off-main request succeeded with no core listening"])
     }
     if case RelayCoreError.mainThreadBlockingRequest = offMain {

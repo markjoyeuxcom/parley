@@ -142,15 +142,21 @@ public struct PermissionProfileDefinition: Identifiable, Codable, Equatable, Sen
         PermissionProfileDefinition(
             id: "flexible",
             name: "Flexible",
-            summary: "Project-local reads, writes, tests and builds; broader effects remain explicit.",
+            summary: "Project-local reads, writes, tests, builds and local processes; network and broader effects remain explicit.",
             isBuiltIn: true,
             rootMode: .paneFolder,
             defaultLifetime: .remembered,
+            // Both execution rules allow, so no vendor receives a shell
+            // restriction from Flexible: Claude gets no ask rule for Bash
+            // (only the allow rules for Parley's command) and its prompts are
+            // its own. Mark chose this on 13 September 2026 after Flexible had
+            // been asking before every Bash command, parley included.
             rules: completeRules([
                 .projectRead: .allow,
                 .repositoryInspection: .allow,
                 .projectWrite: .allow,
                 .projectToolExecution: .allow,
+                .localProcessExecution: .allow,
             ])
         ),
         PermissionProfileDefinition(

@@ -198,10 +198,15 @@ private func reviewController(_ root: URL) throws -> WorkbenchController {
     }),
     ("a profile's execution rule reaches Claude and is disclosed where it cannot", {
         let folder = FileManager.default.currentDirectoryPath
-        let flexible = PermissionProfileDefinition.builtIns.first { $0.id == "flexible" }!
-        let profile = try PermissionProfileResolver.resolve(definition: flexible, paneFolder: folder)
+        // Default still asks before execution; Flexible stopped doing so on
+        // 13 September 2026 and now carries no shell restriction at all.
+        let restricting = PermissionProfileDefinition.builtIns.first { $0.id == "default" }!
+        let profile = try PermissionProfileResolver.resolve(definition: restricting, paneFolder: folder)
         try reviewExpect(profile.definition.rule(for: .localProcessExecution) != .allow,
             "this check needs a profile that restricts execution")
+        let flexible = PermissionProfileDefinition.builtIns.first { $0.id == "flexible" }!
+        try reviewExpect(PermissionProfileAdapter.shellCommandRule(try PermissionProfileResolver.resolve(definition: flexible, paneFolder: folder)) == .allow,
+            "Flexible carries a shell restriction again")
         try reviewExpect(PermissionProfileAdapter.shellCommandRule(profile) == .requireApproval,
             "a restricted execution capability must produce a requireApproval shell rule")
 
