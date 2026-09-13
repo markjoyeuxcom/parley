@@ -381,8 +381,10 @@ private struct TeamSessionDetail: View {
     }
     private var decisions: [String] {
         var items: [String] = []
-        for run in model.commandRuns where run.state == .pending && participantIDs.contains(run.source.id) {
-            items.append("Command run requested by \(run.source.displayName): \(run.command.display)")
+        // A run the person proposed has no requesting pane and is never a team decision.
+        for run in model.commandRuns where run.state == .pending {
+            guard let source = run.source, participantIDs.contains(source.id) else { continue }
+            items.append("Command run requested by \(source.displayName): \(run.command.display)")
         }
         let scope = TeamSessionWorkScope(session: session)
         for handoff in model.handoffs where handoff.attention != nil && scope.includes(handoff) {

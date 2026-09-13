@@ -7,13 +7,30 @@ import Foundation
 /// read back by callers that have no business knowing how a worker ticket is
 /// signed. The coordinator keeps the CryptoKit digest work.
 
+/// Who proposed a run. Trusted code sets this: the transport route always
+/// records an agent pane, and only the native app can record the person.
+public enum ReviewedCommandRunOrigin: String, Codable, Equatable, Sendable {
+    /// Requested by an authenticated agent pane through `parley request-run`.
+    case agentPane
+    /// Proposed by the person in the native app, for example Integrate… on a
+    /// worktree. No pane requested it, so no pane can recover its result, and
+    /// it always waits for the person's approval in the editable preview.
+    case person
+}
+
 public struct ReviewedCommandRun: Identifiable, Codable, Equatable, Sendable {
     public let id: String
     public let idempotencyKey: String
     public let requestedCommand: ReviewedCommand
     public var revision: String
-    public let source: WorkbenchPane
+    /// The requesting agent pane; nil for a run the person proposed.
+    public let source: WorkbenchPane?
     public let sourceFolder: String
+    public let origin: ReviewedCommandRunOrigin
+    /// Where the run's Shell pane opens: the requesting pane's workspace, or
+    /// the workspace the person was in when they proposed the run.
+    public let workspaceID: String
+    public let workspaceName: String?
     public var command: ReviewedCommand
     public var state: ReviewedCommandRunState
     public let createdAt: Date
@@ -33,15 +50,19 @@ public struct ReviewedCommandRun: Identifiable, Codable, Equatable, Sendable {
     public var workerStillRunning = false
     public var resultSaved = false
 
-    public init(id: String, idempotencyKey: String, requestedCommand: ReviewedCommand, revision: String, source: WorkbenchPane,
+    public init(id: String, idempotencyKey: String, requestedCommand: ReviewedCommand, revision: String, source: WorkbenchPane?,
                 sourceFolder: String, command: ReviewedCommand, state: ReviewedCommandRunState, createdAt: Date, updatedAt: Date,
-                shellPaneID: String, autoApprovalGrantID: String?, approvedAutomatically: Bool, result: ReviewedCommandRunResult?, detail: String?) {
+                shellPaneID: String, autoApprovalGrantID: String?, approvedAutomatically: Bool, result: ReviewedCommandRunResult?, detail: String?,
+                origin: ReviewedCommandRunOrigin = .agentPane, workspaceID: String? = nil, workspaceName: String? = nil) {
         self.id = id
         self.idempotencyKey = idempotencyKey
         self.requestedCommand = requestedCommand
         self.revision = revision
         self.source = source
         self.sourceFolder = sourceFolder
+        self.origin = origin
+        self.workspaceID = workspaceID ?? source?.workspaceID ?? ""
+        self.workspaceName = workspaceName ?? source?.workspaceName
         self.command = command
         self.state = state
         self.createdAt = createdAt
@@ -56,8 +77,11 @@ public struct ReviewedCommandRun: Identifiable, Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, idempotencyKey, requestedCommand, revision, source, sourceFolder, command, state, createdAt, updatedAt
         case shellPaneID, autoApprovalGrantID, approvedAutomatically, result, detail, cancellationRequested, cancellationRequestedAt
-        case launchedAt, workerStillRunning, resultSaved
+        case launchedAt, workerStillRunning, resultSaved, origin, workspaceID, workspaceName
     }
+
+    /// Who asked, as Status Center and the review sheet name it.
+    public var requesterName: String { source?.displayName ?? "You" }
 
     /// Records written before `approvedAutomatically` existed carry no such
     /// key and must still load (the coordination core opens the handoff
@@ -68,8 +92,16 @@ public struct ReviewedCommandRun: Identifiable, Codable, Equatable, Sendable {
         idempotencyKey = try container.decode(String.self, forKey: .idempotencyKey)
         requestedCommand = try container.decode(ReviewedCommand.self, forKey: .requestedCommand)
         revision = try container.decode(String.self, forKey: .revision)
-        source = try container.decode(WorkbenchPane.self, forKey: .source)
+        // Records written before person-proposed runs existed always carry a
+        // source pane and no origin; they decode as agent-pane runs.
+        source = try container.decodeIfPresent(WorkbenchPane.self, forKey: .source)
         sourceFolder = try container.decode(String.self, forKey: .sourceFolder)
+        origin = try container.decodeIfPresent(ReviewedCommandRunOrigin.self, forKey: .origin) ?? .agentPane
+        guard origin == .person || source != nil else {
+            throw DecodingError.dataCorruptedError(forKey: .source, in: container, debugDescription: "An agent-pane run must name its requesting pane.")
+        }
+        workspaceID = try container.decodeIfPresent(String.self, forKey: .workspaceID) ?? source?.workspaceID ?? ""
+        workspaceName = try container.decodeIfPresent(String.self, forKey: .workspaceName) ?? source?.workspaceName
         command = try container.decode(ReviewedCommand.self, forKey: .command)
         state = try container.decode(ReviewedCommandRunState.self, forKey: .state)
         createdAt = try container.decode(Date.self, forKey: .createdAt)

@@ -1685,6 +1685,53 @@ final class AppModel: ObservableObject {
         case create(preview: ManagedWorktreeService.CreatePreview)
     }
 
+    /// The board row for one managed tree: the record, the last background
+    /// Git read, the panes the scan mapped into the tree, the requesting pane
+    /// if it still exists and the bound team if any. Pure derivation; SwiftUI
+    /// calls this per row and nothing here touches the filesystem.
+    func worktreeBoardRow(_ record: ManagedWorktreeRecord) -> WorktreeBoardRow {
+        let inside = panes.filter { worktreeScan.paneWorktreePaths[$0.id] == record.path }
+        let requester = record.requestedByPaneID.flatMap { id in panes.first { $0.id == id } }
+        let session = record.teamSessionID.flatMap { id in teamSessions.first { $0.id == id } }
+        return WorktreeBoardRow.derive(record: record, facts: managedWorktreeFacts[record.id], panesInside: inside,
+            requester: requester, teamObjective: session?.objective, teamState: session?.state)
+    }
+
+    /// Integrate…: propose merging the tree's branch into the repository's
+    /// primary checkout as a reviewed command run the person approves in the
+    /// same editable preview an agent's request-run gets. Parley runs no
+    /// merge itself; the approved worker does, in a new Shell pane, and the
+    /// captured exit status and output are recorded. The browser sheet is
+    /// dismissed first because one sheet is presented at a time.
+    func proposeWorktreeIntegration(_ record: ManagedWorktreeRecord) {
+        perform {
+            guard let core = residentCore else { throw ReviewedCommandRunError.invalid("The native command-run service is unavailable.") }
+            let repository = discoveredWorktreeRepository.flatMap { $0.worktrees.contains(where: { $0.path == record.path }) ? $0 : nil }
+                ?? worktreeScan.repositories.first { $0.worktrees.contains(where: { $0.path == record.path }) }
+            guard let repository else {
+                throw ReviewedCommandRunError.invalid("Parley could not find the repository's primary checkout for this worktree. Open the worktree browser from a pane inside that repository, then try again.")
+            }
+            guard repository.primaryPath != record.path else {
+                throw ReviewedCommandRunError.invalid("This record is the primary checkout itself; there is nothing to merge into it.")
+            }
+            guard let workspace = activeWorkspace ?? workspaces.first else {
+                throw ReviewedCommandRunError.invalid("Open a workspace first; the run's Shell pane needs one.")
+            }
+            let live = managedWorktreeFacts[record.id]?.currentBranch
+            let branch = (live.map { $0.isEmpty || $0 == "HEAD" ? nil : $0 } ?? nil) ?? record.branch
+            let argv = ["/usr/bin/git", "merge", "--no-ff", "--no-edit", "--end-of-options", branch]
+            let run = try core.commandRuns.propose(argv: argv, folder: repository.primaryPath,
+                workspaceID: workspace.workspaceID, workspaceName: workspace.name)
+            commandRuns = core.commandRuns.runs()
+            worktreeBrowserPresented = false
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.selectCommandRun(run)
+                self.commandRunsPresented = true
+            }
+        }
+    }
+
     func openManagedWorktree(_ record: ManagedWorktreeRecord) {
         perform {
             var isDirectory: ObjCBool = false
@@ -2636,7 +2683,12 @@ final class AppModel: ObservableObject {
                 commandRunPaneCleanup.recordLaunch(runID: run.id, paneID: created.id, paneGeneration: created.launchGeneration,
                     exitsWhenClean: exitWhenClean, previousActivePaneID: previouslyActive)
                 focusCanvasPaneID = nil
-                recordNativeSplit(created: created, target: run.source, direction: .vertical)
+                // An agent run's Shell splits beside the requesting pane; a run the
+                // person proposed splits beside whatever is active in its workspace.
+                let splitTarget = run.source
+                    ?? panes.first(where: { $0.workspaceID == run.workspaceID && $0.isActive })
+                    ?? panes.first(where: { $0.workspaceID == run.workspaceID })
+                recordNativeSplit(created: created, target: splitTarget, direction: .vertical)
                 // Select and visibly mount the new retained surface before starting
                 // the fixed worker. No input is sent to an existing Shell.
                 panes = try controller.listPanes()
@@ -2648,7 +2700,17 @@ final class AppModel: ObservableObject {
         let runs = coordinator.runs()
         let grants = coordinator.grants()
         closeFinishedCommandRunPanes(runs, coordinator: coordinator, directory: core.commandRunDirectory)
-        if runs != commandRuns { commandRuns = runs }
+        if runs != commandRuns {
+            // A run the person proposed from the worktree board (Integrate…)
+            // changes what the board should say once it ends, and a tree with
+            // no pane inside is outside the periodic facts scope.
+            let finishedBefore = Set(commandRuns.filter { $0.origin == .person && $0.state.isTerminal }.map(\.id))
+            let finishedNow = runs.filter { $0.origin == .person && $0.state.isTerminal }.map(\.id)
+            commandRuns = runs
+            if finishedNow.contains(where: { !finishedBefore.contains($0) }) {
+                scheduleManagedWorktreeFactsRefresh(force: true, scope: .all)
+            }
+        }
         if grants != commandRunGrants { commandRunGrants = grants }
         let commandRunMessage = coordinator.lastError ?? (core.commandRunCleanupWarnings.isEmpty ? nil : core.commandRunCleanupWarnings.joined(separator: "\n"))
             ?? commandRunPaneCloseError

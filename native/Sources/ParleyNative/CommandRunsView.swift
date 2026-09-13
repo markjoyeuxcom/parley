@@ -56,8 +56,8 @@ struct CommandRunsView: View {
                 Button("Done") { model.dismissCommandRunReview() }.keyboardShortcut(.cancelAction)
             }
             Text(model.automaticCommandRunPaneCloseEnabled
-                ? "Each approved run opens a new visible Shell pane in the requesting workspace. A cleanly finished run's pane closes automatically (Settings > General); any other pane stays open as an ordinary Shell."
-                : "Each approved run opens a new visible Shell pane in the requesting workspace. The pane stays open as an ordinary Shell afterwards.")
+                ? "Each approved run opens a new visible Shell pane in the requesting workspace. A cleanly finished run's pane closes automatically (Settings > General); any other pane stays open as an ordinary Shell. A run you proposed yourself (Integrate… on a worktree) is listed here too and always waits for your approval."
+                : "Each approved run opens a new visible Shell pane in the requesting workspace. The pane stays open as an ordinary Shell afterwards. A run you proposed yourself (Integrate… on a worktree) is listed here too and always waits for your approval.")
                 .foregroundStyle(.secondary)
             if let error = model.commandRunError { Text(error).foregroundStyle(.red) }
             HSplitView {
@@ -86,7 +86,7 @@ struct CommandRunsView: View {
                                 model.selectCommandRun(run)
                             } label: {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text("\(run.source.displayName) · \(run.state.rawValue)\(run.approvedAutomatically ? " · automatic" : "")")
+                                    Text("\(run.requesterName) · \(run.state.rawValue)\(run.approvedAutomatically ? " · automatic" : "")")
                                         .font(.system(size: 12, weight: .medium))
                                     Text(run.command.display).lineLimit(2).font(.system(size: 11, design: .monospaced))
                                 }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
@@ -100,7 +100,7 @@ struct CommandRunsView: View {
                     if let selected {
                         CommandRunPreview(model: model, run: selected).id(selected.id + selected.revision)
                     } else {
-                        Text("An agent can request a run with parley request-run. Approval happens here.")
+                        Text("An agent can request a run with parley request-run, and Integrate… in the worktree browser proposes one from you. Approval happens here.")
                             .foregroundStyle(.secondary).padding()
                     }
                 }.frame(minWidth: 440, maxWidth: .infinity)
@@ -150,13 +150,17 @@ private struct CommandRunPreview: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("\(run.source.displayName) · \(run.source.kind.label)").font(.headline)
-            if run.source.containerConfiguration != nil {
+            Text(run.source.map { "\($0.displayName) · \($0.kind.label)" } ?? "Proposed by you").font(.headline)
+            if run.origin == .person {
+                Text("No agent asked for this run. It waits for your approval here regardless of the automatic-approval switch, and no pane can recover its result; the captured result stays in this list and in Status Center.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            if run.source?.containerConfiguration != nil {
                 Text("Requested from a container. This command runs on the host Mac as you, outside that container.")
                     .font(.callout).foregroundStyle(.orange)
             }
 
-            Text("Workspace: \(run.source.workspaceName ?? run.source.workspaceID)\nRequest: \(run.id)")
+            Text("Workspace: \(run.workspaceName ?? run.workspaceID)\nRequest: \(run.id)")
                 .font(.system(size: 11)).foregroundStyle(.secondary).textSelection(.enabled)
             Text(ReviewedCommandRunCoordinator.trustDisclosure).font(.system(size: 12))
             Text("Exact arguments (JSON array; first item is an absolute executable)")
@@ -170,7 +174,9 @@ private struct CommandRunPreview: View {
             Text("Noninteractive run: stdin is closed and stdout/stderr are captured through pipes. Each captured stream is limited to 30 KB; truncation is reported. \(run.state == .pending ? (model.automaticCommandRunPaneCloseEnabled ? "If the run finishes cleanly its process ends and Parley removes the pane (Settings > General); otherwise the Shell becomes interactive after the command exits." : "The Shell becomes interactive after the command exits.") : "Whether a clean result ends the pane was fixed when the run started (Settings > General at that moment); otherwise the Shell becomes interactive after the command exits.") Cancel stops the owned command process group; detached children may continue.")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
             if run.state == .pending {
-                Toggle("Auto-approve this command for this session", isOn: $autoApprove)
+                if run.origin == .agentPane {
+                    Toggle("Auto-approve this command for this session", isOn: $autoApprove)
+                }
                 if autoApprove {
                     Text("Trust applies to this exact argv, canonical folder and requesting pane generation, including code changed between runs. It ends on restart, move, folder or policy change, revocation or quit.")
                         .font(.system(size: 11)).foregroundStyle(.secondary)

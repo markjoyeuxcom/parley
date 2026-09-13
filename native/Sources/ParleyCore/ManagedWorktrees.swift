@@ -452,6 +452,33 @@ public struct ManagedWorktreeFacts: Equatable, Sendable {
     /// true: Git lists the tree; false: the folder is gone or Git lists the
     /// repository without it; nil: the question could not be answered.
     public let registered: Bool?
+    /// The primary checkout's HEAD at read time, so the board can say what
+    /// "ahead" and "behind" are measured against.
+    public let primaryHead: String?
+    /// Commits on this tree's HEAD that the primary checkout does not have,
+    /// and the reverse, from one `rev-list --left-right --count`. nil when
+    /// either side was unreadable.
+    public let aheadOfPrimary: Int?
+    public let behindPrimary: Int?
+    /// Whether this tree's HEAD is an ancestor of the primary checkout's HEAD:
+    /// true means every commit here is already integrated. nil is unknown.
+    public let containedInPrimary: Bool?
+
+    public init(recordID: String, currentBranch: String?, head: String?, changedPathCount: Int?, upstreamAheadCount: Int?,
+                hasUpstream: Bool?, registered: Bool?, primaryHead: String? = nil, aheadOfPrimary: Int? = nil,
+                behindPrimary: Int? = nil, containedInPrimary: Bool? = nil) {
+        self.recordID = recordID
+        self.currentBranch = currentBranch
+        self.head = head
+        self.changedPathCount = changedPathCount
+        self.upstreamAheadCount = upstreamAheadCount
+        self.hasUpstream = hasUpstream
+        self.registered = registered
+        self.primaryHead = primaryHead
+        self.aheadOfPrimary = aheadOfPrimary
+        self.behindPrimary = behindPrimary
+        self.containedInPrimary = containedInPrimary
+    }
 }
 
 // MARK: - Service
@@ -764,9 +791,48 @@ public struct ManagedWorktreeService: Sendable {
         let head = (try? run(in: record.path, ["rev-parse", "HEAD"], timeout: readTimeout))?.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
         let status = try? statusEntries(in: record.path)
         let upstream = upstreamState(in: record.path)
+        let divergence = divergenceFromPrimary(identity: identity, treePath: record.path, head: head)
         return ManagedWorktreeFacts(recordID: record.id, currentBranch: branch, head: head,
             changedPathCount: status.map { $0.modified.count + $0.untracked.count }, upstreamAheadCount: upstream.ahead,
-            hasUpstream: upstream.hasUpstream, registered: true)
+            hasUpstream: upstream.hasUpstream, registered: true, primaryHead: divergence.primaryHead,
+            aheadOfPrimary: divergence.ahead, behindPrimary: divergence.behind, containedInPrimary: divergence.contained)
+    }
+
+    /// Where this tree stands against the primary checkout (the registry's
+    /// first entry): one `rev-list --left-right --count` for the two counts
+    /// and one `merge-base --is-ancestor` for containment. Every value Git
+    /// did not answer stays nil; a failed read is never "0 ahead".
+    struct PrimaryDivergence: Equatable {
+        let primaryHead: String?
+        let ahead: Int?
+        let behind: Int?
+        let contained: Bool?
+        static let unknown = PrimaryDivergence(primaryHead: nil, ahead: nil, behind: nil, contained: nil)
+    }
+
+    private func divergenceFromPrimary(identity: GitRepositoryIdentity, treePath: String, head: String?) -> PrimaryDivergence {
+        guard let primary = primaryToplevel(identity), primary != treePath, let head, !head.isEmpty,
+              let primaryHead = (try? run(in: primary, ["rev-parse", "HEAD"], timeout: readTimeout))?
+                  .stdoutText.trimmingCharacters(in: .whitespacesAndNewlines),
+              !primaryHead.isEmpty else { return .unknown }
+        var ahead: Int?
+        var behind: Int?
+        if let counts = try? run(in: treePath, ["rev-list", "--left-right", "--count", "\(primaryHead)...\(head)"], timeout: readTimeout) {
+            let parts = counts.stdoutText.split(whereSeparator: { $0 == "\t" || $0 == " " || $0 == "\n" }).compactMap { Int($0) }
+            if parts.count == 2 {
+                behind = parts[0]
+                ahead = parts[1]
+            }
+        }
+        var contained: Bool?
+        if let ancestor = try? runAllowingFailure(in: treePath, ["merge-base", "--is-ancestor", head, primaryHead], timeout: readTimeout) {
+            switch ancestor.status {
+            case 0: contained = true
+            case 1: contained = false
+            default: contained = nil
+            }
+        }
+        return PrimaryDivergence(primaryHead: primaryHead, ahead: ahead, behind: behind, contained: contained)
     }
 
     // MARK: Cleanup

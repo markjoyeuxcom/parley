@@ -553,6 +553,20 @@ per requester; native cancellation stops its owned process group. Result recover
 requires the same live source generation. Reuse the existing journal and 90 KB
 rendered/200 KB transport bounds; agent commands never create their own approval.
 
+A run can also be proposed by the person from the native app
+(`ReviewedCommandRunCoordinator.propose`), today only from the worktree
+board's **Integrate…**. Its record has `origin: .person`, no source pane and
+the workspace the person was in. It is always `.pending` until the editable
+preview approves it, because that preview is where the person confirms the
+exact command, so neither the automatic-approval switch nor an exact-command
+grant applies and the trust toggle creates no grant. A pane restart never
+interrupts it, `parley wait` refuses it because no pane requested it, the
+journal names the person with an empty source pane id and the Shell kind,
+and its Shell opens in the chosen workspace beside the active pane. One
+person proposal may be waiting or running at a time. Records written before
+this carry no `origin` and decode as agent-pane runs; an agent-pane record
+without a source pane is refused.
+
 ## Team sessions
 
 `parley team request --folder <absolute-folder> [--panes <n>]
@@ -743,6 +757,29 @@ mixed workspaces expose individual panes. History clearing explicitly covers
 the entire named workspace, including other folders, and keeps its existing
 active-work protections.
 
+The browser's **Managed by Parley** list is the worktree board: one
+`WorktreeBoardRow` per record, derived on every read from the record, the
+last background `ManagedWorktreeFacts`, the panes the scan mapped into the
+tree, the requesting pane if it still exists and the bound team session. It
+shows the owner (a team with its state, the requesting pane as running,
+stopped or closed, You for a browser creation, Person-owned for a tracked
+tree), the recorded base, HEAD, changed paths, commits ahead of and behind
+the primary checkout, and a state: Not read yet, Missing, Unknown, In use (a
+running pane inside or an active team), Integrated (HEAD contained in the
+primary's HEAD and the tree clean) or Idle. The facts pass also reads
+`rev-list --left-right --count` and `merge-base --is-ancestor` against the
+primary checkout's HEAD; a failed read stays nil and is shown as unknown,
+never as zero. Nothing about the board is stored. **Integrate…** proposes
+`git merge --no-ff --no-edit --end-of-options <branch>` in the primary
+checkout as a person-proposed reviewed command run (see Reviewed command
+runs); when that run ends the facts are re-read for every record so the row
+can read Integrated, after which the existing removal policy passes on its
+own. The tester and reviewer of v0.1.49 both thought ownership and safe
+cleanup were missing when they were not; the board exists so those facts
+are visible without opening Finish & Cleanup. `docs/worktrees-roadmap.md`
+records what was decided on 13 September 2026 and what waits on beta
+evidence.
+
 WorktreeUsage excludes stopped placeholders, other-runtime panes and active
 local team bindings from inactive candidates; unreadable other-runtime state
 stays unknown. This says nothing about other applications. Last retained
@@ -778,8 +815,10 @@ results. No checkout, index, branch or source Git objects are changed.
 Permission guidance is person-selected by vendor, does not inspect terminal
 text or claim to know a prompt, and never grants a permission root.
 
-Deferred: actual merges, rebases, pushes, stashes, automatic cleanup,
-automatic branch deletion, per-pane worktrees and multi-folder grants.
+Deferred: merges, rebases, pushes and stashes performed by Parley itself
+(Integrate is a reviewed command run the person approves, not a Parley Git
+action), automatic cleanup, automatic branch deletion, per-pane worktrees and
+multi-folder grants.
 
 ## Experimental container panes
 

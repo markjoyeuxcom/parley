@@ -324,6 +324,15 @@ every ignored entry for acknowledgement, reports what Git and the filesystem
 show afterwards, and never uses `--force` or deletes the branch. Parley never commits, merges, rebases, pushes or stashes, and grants
 no extra permission for the worktree's shared `.git` directory.
 
+The **Managed by Parley** list in the browser is a board: each tree shows its
+owner, recorded base, HEAD, changed paths, commits ahead of and behind the
+primary checkout, and a state read from those facts (In use, Idle,
+Integrated, Missing, Unknown). **Integrate…** proposes `git merge --no-ff` of
+the branch into the primary checkout as a command run you approve in the
+same preview an agent's request gets; it runs in a new Shell pane with its
+result captured, always waits for your approval, and Parley itself still
+runs no merge.
+
 The browser's **Finish & Cleanup** view brings together optional pane closure,
 workspace history clearing and the existing guarded removal. Each step is
 confirmed separately; history clearing covers the whole named workspace.

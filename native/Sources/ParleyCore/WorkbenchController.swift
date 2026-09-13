@@ -565,13 +565,29 @@ public final class WorkbenchController: @unchecked Sendable {
     /// Native-only creation path. No agent transport can supply launch overrides.
     public func createApprovedCommandPane(run: ReviewedCommandRun, workerExecutable: URL, exitWhenClean: Bool = false) throws -> WorkbenchPane {
         try lock.withLock {
+            // An agent run's Shell opens beside a requesting pane that must
+            // still be exactly the one that asked; a person-proposed run opens
+            // in the workspace the person chose, which only has to exist.
+            let workspace: WorkbenchWorkspace
+            switch run.origin {
+            case .agentPane:
+                guard let requester = run.source,
+                      let source = document.panes.first(where: { $0.id == requester.id }),
+                      source.kind.isAgent, source.isStarted, !source.isDead,
+                      source.launchGeneration == requester.launchGeneration,
+                      source.workspaceID == requester.workspaceID,
+                      WorkspaceFolderIdentity.matchingKey(source.cwd) == run.sourceFolder,
+                      let found = document.workspaces.first(where: { $0.workspaceID == source.workspaceID }) else {
+                    throw ReviewedCommandRunError.invalid("The approved request or its source pane changed before Shell creation.")
+                }
+                workspace = found
+            case .person:
+                guard let found = document.workspaces.first(where: { $0.workspaceID == run.workspaceID }) else {
+                    throw ReviewedCommandRunError.invalid("The workspace chosen for this run no longer exists.")
+                }
+                workspace = found
+            }
             guard run.state == .running,
-                  let source = document.panes.first(where: { $0.id == run.source.id }),
-                  source.kind.isAgent, source.isStarted, !source.isDead,
-                  source.launchGeneration == run.source.launchGeneration,
-                  source.workspaceID == run.source.workspaceID,
-                  WorkspaceFolderIdentity.matchingKey(source.cwd) == run.sourceFolder,
-                  let workspace = document.workspaces.first(where: { $0.workspaceID == source.workspaceID }),
                   !document.panes.contains(where: { $0.id == run.shellPaneID }),
                   workerExecutable.path.hasPrefix("/"),
                   fileManager.isExecutableFile(atPath: workerExecutable.path) else {
