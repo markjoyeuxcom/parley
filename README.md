@@ -308,7 +308,7 @@ Saved layouts are local configuration for this Mac: pane vendors, names, split
 geometry, folders and permission-profile selections. They never contain live
 ids, credentials or terminal content.
 
-Git worktrees stay one per feature, not one per pane. The worktree browser
+Git worktrees stay one per feature, not one per pane. The Worktrees window
 opens any existing worktree as a workspace and can create a new one on a new
 branch from a previewed base commit under `<repository>/.worktrees/`; a Team
 Session approval offers the same choice, and every pane the session creates
@@ -324,7 +324,10 @@ every ignored entry for acknowledgement, reports what Git and the filesystem
 show afterwards, and never uses `--force` or deletes the branch. Parley never commits, merges, rebases, pushes or stashes, and grants
 no extra permission for the worktree's shared `.git` directory.
 
-The **Managed by Parley** list in the browser is a board: each tree shows its
+**Tools › Worktrees…** opens the worktree manager, a window that needs no
+pane: every repository Parley knows from its panes, attached, favourite and
+recent folders and any you add, with each repository's registered worktrees
+as board rows. Each row shows its
 owner, recorded base, HEAD, changed paths, commits ahead of and behind the
 primary checkout, and a state read from those facts (In use, Idle,
 Integrated, Missing, Unknown). **Integrate…** proposes `git merge --no-ff` of
@@ -333,7 +336,7 @@ same preview an agent's request gets; it runs in a new Shell pane with its
 result captured, always waits for your approval, and Parley itself still
 runs no merge.
 
-The browser's **Finish & Cleanup** view brings together optional pane closure,
+**Finish…** on a row brings together optional pane closure,
 workspace history clearing and the existing guarded removal. Each step is
 confirmed separately; history clearing covers the whole named workspace.
 Inactive filtering uses panes in both Parley runtimes and active local teams;

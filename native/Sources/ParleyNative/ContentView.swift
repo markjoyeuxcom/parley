@@ -97,9 +97,6 @@ struct ContentView: View {
         .sheet(isPresented: $model.contextPackPresented) {
             ContextPackView(model: model)
         }
-        .sheet(isPresented: $model.worktreeBrowserPresented) {
-            WorktreeBrowserView(model: model)
-        }
         .sheet(isPresented: $model.folderManagerPresented) {
             FolderManagerView(model: model)
         }
@@ -1461,7 +1458,7 @@ struct ContentView: View {
         case .startPane: "Start the subscription CLI in this pane"
         case .retryDelivery: "Retry the original delivery after confirmation"
         case .reconnect: "Reconnect to the local coordination core"
-        case .openWorktrees: "Open the worktree browser for this folder"
+        case .openWorktrees: "Open the Worktrees window on this folder's repository"
         case .stopRecipe: "Send Control-C to the lead pane after confirmation"
         }
     }
@@ -1483,7 +1480,8 @@ struct ContentView: View {
         case .reconnect:
             model.retryConnections()
         case let .openWorktrees(path):
-            model.showWorktreeBrowser(sourceFolder: path)
+            openWindow(id: "worktrees")
+            model.selectWorktreeRepository(containing: path)
         case .stopRecipe:
             model.interruptActiveRecipeRun()
         }

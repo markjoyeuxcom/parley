@@ -317,15 +317,37 @@ question, or the refusal is a bare error.
 - Create one through a team request with `--worktree`.
 - A pane inside it; the pane row shows path, branch and base.
 - Merge preview against main — conflicts predicted, nothing mutated.
-- Finish & Cleanup: each destructive step separately confirmed; removal refuses
-  with a live pane inside, then succeeds once closed.
-- Board: the **Managed by Parley** list shows owner, base, HEAD, changed
+- Finish… on a row: each destructive step separately confirmed; removal
+  refuses with a live pane inside, then succeeds once closed.
+- Board: every row in the Worktrees window shows owner, base, HEAD, changed
   paths, ahead/behind the primary and a state. With the team active the row
   reads IN USE; after Stop with no pane inside it reads IDLE (commits ahead)
   or INTEGRATED, as the facts say. A count Git could not read shows as
   unknown, never as 0.
-- Tracked tree: make a worktree with Git yourself, **Track Existing…** it in
-  Browse, then **Remove…**. The preview says Parley did not create it and is
+- Manager: with every pane closed, **Tools › Worktrees…** opens and lists the
+  repositories of your favourites and recent folders; **Add Repository…**
+  accepts a repository folder and refuses a plain folder with Git's reason;
+  the added one survives a relaunch and **Forget** removes only it. Select a
+  repository: every registered worktree is a row, the primary first and
+  never removable, an unrecorded tree reads "Not recorded", a prunable
+  entry reads STALE. Close the window: no facts are read until it reopens.
+- Manager actions: on an unrecorded linked tree press **Remove…**; the
+  preview opens without a tracking step and the tree is removed with its
+  branch kept; the result offers **Delete Branch…**, which deletes a merged
+  branch and shows Git's refusal for an unmerged one. Delete a worktree's
+  folder with Finder, refresh: the row reads STALE with **Prune…**; Prune
+  lists every prunable entry and forgets them, then offers **Delete
+  Branch…** for the branches they held; a merged one is deleted after its
+  own confirmation. **Integrate…** on an unrecorded tree opens the same
+  "Proposed by you" preview. **Remove integrated…** with two integrated
+  trees and one dirty tree: the dirty tree reads IDLE and is not a
+  candidate; the single preview lists the two with their checks (a tree
+  that reads INTEGRATED but fails its fresh check, say a pane opened inside
+  it meanwhile, is listed as skipped with the reason); confirming removes
+  the two, the report names each, and the branch step is offered for both. **Fail:** any -D or --force in a run, a folder
+  deleted by Prune, or a branch deleted without its own confirmation.
+- Unrecorded tree: make a worktree with Git yourself, then **Remove…** on its
+  row. The preview says Parley did not create it and is
   using Git's registry entry at the recorded path; a dirty or unmerged
   tracked tree is refused like any other; a clean, integrated one is removed
   with its branch kept. INTEGRATED rows show **Integrate…** disabled.

@@ -45,6 +45,15 @@ read.
   so, every other refusal is unchanged and the branch is kept. Integrate…
   is not offered on a tree that already reads Integrated.
 
+## The manager (design agreed 13 September 2026)
+
+Four shippable steps, each on the rules above; the design page has the
+detail. Step 1: the Worktrees window with the repository list and a row for
+every registered tree. Step 2 (built): actions on unrecorded trees with implicit records, Prune (Git's global prune, every prunable entry listed), Delete branch (`-d` only, also offered after a removal). Step 3 (built): Remove integrated with one preview; passing trees removed in order, the run stops at the first unconfirmed outcome, branches offered afterwards. Step 4 (built): the Open Worktree… sheet, Track Existing and the Managed by Parley list are gone; the menu item and the pane notice open the window. Decisions taken:
+persist added repositories, offer Delete branch on rows and after removal,
+bulk removal in the first version, no sheet kept, implicit records instead
+of Track Existing.
+
 ## Later, only if the beta week's reports ask for it
 
 - **Delegate with a worktree.** `parley delegate <target> --worktree <branch>`

@@ -782,24 +782,125 @@ public struct ManagedWorktreeService: Sendable {
         return record
     }
 
+    // MARK: Prune and branch deletion
+
+    /// What `git worktree prune` would forget: every entry Git lists as
+    /// prunable. Git has no per-entry prune, so the preview shows them all
+    /// and the person acknowledges the whole list.
+    public struct PrunePreview: Equatable, Sendable {
+        public let repositoryToplevel: String
+        public let entries: [RegisteredWorktree]
+        public var paths: [String] { entries.map(\.path) }
+    }
+
+    public struct PruneOutcome: Equatable, Sendable {
+        public let forgotten: [String]
+        public let remaining: [String]
+        public let detail: String
+    }
+
+    public func prunePreview(in repositoryFolder: String) throws -> PrunePreview {
+        let identity = try identity(of: repositoryFolder)
+        let toplevel = primaryToplevel(identity) ?? identity.toplevel
+        let entries = try registeredWorktrees(of: GitRepositoryIdentity(commonDirectory: identity.commonDirectory, toplevel: toplevel)).filter(\.isPrunable)
+        return PrunePreview(repositoryToplevel: toplevel, entries: entries)
+    }
+
+    /// One `git worktree prune` after re-reading the registry and requiring
+    /// the acknowledged list to match it exactly. A prunable entry has no
+    /// folder, so nothing on disk is touched and no branch changes; the
+    /// outcome reports only what the registry shows afterwards.
+    public func prune(in repositoryFolder: String, acknowledgedPaths: [String]) throws -> PruneOutcome {
+        let preview = try prunePreview(in: repositoryFolder)
+        guard !preview.entries.isEmpty else { throw ManagedWorktreeError.invalid("Git lists no prunable worktree entry for this repository.") }
+        guard Set(preview.paths) == Set(acknowledgedPaths) else {
+            throw ManagedWorktreeError.refused(["the prunable entries changed since the preview; review the list again"])
+        }
+        let result = try runObserving(in: preview.repositoryToplevel, ["worktree", "prune"], timeout: mutationTimeout)
+        let after = (try? prunePreview(in: repositoryFolder).paths) ?? preview.paths
+        let forgotten = preview.paths.filter { !after.contains($0) }
+        let detail: String
+        if result.status == 0 {
+            detail = "Git forgot \(forgotten.count) of \(preview.paths.count) prunable entr\(preview.paths.count == 1 ? "y" : "ies"). No folder or branch changed."
+        } else {
+            let text = result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
+            detail = (result.status == 124 ? "git worktree prune timed out after \(Int(mutationTimeout)) seconds" : "git worktree prune reported exit status \(result.status)")
+                + (text.isEmpty ? "" : ": " + text) + ". \(forgotten.count) entr\(forgotten.count == 1 ? "y is" : "ies are") no longer listed."
+        }
+        return PruneOutcome(forgotten: forgotten, remaining: after, detail: detail)
+    }
+
+    public struct BranchDeletionPreview: Equatable, Sendable {
+        public let branch: String
+        public let commit: String
+        public let mergedIntoPrimaryHead: Bool
+        /// The registered worktree that has the branch checked out, if any;
+        /// Git refuses to delete such a branch and so does the preview.
+        public let checkedOutAt: String?
+        /// The holder is a prunable entry whose folder is gone: Git still
+        /// counts the branch as checked out until the entry is pruned.
+        public let heldByStaleEntry: Bool
+    }
+
+    public enum BranchDeletionOutcome: Equatable, Sendable {
+        case deleted(commit: String)
+        /// Git's own words, shown as they are. Parley never retries with -D.
+        case refused(String)
+    }
+
+    public func branchDeletionPreview(_ branch: String, in repositoryFolder: String) throws -> BranchDeletionPreview {
+        try WorktreeNaming.validateBranch(branch)
+        let identity = try identity(of: repositoryFolder)
+        let toplevel = primaryToplevel(identity) ?? identity.toplevel
+        let commit = try run(in: toplevel, ["rev-parse", "--verify", "--end-of-options", "refs/heads/\(branch)"], timeout: readTimeout)
+            .stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let head = try run(in: toplevel, ["rev-parse", "HEAD"], timeout: readTimeout).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let merged = (try? runAllowingFailure(in: toplevel, ["merge-base", "--is-ancestor", commit, head], timeout: readTimeout))?.status == 0
+        let registry = try registeredWorktrees(of: GitRepositoryIdentity(commonDirectory: identity.commonDirectory, toplevel: toplevel))
+        let checkedOut = registry.first { $0.branch == "refs/heads/\(branch)" }
+        return BranchDeletionPreview(branch: branch, commit: commit, mergedIntoPrimaryHead: merged, checkedOutAt: checkedOut?.path,
+            heldByStaleEntry: checkedOut?.isPrunable ?? false)
+    }
+
+    /// One `git branch -d`, from the primary checkout. Git refuses an unmerged
+    /// or checked-out branch and its message is what the person sees; the
+    /// upper-case form never appears in Parley's argv.
+    public func deleteBranch(_ branch: String, in repositoryFolder: String) throws -> BranchDeletionOutcome {
+        let preview = try branchDeletionPreview(branch, in: repositoryFolder)
+        let identity = try identity(of: repositoryFolder)
+        let toplevel = primaryToplevel(identity) ?? identity.toplevel
+        let result = try runObserving(in: toplevel, ["branch", "-d", "--end-of-options", branch], timeout: mutationTimeout)
+        guard result.status == 0 else {
+            let text = result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return .refused(text.isEmpty ? "git branch -d reported exit status \(result.status)" : text)
+        }
+        return .deleted(commit: preview.commit)
+    }
+
     // MARK: Facts
 
     public func facts(for record: ManagedWorktreeRecord) -> ManagedWorktreeFacts {
+        facts(forTreeAt: record.path, id: record.id, expectedCommonDirectory: record.commonDirectory)
+    }
+
+    /// The same read for a tree known only from Git's registry: identified by
+    /// its path, with no record whose common directory it must match.
+    public func facts(forTreeAt path: String, id: String, expectedCommonDirectory: String?) -> ManagedWorktreeFacts {
         func unknown(_ registered: Bool?) -> ManagedWorktreeFacts {
-            ManagedWorktreeFacts(recordID: record.id, currentBranch: nil, head: nil, changedPathCount: nil, upstreamAheadCount: nil, hasUpstream: nil, registered: registered)
+            ManagedWorktreeFacts(recordID: id, currentBranch: nil, head: nil, changedPathCount: nil, upstreamAheadCount: nil, hasUpstream: nil, registered: registered)
         }
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: record.path, isDirectory: &isDirectory), isDirectory.boolValue else { return unknown(false) }
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else { return unknown(false) }
         // A failed read is unknown; only Git's own listing may say "absent".
-        guard let identity = try? identity(of: record.path), identity.commonDirectory == record.commonDirectory,
+        guard let identity = try? identity(of: path), expectedCommonDirectory == nil || identity.commonDirectory == expectedCommonDirectory,
               let registry = try? registeredWorktrees(of: identity) else { return unknown(nil) }
-        guard registry.contains(where: { $0.path == record.path }) else { return unknown(false) }
-        let branch = (try? run(in: record.path, ["rev-parse", "--abbrev-ref", "HEAD"], timeout: readTimeout))?.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let head = (try? run(in: record.path, ["rev-parse", "HEAD"], timeout: readTimeout))?.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let status = try? statusEntries(in: record.path)
-        let upstream = upstreamState(in: record.path)
-        let divergence = divergenceFromPrimary(identity: identity, treePath: record.path, head: head)
-        return ManagedWorktreeFacts(recordID: record.id, currentBranch: branch, head: head,
+        guard registry.contains(where: { $0.path == path }) else { return unknown(false) }
+        let branch = (try? run(in: path, ["rev-parse", "--abbrev-ref", "HEAD"], timeout: readTimeout))?.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let head = (try? run(in: path, ["rev-parse", "HEAD"], timeout: readTimeout))?.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let status = try? statusEntries(in: path)
+        let upstream = upstreamState(in: path)
+        let divergence = divergenceFromPrimary(identity: identity, treePath: path, head: head)
+        return ManagedWorktreeFacts(recordID: id, currentBranch: branch, head: head,
             changedPathCount: status.map { $0.modified.count + $0.untracked.count }, upstreamAheadCount: upstream.ahead,
             hasUpstream: upstream.hasUpstream, registered: true, primaryHead: divergence.primaryHead,
             aheadOfPrimary: divergence.ahead, behindPrimary: divergence.behind, containedInPrimary: divergence.contained)

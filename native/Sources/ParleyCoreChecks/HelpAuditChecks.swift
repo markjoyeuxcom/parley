@@ -121,8 +121,8 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
     }),
     ("Help audit states the worktree boundary and matches the cleanup policy", {
         // Compared with ManagedWorktrees.swift (creation, cleanup policy),
-        // WorktreeBrowserView.swift, TeamSessionsView.swift and the Workspace
-        // menu in ParleyNativeApp.swift.
+        // WorktreeManagerView.swift, TeamSessionsView.swift and the Workspace
+        // and Tools menus in ParleyNativeApp.swift.
         let workspaces = try helpAuditTopic("workspaces")
         try helpAuditRequire(ParleyHelpGuide.matching("worktree").contains(workspaces), "Worktrees cannot be found")
         let text = workspaces.searchableText
@@ -131,7 +131,7 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
             "one worktree per feature", "new branch from a base ref you preview", "existing one", "New Worktree",
             "<repository>/\(ManagedWorktreeService.worktreesDirectoryName)/", "never by an agent",
             "exact commit the tree was created from", "records no base for it", "same preview and refusals", "registry entry at the recorded path", "still carry its creation marker",
-            "person action in the browser", "another registered worktree", "any pane's folder",
+            "person action in the Worktrees window", "another registered worktree", "any pane's folder",
             "modified or untracked files", "ahead of the upstream's local remote-tracking state",
             "not contained in the primary worktree's HEAD", "locked or prunable", "could not be read",
             "more than \(WorktreeCleanupPolicy.maximumReviewedIgnoredPaths) refuses",
@@ -147,6 +147,11 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
             // The board and Integrate… (WorktreeBrowserView.swift, WorktreeBoardRow, AppModel.proposeWorktreeIntegration).
             "worktree board", "ahead of and behind the primary checkout", "never as zero", "nothing about the board is stored",
             "Integrate…", "always waits for your approval", "Parley itself runs no merge", "reads Integrated", "not offered on a tree that already reads Integrated",
+            // The manager window (WorktreeManagerView.swift, WorktreeRepositories.swift, the Tools menu in ParleyNativeApp.swift).
+            "Tools › Worktrees…", "needs no pane or workspace", "Add Repository…", "Forget", "never removable here", "Not recorded", "Stale",
+            "only while the window is on screen",
+            "no tracking step", "Prune…", "Git has no per-entry form", "Delete branch…", "one git branch -d", "never uses -D",
+            "Remove integrated…", "stops at the first outcome that is not a confirmed removal", "Nothing runs across repositories at once",
         ])
         try helpAuditRequire(text.contains(ManagedWorktreeService.CreatePreview.executionNotice),
                              "Help must carry the exact creation execution notice")

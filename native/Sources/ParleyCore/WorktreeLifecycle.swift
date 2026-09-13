@@ -143,10 +143,11 @@ public enum WorktreePermissionGuide {
 // MARK: - Board
 
 /// One row of the worktree board: the facts Parley already records about a
-/// managed tree, arranged so ownership, divergence and state read at a
-/// glance. Everything here is derived when the row is built and nothing is
-/// stored; a tree's state is what its record, the last background Git read,
-/// the panes inside it and its team say right now.
+/// tree, arranged so ownership, divergence and state read at a glance.
+/// A row comes from Git's registry entry, from Parley's record, or both:
+/// the registry says what is there, the record adds base, team, requester
+/// and creation marker. Everything here is derived when the row is built
+/// and nothing is stored.
 public struct WorktreeBoardRow: Equatable, Sendable {
     public enum PanePresence: String, Equatable, Sendable {
         case running, stopped, closed
@@ -163,6 +164,8 @@ public struct WorktreeBoardRow: Equatable, Sendable {
         /// Selected or tracked rather than created: no base and no creation
         /// marker; removal identifies it by Git's registry entry at its path.
         case person
+        /// Known only from Git's registry; Parley holds no record for it.
+        case unrecorded
     }
 
     public enum State: String, Equatable, Sendable {
@@ -170,6 +173,9 @@ public struct WorktreeBoardRow: Equatable, Sendable {
         case unread
         /// The folder is gone or Git no longer lists the tree.
         case missing
+        /// Git lists the entry as prunable: the folder is gone but the
+        /// registration remains. Prune is the action, never Remove.
+        case stale
         /// Git could not be read; nothing is inferred.
         case unknown
         /// A pane is running inside it or its team is active.
@@ -183,6 +189,7 @@ public struct WorktreeBoardRow: Equatable, Sendable {
             switch self {
             case .unread: "Not read yet"
             case .missing: "Missing"
+            case .stale: "Stale"
             case .unknown: "Unknown"
             case .inUse: "In use"
             case .integrated: "Integrated"
@@ -191,19 +198,28 @@ public struct WorktreeBoardRow: Equatable, Sendable {
         }
     }
 
-    public let record: ManagedWorktreeRecord
+    public let tree: GitWorktreeRecord?
+    public let record: ManagedWorktreeRecord?
     public let facts: ManagedWorktreeFacts?
     public let owner: Owner
     public let state: State
     public let runningPaneCount: Int
     public let stoppedPaneCount: Int
 
+    public var branch: String { record?.branch ?? tree?.shortIdentity ?? "detached" }
+    public var path: String { record?.path ?? tree?.path ?? "" }
+    public var warning: String? { record?.warning }
+    public var isPrimary: Bool { tree?.isPrimary ?? false }
+    public var isRecorded: Bool { record != nil }
+    public var parleyCreated: Bool { record?.parleyCreated ?? false }
+    public var lockReason: String? { tree?.lockReason }
+
     /// Integrate proposes a merge of the tree's branch; that needs a tree
     /// Git still lists and something to merge. A tree already contained in
     /// the primary with nothing ahead has no merge to propose; when the
     /// counts could not be read the offer stands and Git gives the answer.
     public var canIntegrate: Bool {
-        guard let facts, facts.registered == true else { return false }
+        guard !isPrimary, state != .stale, let facts, facts.registered == true else { return false }
         return !(facts.containedInPrimary == true && facts.aheadOfPrimary == 0)
     }
 
@@ -218,10 +234,13 @@ public struct WorktreeBoardRow: Equatable, Sendable {
             return "You"
         case .person:
             return "Person-owned"
+        case .unrecorded:
+            return "Not recorded"
         }
     }
 
     public var baseLabel: String {
+        guard let record else { return "" }
         guard let base = record.baseCommit else { return "base not recorded" }
         return "base \(base.prefix(12))" + (record.baseRef.map { " (\($0))" } ?? "")
     }
@@ -230,7 +249,7 @@ public struct WorktreeBoardRow: Equatable, Sendable {
         guard let facts, facts.registered == true else { return "" }
         guard let head = facts.head, !head.isEmpty else { return "HEAD unknown" }
         var text = "HEAD \(head.prefix(12))"
-        if let branch = facts.currentBranch, branch != record.branch, branch != "HEAD" { text += " on \(branch)" }
+        if let branch = facts.currentBranch, branch != self.branch, branch != "HEAD" { text += " on \(branch)" }
         return text
     }
 
@@ -262,6 +281,7 @@ public struct WorktreeBoardRow: Equatable, Sendable {
         var parts = [baseLabel]
         switch state {
         case .missing: parts.append("folder gone or no longer listed by Git")
+        case .stale: parts.append("folder gone; Git lists the entry as prunable")
         case .unknown: parts.append("Git could not be read")
         case .unread: parts.append("live state not read yet")
         case .inUse, .integrated, .idle:
@@ -269,34 +289,49 @@ public struct WorktreeBoardRow: Equatable, Sendable {
             parts.append(changesLabel)
             parts.append(divergenceLabel)
         }
-        parts.append(record.parleyCreated ? "created by Parley" : "existing tree")
+        if let lockReason { parts.append(lockReason.isEmpty ? "locked" : "locked: \(lockReason)") }
+        if let record { parts.append(record.parleyCreated ? "created by Parley" : "existing tree") }
         return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// The record-only form the browser used first; a registry entry is not
+    /// needed when the record is the source.
+    public static func derive(record: ManagedWorktreeRecord, facts: ManagedWorktreeFacts?, panesInside: [WorkbenchPane],
+                              requester: WorkbenchPane?, teamObjective: String?, teamState: TeamSessionState?) -> WorktreeBoardRow {
+        derive(tree: nil, record: record, facts: facts, panesInside: panesInside, requester: requester, teamObjective: teamObjective, teamState: teamState)
     }
 
     /// `requester` is the pane that asked for the tree if it still exists;
     /// nil with a recorded requester means that pane was closed. Team facts
     /// win over the requester, because a team member's tree belongs to the
-    /// session even though one pane asked for it.
-    public static func derive(record: ManagedWorktreeRecord, facts: ManagedWorktreeFacts?, panesInside: [WorkbenchPane],
+    /// session even though one pane asked for it. A prunable registry entry
+    /// is stale before any fact is consulted: there is no folder to read.
+    public static func derive(tree: GitWorktreeRecord?, record: ManagedWorktreeRecord?, facts: ManagedWorktreeFacts?, panesInside: [WorkbenchPane],
                               requester: WorkbenchPane?, teamObjective: String?, teamState: TeamSessionState?) -> WorktreeBoardRow {
         let running = panesInside.filter { $0.isStarted && !$0.isDead }.count
         let stopped = panesInside.count - running
         let owner: Owner
-        if record.teamSessionID != nil, let teamObjective, let teamState {
-            owner = .team(objective: teamObjective, state: teamState)
-        } else if let requesterID = record.requestedByPaneID {
-            if let requester {
-                owner = .pane(name: requester.displayName, presence: requester.isStarted && !requester.isDead ? .running : .stopped)
+        if let record {
+            if record.teamSessionID != nil, let teamObjective, let teamState {
+                owner = .team(objective: teamObjective, state: teamState)
+            } else if let requesterID = record.requestedByPaneID {
+                if let requester {
+                    owner = .pane(name: requester.displayName, presence: requester.isStarted && !requester.isDead ? .running : .stopped)
+                } else {
+                    owner = .pane(name: requesterID, presence: .closed)
+                }
+            } else if record.parleyCreated {
+                owner = .you
             } else {
-                owner = .pane(name: requesterID, presence: .closed)
+                owner = .person
             }
-        } else if record.parleyCreated {
-            owner = .you
         } else {
-            owner = .person
+            owner = .unrecorded
         }
         let state: State
-        if let facts {
+        if let tree, tree.pruneReason != nil {
+            state = .stale
+        } else if let facts {
             switch facts.registered {
             case false?: state = .missing
             case nil: state = .unknown
@@ -312,6 +347,45 @@ public struct WorktreeBoardRow: Equatable, Sendable {
         } else {
             state = .unread
         }
-        return WorktreeBoardRow(record: record, facts: facts, owner: owner, state: state, runningPaneCount: running, stoppedPaneCount: stopped)
+        return WorktreeBoardRow(tree: tree, record: record, facts: facts, owner: owner, state: state, runningPaneCount: running, stoppedPaneCount: stopped)
+    }
+}
+
+// MARK: - Bulk removal plan
+
+/// Remove integrated…: which of a repository's linked trees are proposed,
+/// which are skipped and why, from fresh previews. Pure, so the decision
+/// is checkable; the previews themselves come from the service.
+public enum WorktreeBulkRemovalPlan {
+    public struct Item: Equatable, Sendable {
+        public let record: ManagedWorktreeRecord
+        public let preview: WorktreeCleanupPreview
+        public var passes: Bool { preview.decision == .removeTree }
+        public var refusals: [String] { preview.refusals }
+        public init(record: ManagedWorktreeRecord, preview: WorktreeCleanupPreview) {
+            self.record = record
+            self.preview = preview
+        }
+    }
+
+    public struct Plan: Equatable, Sendable {
+        public let passing: [Item]
+        public let skipped: [Item]
+        public var ignoredPathsByRecord: [String: [String]] { Dictionary(uniqueKeysWithValues: passing.map { ($0.record.id, $0.preview.ignoredPaths) }) }
+        public var totalIgnored: Int { passing.reduce(0) { $0 + $1.preview.ignoredPaths.count } }
+    }
+
+    /// Only trees whose row reads Integrated are candidates; the previews
+    /// then decide. A tree with any refusal is shown and skipped, never
+    /// forced. Record-only cleanups (folder already gone) are skipped too:
+    /// Prune is the action for those.
+    public static func plan(items: [Item]) -> Plan {
+        Plan(passing: items.filter(\.passes), skipped: items.filter { !$0.passes })
+    }
+
+    /// Whether the run continues after one removal outcome: any outcome
+    /// that is not a confirmed removal stops the run so the person can look.
+    public static func shouldContinue(after state: WorktreeRemovalOutcome.State) -> Bool {
+        state == .removed
     }
 }
