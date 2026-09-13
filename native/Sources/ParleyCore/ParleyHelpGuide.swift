@@ -848,7 +848,7 @@ public enum ParleyHelpGuide {
                         "Pane headers show signal age. Official hook state says PERMISSION REPORTED so an old report is never presented as a current fact.",
                         "Command-Shift-J cycles newest-first: it focuses a live permission pane or opens the exact durable result or interruption in Status Center.",
                         "Focus the source or target pane for a selected event.",
-                        "Return manually, cancel tracking, interrupt with confirmation, or retry only when the record says retry is safe.",
+                        "Answer manually, cancel tracking, interrupt with confirmation, or retry only when the record says retry is safe.",
                         "Dismissed notifications hide locally without deleting the durable handoff record.",
                     ]
                 ),

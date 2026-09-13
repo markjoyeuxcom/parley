@@ -430,7 +430,7 @@ struct ParleyNativeApp: App {
                     .disabled(!model.canQuickRelaySelection)
                     .help("Open the active pane's exact terminal selection in the reviewed Ask composer")
                 Divider()
-                Button("Return Answer") { model.returnAnswer() }
+                Button("Answer Waiting Ask…") { model.returnAnswer() }
                     .keyboardShortcut(.return, modifiers: [.command, .shift])
                     .disabled(!model.canReturn)
                 Button("Balance Panes") { model.balance() }

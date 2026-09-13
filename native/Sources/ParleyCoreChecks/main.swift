@@ -634,7 +634,9 @@ private func checkBuildInformationIsUsefulAndCopyable() throws {
 private func checkPermissionProfilesAreVendorNeutralAndLocal() throws {
     let builtIns = PermissionProfileDefinition.builtIns
     try expect(
-        builtIns.map(\.id) == ["review-only", "default", "flexible", "workspace-folders", "broad-workspace"],
+        // "flexible-network" was added deliberately on 13 September 2026: Flexible
+        // plus an allowed network rule, which only Codex's sandbox can carry.
+        builtIns.map(\.id) == ["review-only", "default", "flexible", "flexible-network", "workspace-folders", "broad-workspace"],
         "permission profile built-ins or their stable order changed"
     )
     try expect(builtIns.allSatisfy(\.isBuiltIn), "a built-in permission profile is editable")
@@ -654,6 +656,10 @@ private func checkPermissionProfilesAreVendorNeutralAndLocal() throws {
     try expect(flexible.rule(for: .projectWrite) == .allow, "Flexible cannot perform approved project writes")
     try expect(flexible.rule(for: .projectToolExecution) == .allow, "Flexible cannot run project tests and builds")
     try expect(flexible.rule(for: .networkAccess) == .requireApproval, "Flexible silently grants network access")
+    let flexibleNetwork = try require(builtIns.first(where: { $0.id == "flexible-network" }), "Flexible + network is missing")
+    try expect(flexibleNetwork.rule(for: .networkAccess) == .allow, "Flexible + network does not allow network access")
+    try expect(flexibleNetwork.rules.filter { $0.key != .networkAccess } == flexible.rules.filter { $0.key != .networkAccess },
+        "Flexible + network differs from Flexible beyond the network rule")
     try expect(workspaceFolders.rootMode == .exactApprovedRoots, "Workspace Folders does not require exact roots")
     try expect(workspaceFolders.rule(for: .projectWrite) == .allow, "Workspace Folders cannot perform project writes")
     try expect(workspaceFolders.rule(for: .projectToolExecution) == .allow, "Workspace Folders cannot run project tools")
@@ -748,7 +754,7 @@ private func checkPermissionProfilesAreVendorNeutralAndLocal() throws {
     let custom = flexible.clone(id: "custom-team-flexible", name: "Team flexible")
     try store.saveCustom(custom)
     let loaded = try store.profiles()
-    try expect(loaded.count == 6, "a saved custom profile was not returned beside built-ins")
+    try expect(loaded.count == PermissionProfileDefinition.builtIns.count + 1, "a saved custom profile was not returned beside built-ins")
     try expect(loaded.last == custom, "a custom permission profile did not round trip")
 
     let mode = try require(

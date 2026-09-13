@@ -169,7 +169,12 @@ question, or the refusal is a bare error.
 - Send an Ask and let the target answer: Status Center opens on that exact
   handoff with the answer visible. Nothing is pasted into the source pane.
   **Fail:** only a Result badge appears, or text lands in the source prompt.
-- Return a result to its source.
+- Answer a waiting Ask by hand: ask pane A → B, let B print its reply without
+  running `parley answer`, then use the **Answer** toolbar item on B (it shows
+  only while B holds an unanswered Ask). The preview is prefilled from B's
+  selection; sending completes A's waiting `parley ask` with your text and
+  pastes nothing into either pane.
+  **Fail:** the item shows when no Ask is waiting, or text lands in a pane.
 - Challenge and Verify on a returned handoff — lineage is recorded.
 - Set a human verdict and note; confirm an agent cannot set one.
 
@@ -225,6 +230,16 @@ question, or the refusal is a bare error.
   allows still runs inside the sandbox: Codex documents auto-review as "a
   reviewer swap, not a permission grant", so a network command still fails
   under a network-restricted profile. Remove that line to see Codex's prompt.
+- **Flexible + network** on a Codex host pane: `curl -I https://example.com`
+  runs inside the sandbox with no escalation. On Flexible it still escalates.
+  Vendor Enforcement says network is enabled in Codex's sandbox; for Claude,
+  Agy and Copilot it says only Codex can carry the rule.
+  **Fail:** the network command escalates on Flexible + network, or a
+  non-Codex review claims to enforce network.
+- Codex review, Approvals section: a line states what your own Codex config
+  sets for `approvals_reviewer` (orange when it is `auto_review`, since that
+  overrides the choice), or that it sets none.
+  **Fail:** the line never appears, or says nothing when the config has it.
 - **Approvals → Vendor's automatic reviewer** on a Claude pane (auto mode) and
   a Codex pane (auto review): a routine command such as `ls` runs with no
   prompt; a destructive one such as `git push --force` is refused or asked.

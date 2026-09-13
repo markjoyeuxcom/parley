@@ -1486,7 +1486,7 @@ struct StatusCenterView: View {
             }
             HStack {
                 if let consultation = model.consultation(for: handoff) {
-                    Button("Return Manually…") { model.returnConsultation(consultation) }
+                    Button("Answer Manually…") { model.returnConsultation(consultation) }
                     Button("Cancel Wait…", role: .destructive) { model.cancel(consultation) }
                 } else if handoff.kind == .delegate,
                           [.created, .delivered, .waiting].contains(handoff.state) {

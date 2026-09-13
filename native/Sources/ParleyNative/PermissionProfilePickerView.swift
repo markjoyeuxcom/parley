@@ -13,6 +13,7 @@ struct PermissionProfilePickerView: View {
     @State private var bypassVendorPermissions: Bool
     @State private var containerConfiguration: ContainerConfiguration?
     @State private var approvals: PermissionApprovalHandling
+    @State private var codexConfigurationFact: String?
     private let existingContainer: ContainerConfiguration?
 
     init(model: AppModel, request: PanePermissionRequest) {
@@ -372,6 +373,15 @@ struct PermissionProfilePickerView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if request.kind == .codex, !runInContainer {
+                Text(codexConfigurationFact ?? "Reading Codex's own configuration for this folder…")
+                    .font(.caption)
+                    .foregroundStyle(codexConfigurationFact?.contains("auto_review") == true ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .task(id: request.folder) {
+                        codexConfigurationFact = await model.codexApprovalsReviewerFact(folder: request.folder)
+                    }
+            }
         }
     }
 

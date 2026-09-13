@@ -4,7 +4,10 @@ import Foundation
 /// A bounded, transient stdio config query. This never opens a thread, runs a
 /// model, changes vendor configuration, or connects to a vendor daemon.
 enum CodexHostConfiguration {
-    static func verify(executable: URL, arguments: [String], environment: [String: String], folder: String, profileName: String) throws {
+    /// Reads Codex's resolved configuration for one folder through a transient
+    /// `codex app-server --stdio`. Config replies may include private
+    /// settings: callers read the keys they need and never log the reply.
+    static func read(executable: URL, arguments: [String], environment: [String: String], folder: String) throws -> [String: Any] {
         let process = Process()
         let input = Pipe()
         let output = Pipe()
@@ -64,10 +67,28 @@ enum CodexHostConfiguration {
         try send(["method": "initialized"])
         try send(["id": 2, "method": "config/read", "params": ["includeLayers": false, "cwd": folder]])
         let reply = try response(id: 2)
-        guard let config = reply["config"] as? [String: Any], config["default_permissions"] as? String == profileName,
+        guard let config = reply["config"] as? [String: Any] else {
+            throw PermissionProfileError.invalid("Codex returned no configuration for the folder.")
+        }
+        return config
+    }
+
+    static func verify(executable: URL, arguments: [String], environment: [String: String], folder: String, profileName: String) throws {
+        let config = try read(executable: executable, arguments: arguments, environment: environment, folder: folder)
+        guard config["default_permissions"] as? String == profileName,
               config["sandbox_mode"] == nil || config["sandbox_mode"] is NSNull,
               config["sandbox_workspace_write"] == nil || config["sandbox_workspace_write"] is NSNull else {
             throw PermissionProfileError.invalid("Codex’s configuration conflicts with Parley’s native permission profile. Remove legacy sandbox_mode and sandbox_workspace_write settings from the applicable vendor configuration before starting this host pane. Parley changed no vendor settings.")
         }
+    }
+
+    /// The person's own `approvals_reviewer` setting for this folder, or nil
+    /// when Codex resolves none. `auto_review` means Codex sends sandbox
+    /// escalations to its automatic reviewer and shows no prompt, whatever
+    /// the person chooses in Parley's review; the review states that.
+    static func approvalsReviewer(executable: URL, environment: [String: String], folder: String) throws -> String? {
+        let config = try read(executable: executable, arguments: [], environment: environment, folder: folder)
+        guard let value = config["approvals_reviewer"], !(value is NSNull) else { return nil }
+        return value as? String ?? String(describing: value)
     }
 }

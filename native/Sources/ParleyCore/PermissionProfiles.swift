@@ -160,6 +160,25 @@ public struct PermissionProfileDefinition: Identifiable, Codable, Equatable, Sen
             ])
         ),
         PermissionProfileDefinition(
+            id: "flexible-network",
+            name: "Flexible + network",
+            summary: "Flexible, plus network access: package fetches and HTTP checks run without a prompt where the vendor can enforce it.",
+            isBuiltIn: true,
+            rootMode: .paneFolder,
+            defaultLifetime: .remembered,
+            // Codex carries this into its sandbox (network.enabled). Claude,
+            // Agy and Copilot have no network sandbox Parley controls, so for
+            // them the row is the vendor's own prompt and the plan says so.
+            rules: completeRules([
+                .projectRead: .allow,
+                .repositoryInspection: .allow,
+                .projectWrite: .allow,
+                .projectToolExecution: .allow,
+                .localProcessExecution: .allow,
+                .networkAccess: .allow,
+            ])
+        ),
+        PermissionProfileDefinition(
             id: "workspace-folders",
             name: "Workspace folders",
             summary: "Project reads, writes, tests and builds across exact folders chosen from this workspace.",
@@ -384,10 +403,20 @@ public enum PermissionProfileAdapter {
             " This profile restricts \(PermissionCapability.sentence(execution)), which is not translated into a launch argument: only project write is. Those remain the vendor's own prompts to make."
         let carried = execution.isEmpty || !carriesExecution ? "" :
             " It also restricts \(PermissionCapability.sentence(execution)), carried as a rule that asks before a shell command and outranks the permission mode."
+        // Only Codex has a network sandbox Parley can set. Everywhere else an
+        // allowed network rule is the vendor's own prompt, and a restricted one
+        // is enforced by Codex's sandbox alone.
+        let networkRule = profile.definition.rule(for: .networkAccess)
+        let network = switch (kind, networkRule) {
+        case (.codex, .allow): " Network access is enabled in Codex's sandbox."
+        case (.codex, _): " Network access stays off in Codex's sandbox; a command that needs it escalates."
+        case (_, .allow): " This profile allows network access, which only Codex's sandbox can carry; \(kind.label) decides network use itself."
+        default: ""
+        }
         return PermissionProfileLaunchPlan(
             arguments: arguments,
             enforcement: arguments.isEmpty ? .guidanceOnly : .partiallyEnforced,
-            detail: detail + " Vendor prompts remain authoritative for capabilities the CLI cannot express." + untranslated + carried
+            detail: detail + " Vendor prompts remain authoritative for capabilities the CLI cannot express." + untranslated + carried + network
         )
     }
 }
