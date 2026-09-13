@@ -100,6 +100,9 @@ struct ContentView: View {
         .sheet(isPresented: $model.worktreeBrowserPresented) {
             WorktreeBrowserView(model: model)
         }
+        .sheet(isPresented: $model.folderManagerPresented) {
+            FolderManagerView(model: model)
+        }
         .sheet(isPresented: $model.releaseLifecyclePresented) {
             ReleaseLifecycleView(model: model)
         }
@@ -255,8 +258,12 @@ struct ContentView: View {
                     Button(model.isFavouriteFolder(model.defaultFolder) ? "Remove This Folder from Favourites" : "Add This Folder to Favourites") {
                         model.toggleFavouriteFolder(model.defaultFolder)
                     }
+                    // A folder that no longer exists cannot be used for new
+                    // panes, so it is not offered here. The manager below lists
+                    // it as missing with a Remove button.
                     let favouriteAlternatives = model.favouriteFolders.filter {
                         !WorkspaceFolderIdentity.matches($0, model.defaultFolder)
+                            && FolderListMaintenance.directoryExists($0)
                     }
                     if !favouriteAlternatives.isEmpty {
                         Divider()
@@ -272,6 +279,7 @@ struct ContentView: View {
                     let recentAlternatives = model.recentFolders.filter {
                         !WorkspaceFolderIdentity.matches($0, model.defaultFolder)
                             && !model.favouriteFolders.contains($0)
+                            && FolderListMaintenance.directoryExists($0)
                     }
                     if !recentAlternatives.isEmpty {
                         Divider()
@@ -282,8 +290,11 @@ struct ContentView: View {
                                 }
                                 .help(folder)
                             }
+                            Button("Clear Recent Folders") { model.clearRecentFolders() }
                         }
                     }
+                    Divider()
+                    Button("Manage Folders…") { model.folderManagerPresented = true }
                 } label: {
                     Label(
                         model.activeWorkspace?.newPaneFolder.map(WorkspaceFolderIdentity.displayName(for:))

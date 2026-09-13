@@ -235,7 +235,13 @@ workspaces may intentionally attach the same canonical folder. Folder opening
 focuses one match, asks on several or creates a normal folder-backed shell
 workspace on none. New Workspace creates a folderless container with a safe
 shell cwd that is not silently attached. Starting an unbound agent requires an
-explicit working folder and permission review.
+explicit working folder and permission review. The New Pane Folder menu offers
+favourites and the automatic recent history, but never a folder that no
+longer exists (`FolderListMaintenance`): recent history is pruned of missing
+folders at load and on every addition, favourites are the person's bookmarks
+and are only reported as missing, and **Manage Folders…** lists both with
+full paths, a MISSING mark, Use and Remove per entry and Clear Recent.
+Removing an entry forgets it; nothing on disk changes.
 
 ## Relay and consultation contract
 

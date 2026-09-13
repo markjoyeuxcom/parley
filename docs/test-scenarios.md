@@ -130,6 +130,12 @@ question, or the refusal is a bare error.
   creates a shell workspace on none.
 - Open a folder from Finder — same behaviour.
 - A folderless shell pane gets a safe cwd and does not silently attach it.
+- Delete a folder that appears under Recent in the New Pane Folder menu, then
+  open the menu: it is no longer offered. **Manage Folders…** lists favourites
+  and recents with full paths, marks a deleted one MISSING with Use disabled,
+  and Remove forgets it; **Clear Recent Folders** empties the history.
+  **Fail:** a deleted folder is still offered, or removing an entry touches
+  anything on disk.
 
 ## P2.3 Relay, Paste, Ask, Delegate
 
