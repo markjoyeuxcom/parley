@@ -702,7 +702,7 @@ Generic `whoami`, `panes` and events stay path-free. Pane rows look the pane
 up through the background scan's exact worktree root and cached records; no
 filesystem work happens at render time.
 
-Cleanup is person-triggered from the worktree browser, for any recorded
+Cleanup is person-triggered from the Worktrees window, for any recorded
 tree. A Parley-created tree must still carry its creation marker; a tracked
 tree has no marker, so Git's registry entry at the recorded path is its
 identity and the preview says so (Mark's decision on 13 September 2026,
@@ -755,7 +755,7 @@ opens, under a generation guard that applies only over unchanged records;
 `registered` is a tri-state and a read failure stays unknown, never
 "absent".
 
-The browser's **Finish & Cleanup** view is an on-demand inspection surface,
+**Finish…** on a row opens the on-demand inspection surface,
 with no timer or background disk-size scan. It groups optional review, pane
 or workspace close, workspace-scoped history clearing and the existing
 guarded removal preview. Each destructive step remains separately confirmed.
@@ -764,8 +764,67 @@ mixed workspaces expose individual panes. History clearing explicitly covers
 the entire named workspace, including other folders, and keeps its existing
 active-work protections.
 
-The browser's **Managed by Parley** list is the worktree board: one
-`WorktreeBoardRow` per record, derived on every read from the record, the
+The **Worktrees** window (Tools › Worktrees…, also reached by Workspace ›
+Open Worktree…, which selects the active pane's repository) is the worktree
+manager. It is an auxiliary `Window` scene on `AuxiliaryWindowRoot`, so it
+opens with no workspace or pane, is released on close and reads only while
+on screen. Its repository list (`WorktreeRepositoryCatalog.merge`) is built
+from every folder Parley knows, resolved off the main actor: pane folders,
+workspace attachments, favourites, recent folders, managed-record paths and
+folders the person added with Add Repository…, which persist in
+`worktree-repositories.json` (paths only, mode 0600) so the window is
+useful with nothing open. Entries are keyed by primary checkout and union
+their sources; an added folder that no longer resolves stays listed as
+missing until forgotten, and only an entry whose sole source is the
+person's addition can be forgotten. The selected repository's registered
+worktrees are the rows: Git's registry is the list and a
+`ManagedWorktreeRecord`, when one exists, annotates the row with base, team
+and requester (`WorktreeBoardRow.derive(tree:record:…)`; a prunable entry
+is `.stale` before any fact is read, an unrecorded tree's owner is
+`.unrecorded`). Facts for unrecorded trees come from
+`ManagedWorktreeService.facts(forTreeAt:id:expectedCommonDirectory:)`, keyed
+by path, read for the selected repository only and applied by the newest
+request. Every linked row offers Open, Integrate…, Finish… and Remove…; an
+unrecorded tree gets a record on the way into Finish or Remove
+(`ensureWorktreeRecord`, the same `attach` Track Existing used, written
+silently), so tracking is no longer a step. A STALE row offers **Prune…**
+and **Delete branch…** instead. A gone folder cannot be realpath-resolved, so
+Git spells a stale entry with the `/private` prefix the record lacks;
+the manager matches records to stale rows by resolved path, and checks
+compare resolved forms rather than strings. Prune is Git's own global prune: there is no
+per-entry form, so the preview lists every prunable entry of the repository
+and the person acknowledges that list, the acknowledged list must still
+match the registry when it runs, no folder or branch changes, and Parley
+clears its records for the forgotten entries. Delete branch runs one
+`git branch -d --end-of-options <branch>` from the primary checkout after a
+preview that states the commit, whether it is contained in the primary's
+HEAD and whether a registered worktree still has it checked out; Git's own
+refusal is shown as it is and `-D` never appears in Parley's argv. The
+branch step is offered as a second button on a successful removal's result
+and again after a prune, for the branches the forgotten entries held (one
+confirmation each); it is not on a STALE row, because Git counts a prunable
+entry as still holding its branch and refuses until the entry is pruned,
+which the preview states when it happens.
+Integrate on an unrecorded row uses the registry's branch and refuses a
+detached HEAD. **Remove integrated…** in the window's footer is the one bulk
+action: every linked tree whose row reads Integrated gets a record if it
+lacks one, a fresh `cleanupPreview` each, and `WorktreeBulkRemovalPlan`
+splits them into passing and skipped (any refusal, or a folder already
+gone, which is Prune's case); the single preview lists each passing tree
+with its preservation summary and every ignored entry that would go,
+grouped by tree, and each skipped tree with its reason. Confirmation runs
+one `git worktree remove` per passing tree, in order, under one folder
+reservation and one mutation, and stops at the first outcome that is not
+a confirmed removal, reporting each. The branches of the removed trees are
+then offered as the same separate branch step, one confirmation each.
+Nothing runs across repositories. The Open Worktree… sheet, its two-list
+layout, the Managed by Parley section and Track Existing are gone; the
+Workspace menu item and the pane notice's "open worktrees" action both
+open the window on that folder's repository, and Finish… on a row presents
+the four-step inspector (`WorktreeLifecycleView`) as a sheet on the window.
+
+Every row of the window is the worktree board: one
+`WorktreeBoardRow` per registry entry, derived on every read from the record, the
 last background `ManagedWorktreeFacts`, the panes the scan mapped into the
 tree, the requesting pane if it still exists and the bound team session. It
 shows the owner (a team with its state, the requesting pane as running,
@@ -784,7 +843,7 @@ runs); when that run ends the facts are re-read for every record so the row
 can read Integrated, after which the existing removal policy passes on its
 own. The tester and reviewer of v0.1.49 both thought ownership and safe
 cleanup were missing when they were not; the board exists so those facts
-are visible without opening Finish & Cleanup. `docs/worktrees-roadmap.md`
+are visible without opening the inspector. `docs/worktrees-roadmap.md`
 records what was decided on 13 September 2026 and what waits on beta
 evidence.
 

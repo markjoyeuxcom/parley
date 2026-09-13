@@ -386,7 +386,10 @@ struct ParleyNativeApp: App {
                 Button("New Workspace") { model.createWorkspace() }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                 Button("Open Folder…") { model.openWorkspacePicker() }
-                Button("Open Worktree…") { model.showWorktreeBrowser() }
+                Button("Open Worktree…") {
+                    openWindow(id: "worktrees")
+                    model.selectWorktreeRepository(containing: model.activePane?.cwd ?? model.defaultFolder)
+                }
                 Divider()
                 Button("Attach Folder…") {
                     if let workspace = model.activeWorkspace { model.attachFolder(to: workspace) }
@@ -401,6 +404,7 @@ struct ParleyNativeApp: App {
                     .disabled(model.activeWorkspace == nil)
             }
             CommandMenu("Tools") {
+                Button("Worktrees…") { openWindow(id: "worktrees") }
                 Button("Team Sessions…") { openWindow(id: "main"); model.reviewTeamSessions() }
                 Divider()
                 Button("Environment Check…") { model.showEnvironmentCheck() }
@@ -456,6 +460,12 @@ struct ParleyNativeApp: App {
         .defaultSize(width: 1_120, height: 780)
         .windowResizability(.contentMinSize)
 
+
+        Window("Worktrees", id: "worktrees") {
+            AuxiliaryWindowRoot(minimumSize: CGSize(width: 900, height: 560)) { WorktreeManagerView(model: model) }
+        }
+        .defaultSize(width: 1_060, height: 700)
+        .windowResizability(.contentMinSize)
 
         Window("Parley Help", id: "help") {
             AuxiliaryWindowRoot(minimumSize: CGSize(width: 820, height: 590)) { HelpView(model: model) }
