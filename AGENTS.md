@@ -1137,6 +1137,19 @@ fixed rather than per-run and clear it on the way in as well as out, so the
 count is bounded however many times the suite runs. A UUID per run accumulated
 1,626 files before anyone looked.
 
+The checks binary is an unbundled executable, so AppKit gives it a prohibited
+activation policy: none of its windows can become key, and a window-state check
+sees only the window server's occlusion notification. That arrives tens to
+hundreds of milliseconds after the ordering call, later on a loaded runner, and
+is coalesced, so a window ordered out before the server ever reported it on
+screen changes nothing and posts nothing. Minimise and deminiaturise take
+effect about half a second after the call there as well. A step that acts on a
+window therefore waits, bounded, for the fact it needs (on screen, mounted,
+released) and reports the window's facts when the bound passes. A fixed delay
+after the call was the auxiliary window check's flake, and reading
+`isMiniaturized` right after `miniaturize` reported minimise unavailable for a
+week while the window was merely still on its way to the Dock.
+
 For terminal/lifetime changes also run the Ghostty soak. Default checks must
 not launch a vendor CLI, spend subscription quota, mutate unrelated user
 processes or depend on network access. The explicit manual

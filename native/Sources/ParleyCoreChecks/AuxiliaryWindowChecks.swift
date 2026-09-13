@@ -130,12 +130,32 @@ private struct WindowProbeFailure: Error, CustomStringConvertible {
     let description: String
 }
 
+/// What one scenario step reports when the driver runs it. A pending step
+/// runs again on the next driver tick until it is done or its bound passes.
+private enum WindowProbeStepOutcome {
+    case done
+    case pending(String)
+    case failed(String)
+}
+
 /// Drives a real NSWindow hosting the actual root through the AppKit event
 /// loop (`NSApplication.run`, the only pump that delivers window server
 /// state faithfully): first show, minimise, deminiaturise, application hide
 /// and unhide, orderOut, reopen and close. Drafts (the content's own
 /// StateObject) survive temporary hiding, the clock stops while hidden and
 /// keeps menu-tracking deferral, and close or orderOut destroy everything.
+///
+/// The check process is an unbundled executable, so its activation policy is
+/// prohibited: no window of it can become key and no key notification ever
+/// reaches the root. Content therefore mounts and is released only through
+/// `NSWindow.didChangeOcclusionStateNotification`, which the window server
+/// delivers asynchronously (tens to hundreds of milliseconds after the
+/// ordering call, later on a loaded machine) and coalesces, so a window
+/// ordered out before the server ever reported it on screen produces no
+/// change and no notification at all. Every step that acts on a shown
+/// window therefore first waits, bounded, for the window server to report
+/// it on screen and for the content to mount, and every release waits for
+/// the content to go; a fixed delay was the flake.
 @MainActor
 private final class WindowProbeScenario {
     let app = NSApplication.shared
@@ -145,16 +165,25 @@ private final class WindowProbeScenario {
     /// unhide must not mount anything in it.
     let dormantLedger = WindowProbeLedger()
     let dormantWindow: NSWindow
-    var steps: [(String, () -> String?)] = []
+    var steps: [(String, () -> WindowProbeStepOutcome)] = []
     var index = 0
     var failure: String?
     var notes: [String] = []
     var recordedTicks = 0
     var recordedAppearances = 0
     var recordedSuspensions = 0
-    var minimiseSupported = true
+    /// Decided by the scenario once the minimise has or has not taken effect.
+    var minimiseSupported = false
     var hideSupported = true
-    var settleRetries = 0
+    /// Driver ticks the current step has reported pending.
+    var pendingTicks = 0
+    static let driverInterval: TimeInterval = 0.3
+    /// Six seconds at the driver interval: far above the window server's
+    /// usual latency, small enough that a real regression fails promptly.
+    static let pendingTickLimit = 20
+    /// Two seconds without the window minimising means the environment
+    /// cannot minimise at all, not that the animation is still running.
+    static let minimiseDecisionTicks = 7
 
     init() {
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 220),
@@ -169,6 +198,22 @@ private final class WindowProbeScenario {
         dormantWindow.contentView = NSHostingView(rootView: AuxiliaryWindowRoot(minimumSize: CGSize(width: 300, height: 200)) { WindowProbeContent(ledger: dormantLedger) })
     }
 
+    var live: Int { ledger.created - ledger.destroyed }
+
+    /// The AppKit facts a failure needs to be diagnosed without a rerun.
+    var facts: String {
+        "window isVisible \(window.isVisible), miniaturized \(window.isMiniaturized), key \(window.isKeyWindow), occlusion visible \(window.occlusionState.contains(.visible)); app hidden \(app.isHidden), active \(app.isActive), activation policy \(app.activationPolicy().rawValue); ledger created \(ledger.created), destroyed \(ledger.destroyed), appeared \(ledger.appeared), ticks \(ledger.ticks), suspended \(ledger.suspended)"
+    }
+
+    /// Nil once the window is ordered in and the window server has reported
+    /// it on screen, which is the only mount signal this process receives
+    /// and the precondition for a later orderOut to change anything.
+    var notYetOnScreen: String? {
+        guard window.isVisible else { return "waiting for the window to be ordered in" }
+        guard window.occlusionState.contains(.visible) else { return "waiting for the window server to report the window on screen" }
+        return nil
+    }
+
     func stopLoop() {
         app.stop(nil)
         app.postEvent(NSEvent.otherEvent(with: .applicationDefined, location: .zero, modifierFlags: [], timestamp: 0,
@@ -180,230 +225,244 @@ private final class WindowProbeScenario {
             stopLoop()
             return
         }
-        let step = steps[index]
-        index += 1
-        if let problem = step.1() { failure = "\(step.0): \(problem)" }
+        let (name, step) = steps[index]
+        switch step() {
+        case .done:
+            index += 1
+            pendingTicks = 0
+        case .pending(let reason):
+            pendingTicks += 1
+            guard pendingTicks >= Self.pendingTickLimit else { return }
+            let waited = String(format: "%.1f", Double(pendingTicks) * Self.driverInterval)
+            failure = "\(name): still \(reason) after \(waited) s; \(facts)"
+        case .failed(let problem):
+            failure = "\(name): \(problem); \(facts)"
+        }
     }
 }
 
-/// Drives a real NSWindow hosting the actual root through the AppKit event
-/// loop (`NSApplication.run`, the only pump that delivers window server
-/// state faithfully): first show, minimise, deminiaturise, application hide
-/// and unhide, orderOut, reopen and close. Drafts (the content's own
-/// StateObject) survive temporary hiding, the clock stops while hidden and
-/// keeps menu-tracking deferral, and close or orderOut destroy everything.
+/// See `WindowProbeScenario`. Each acting step asserts the settled result of
+/// the previous action, then acts; each settle step waits for that result.
 func auxiliaryWindowLifetimeChecks() throws {
     try MainActor.assumeIsolated {
         let scenario = WindowProbeScenario()
         let ledger = scenario.ledger
         let window = scenario.window
         let app = scenario.app
-        // Each step asserts the settled result of the previous action, then acts.
         var createdBefore = 0
-        @MainActor func live() -> Int { ledger.created - ledger.destroyed }
         scenario.steps = [
             ("show", {
-                guard ledger.created == 0 else { return "content was mounted before the window was shown" }
-                window.makeKeyAndOrderFront(nil); return nil
+                guard ledger.created == 0 else { return .failed("content was mounted before the window was shown") }
+                window.makeKeyAndOrderFront(nil)
+                return .done
             }),
-            ("minimise", {
-                guard live() == 1, ledger.ticks > 0 else { return "showing the window did not mount content and start its clock (created \(ledger.created), destroyed \(ledger.destroyed), ticks \(ledger.ticks))" }
+            ("content mounts once the window is on screen", {
+                if let reason = scenario.notYetOnScreen { return .pending(reason) }
+                guard scenario.live == 1 else { return .pending("waiting for the content to mount") }
+                guard ledger.ticks > 0 else { return .pending("waiting for the mounted content's clock to tick") }
                 createdBefore = ledger.created
                 scenario.recordedSuspensions = ledger.suspended
+                return .done
+            }),
+            ("minimise", {
                 window.miniaturize(nil)
-                scenario.minimiseSupported = window.isMiniaturized
-                if !scenario.minimiseSupported {
-                    scenario.notes.append("minimise is not available in this environment; its assertions were skipped")
-                    window.makeKeyAndOrderFront(nil)
+                return .done
+            }),
+            // AppKit reports the minimise on a later turn, even in this
+            // unbundled process; deciding from the flag right after the call
+            // read "unavailable" while the window was on its way to the Dock.
+            // Wait for it, and only treat minimise as unavailable when the
+            // window is still up after a bound well past the animation.
+            ("minimise takes effect", {
+                if window.isMiniaturized {
+                    scenario.minimiseSupported = true
+                    return .done
                 }
-                return nil
+                guard scenario.pendingTicks >= WindowProbeScenario.minimiseDecisionTicks else { return .pending("waiting for the window to minimise") }
+                scenario.minimiseSupported = false
+                scenario.notes.append("minimise is not available in this environment; its assertions were skipped")
+                return .done
             }),
             // The suspended state lands on a later run-loop turn than the
-            // action; wait for the content to report it before asserting
-            // that the clock is quiet, so a tick in between is not a failure.
-            ("settle after minimise", {
-                if scenario.minimiseSupported, ledger.suspended == scenario.recordedSuspensions, scenario.settleRetries < 10 {
-                    scenario.settleRetries += 1
-                    scenario.index -= 1
-                    return nil
+            // action; wait for the content to report it before recording the
+            // tick count that must then stay put.
+            ("content suspends after minimise", {
+                if scenario.minimiseSupported, ledger.suspended == scenario.recordedSuspensions {
+                    return .pending("waiting for the minimised content to suspend")
                 }
-                scenario.settleRetries = 0
                 scenario.recordedTicks = ledger.ticks
-                return nil
+                return .done
             }),
             ("deminiaturise", {
                 if scenario.minimiseSupported {
-                    guard ledger.destroyed == 0 else { return "minimising destroyed the content and its drafts" }
-                    guard ledger.suspended > scenario.recordedSuspensions else { return "minimising did not suspend the content" }
-                    guard ledger.ticks == scenario.recordedTicks else { return "the clock kept ticking while minimised (\(ledger.ticks) vs \(scenario.recordedTicks))" }
+                    guard ledger.destroyed == 0 else { return .failed("minimising destroyed the content and its drafts") }
+                    guard ledger.ticks == scenario.recordedTicks else { return .failed("the clock kept ticking while minimised (\(ledger.ticks) vs \(scenario.recordedTicks))") }
                     window.deminiaturize(nil)
                 }
-                return nil
+                return .done
+            }),
+            ("content resumes on screen after deminiaturise", {
+                guard ledger.created == createdBefore else { return .failed("deminiaturising rebuilt the content instead of resuming it") }
+                if let reason = scenario.notYetOnScreen { return .pending(reason) }
+                guard scenario.live == 1 else { return .pending("waiting for the content to be live") }
+                if scenario.minimiseSupported, ledger.ticks == scenario.recordedTicks { return .pending("waiting for the clock to resume") }
+                scenario.recordedSuspensions = ledger.suspended
+                return .done
             }),
             ("hide", {
-                if scenario.minimiseSupported {
-                    guard ledger.created == createdBefore, live() == 1 else { return "deminiaturising rebuilt the content instead of resuming it (created \(ledger.created), destroyed \(ledger.destroyed))" }
-                    guard ledger.ticks > scenario.recordedTicks else { return "the clock did not resume after deminiaturising" }
-                } else {
-                    guard live() == 1 else { return "restoring the window after the skipped minimise left no live content (created \(ledger.created), destroyed \(ledger.destroyed))" }
-                }
-                createdBefore = ledger.created
-                scenario.recordedSuspensions = ledger.suspended
                 app.hide(nil)
                 scenario.hideSupported = app.isHidden
                 if !scenario.hideSupported {
                     scenario.notes.append("application hide is not available in this environment; its assertions were skipped")
                 }
-                return nil
+                return .done
             }),
-            ("settle after hide", {
-                if scenario.hideSupported, ledger.suspended == scenario.recordedSuspensions, scenario.settleRetries < 10 {
-                    scenario.settleRetries += 1
-                    scenario.index -= 1
-                    return nil
+            ("content suspends after hide", {
+                if scenario.hideSupported, ledger.suspended == scenario.recordedSuspensions {
+                    return .pending("waiting for the hidden content to suspend")
                 }
-                scenario.settleRetries = 0
                 scenario.recordedTicks = ledger.ticks
-                return nil
+                return .done
             }),
             ("unhide", {
                 if scenario.hideSupported {
-                    guard ledger.suspended > scenario.recordedSuspensions else { return "hiding the application did not suspend the content" }
-                    guard live() == 1, ledger.created == createdBefore else { return "hiding the application destroyed the content and its drafts (created \(ledger.created), destroyed \(ledger.destroyed))" }
-                    guard ledger.ticks == scenario.recordedTicks else { return "the clock kept ticking while the application was hidden" }
+                    guard scenario.live == 1, ledger.created == createdBefore else { return .failed("hiding the application destroyed the content and its drafts") }
+                    guard ledger.ticks == scenario.recordedTicks else { return .failed("the clock kept ticking while the application was hidden") }
                     app.unhide(nil)
                     window.makeKeyAndOrderFront(nil)
                 }
-                return nil
+                return .done
+            }),
+            // Only a window the server has reported on screen changes state
+            // when ordered out; act on it before that and nothing follows.
+            ("content resumes on screen after unhide", {
+                guard ledger.created == createdBefore else { return .failed("unhiding rebuilt the content instead of resuming it") }
+                if let reason = scenario.notYetOnScreen { return .pending(reason) }
+                guard scenario.live == 1 else { return .pending("waiting for the content to be live") }
+                guard ledger.ticks > scenario.recordedTicks else { return .pending("waiting for the clock to resume") }
+                return .done
             }),
             ("menu deferral", {
-                guard live() == 1, ledger.created == createdBefore else { return "unhiding rebuilt the content instead of resuming it (created \(ledger.created), destroyed \(ledger.destroyed))" }
-                guard ledger.ticks > scenario.recordedTicks else { return "the clock did not resume after unhiding (ticks \(ledger.ticks) vs \(scenario.recordedTicks))" }
                 let before = ledger.ticks
                 RunLoop.main.run(mode: .eventTracking, before: Date().addingTimeInterval(0.12))
-                guard ledger.ticks == before else { return "the clock fired while the run loop tracked a menu" }
+                guard ledger.ticks == before else { return .failed("the clock fired while the run loop tracked a menu") }
                 scenario.recordedTicks = ledger.ticks
                 createdBefore = ledger.created
                 window.orderOut(nil)
-                return nil
+                return .done
             }),
-            // SwiftUI commits the removal on its next update, so the clock may
-            // fire once or twice before the content is destroyed; what must
-            // hold is that nothing ticks once it is gone.
-            ("settle after orderOut", {
-                // The commit that destroys the content lands on a later run-loop
-                // turn; wait for it (bounded) before measuring quiescence.
-                if live() > 0, scenario.settleRetries < 10 {
-                    scenario.settleRetries += 1
-                    scenario.index -= 1
-                    return nil
-                }
-                scenario.settleRetries = 0
+            // SwiftUI commits the removal on a later run-loop turn, so the
+            // clock may tick once or twice first; what must hold is that
+            // nothing ticks once the content is gone.
+            ("content is released after orderOut", {
+                guard scenario.live == 0 else { return .pending("waiting for orderOut to release the content") }
                 scenario.recordedTicks = ledger.ticks
-                return nil
+                return .done
             }),
             ("reopen", {
-                guard live() == 0 else {
-                    return "ordering the window out did not release the content (created \(ledger.created), destroyed \(ledger.destroyed); isVisible \(window.isVisible), miniaturized \(window.isMiniaturized), appHidden \(app.isHidden), occlusion visible \(window.occlusionState.contains(.visible)), onScreen \(window.isOnActiveSpace))"
-                }
-                guard ledger.ticks == scenario.recordedTicks else { return "the clock kept ticking after the content was released by orderOut" }
+                guard ledger.ticks == scenario.recordedTicks else { return .failed("the clock kept ticking after the content was released by orderOut") }
                 window.makeKeyAndOrderFront(nil)
-                return nil
+                return .done
+            }),
+            ("fresh content mounts after reopen", {
+                guard ledger.created <= createdBefore + 1 else { return .failed("reopening built the content more than once") }
+                if let reason = scenario.notYetOnScreen { return .pending(reason) }
+                guard scenario.live == 1, ledger.created == createdBefore + 1 else { return .pending("waiting for fresh content to mount") }
+                guard ledger.ticks > scenario.recordedTicks else { return .pending("waiting for the reopened content's clock to tick") }
+                return .done
             }),
             ("close", {
-                guard live() == 1, ledger.created == createdBefore + 1 else { return "reopening did not build fresh content (created \(ledger.created), destroyed \(ledger.destroyed))" }
-                guard ledger.ticks > scenario.recordedTicks else { return "the clock did not start for the reopened content" }
                 scenario.recordedTicks = ledger.ticks
                 window.close()
-                return nil
+                return .done
             }),
-            ("settle after close", {
-                if live() > 0, scenario.settleRetries < 10 {
-                    scenario.settleRetries += 1
-                    scenario.index -= 1
-                    return nil
-                }
-                scenario.settleRetries = 0
+            ("content is released after close", {
+                guard scenario.live == 0 else { return .pending("waiting for close to release the content") }
                 scenario.recordedTicks = ledger.ticks
-                return nil
+                return .done
             }),
             ("closed", {
-                guard live() == 0 else { return "closing did not release the content (created \(ledger.created), destroyed \(ledger.destroyed); isVisible \(window.isVisible), appHidden \(app.isHidden))" }
-                guard ledger.ticks == scenario.recordedTicks else { return "the clock kept ticking after the content was released by close" }
+                guard ledger.ticks == scenario.recordedTicks else { return .failed("the clock kept ticking after the content was released by close") }
                 createdBefore = ledger.created
                 scenario.recordedAppearances = ledger.appeared
                 if scenario.hideSupported { app.hide(nil) }
-                return nil
+                return .done
             }),
             // A closed window must stay closed through a global application
             // hide and unhide: no new content, no onAppear, no ticks.
             ("unhide after close", {
-                guard live() == 0, ledger.created == createdBefore, ledger.appeared == scenario.recordedAppearances else {
-                    return "hiding the application resurrected a closed window's content (created \(ledger.created), destroyed \(ledger.destroyed), appeared \(ledger.appeared) vs \(scenario.recordedAppearances))"
+                guard scenario.live == 0, ledger.created == createdBefore, ledger.appeared == scenario.recordedAppearances else {
+                    return .failed("hiding the application resurrected a closed window's content")
                 }
-                guard ledger.ticks == scenario.recordedTicks else { return "the clock ticked for a closed window while the application was hidden" }
+                guard ledger.ticks == scenario.recordedTicks else { return .failed("the clock ticked for a closed window while the application was hidden") }
                 if scenario.hideSupported { app.unhide(nil) }
-                return nil
+                return .done
             }),
             ("reopen after hide cycle", {
-                guard live() == 0, ledger.created == createdBefore, ledger.appeared == scenario.recordedAppearances else {
-                    return "unhiding the application resurrected a closed window's content (created \(ledger.created), destroyed \(ledger.destroyed), appeared \(ledger.appeared) vs \(scenario.recordedAppearances))"
+                guard scenario.live == 0, ledger.created == createdBefore, ledger.appeared == scenario.recordedAppearances else {
+                    return .failed("unhiding the application resurrected a closed window's content")
                 }
-                guard ledger.ticks == scenario.recordedTicks else { return "the clock ticked for a closed window after the application was unhidden" }
+                guard ledger.ticks == scenario.recordedTicks else { return .failed("the clock ticked for a closed window after the application was unhidden") }
                 window.makeKeyAndOrderFront(nil)
-                return nil
+                return .done
             }),
-            ("orderOut before hide", {
-                guard live() == 1, ledger.created == createdBefore + 1, ledger.appeared == scenario.recordedAppearances + 1 else {
-                    return "reopening after the hide cycle did not build fresh content exactly once (created \(ledger.created), destroyed \(ledger.destroyed), appeared \(ledger.appeared))"
+            ("fresh content mounts after the hide cycle", {
+                guard ledger.created <= createdBefore + 1, ledger.appeared <= scenario.recordedAppearances + 1 else {
+                    return .failed("reopening after the hide cycle built or showed the content more than once")
                 }
+                if let reason = scenario.notYetOnScreen { return .pending(reason) }
+                guard scenario.live == 1, ledger.created == createdBefore + 1, ledger.appeared == scenario.recordedAppearances + 1 else {
+                    return .pending("waiting for fresh content to mount")
+                }
+                guard ledger.ticks > scenario.recordedTicks else { return .pending("waiting for the reopened content's clock to tick") }
                 createdBefore = ledger.created
                 scenario.recordedAppearances = ledger.appeared
-                window.orderOut(nil)
-                return nil
+                return .done
             }),
-            ("settle after second orderOut", {
-                if live() > 0, scenario.settleRetries < 10 {
-                    scenario.settleRetries += 1
-                    scenario.index -= 1
-                    return nil
-                }
-                scenario.settleRetries = 0
+            ("orderOut before hide", {
+                window.orderOut(nil)
+                return .done
+            }),
+            ("content is released after the second orderOut", {
+                guard scenario.live == 0 else { return .pending("waiting for the second orderOut to release the content") }
                 scenario.recordedTicks = ledger.ticks
-                return nil
+                return .done
             }),
             ("hide after orderOut", {
-                guard live() == 0 else { return "the second orderOut did not release the content (created \(ledger.created), destroyed \(ledger.destroyed))" }
+                guard ledger.ticks == scenario.recordedTicks else { return .failed("the clock kept ticking after the content was released by the second orderOut") }
                 if scenario.hideSupported { app.hide(nil) }
-                return nil
+                return .done
             }),
             ("unhide after orderOut", {
-                guard live() == 0, ledger.created == createdBefore, ledger.appeared == scenario.recordedAppearances else {
-                    return "hiding the application resurrected an ordered-out window's content (created \(ledger.created), destroyed \(ledger.destroyed), appeared \(ledger.appeared) vs \(scenario.recordedAppearances))"
+                guard scenario.live == 0, ledger.created == createdBefore, ledger.appeared == scenario.recordedAppearances else {
+                    return .failed("hiding the application resurrected an ordered-out window's content")
                 }
-                guard ledger.ticks == scenario.recordedTicks else { return "the clock ticked for an ordered-out window while the application was hidden" }
+                guard ledger.ticks == scenario.recordedTicks else { return .failed("the clock ticked for an ordered-out window while the application was hidden") }
                 if scenario.hideSupported { app.unhide(nil) }
-                return nil
+                return .done
             }),
             ("released windows stay released", {
-                guard live() == 0, ledger.created == createdBefore, ledger.appeared == scenario.recordedAppearances else {
-                    return "unhiding the application resurrected an ordered-out window's content (created \(ledger.created), destroyed \(ledger.destroyed), appeared \(ledger.appeared) vs \(scenario.recordedAppearances))"
+                guard scenario.live == 0, ledger.created == createdBefore, ledger.appeared == scenario.recordedAppearances else {
+                    return .failed("unhiding the application resurrected an ordered-out window's content")
                 }
-                guard ledger.ticks == scenario.recordedTicks else { return "the clock ticked for an ordered-out window after the application was unhidden" }
+                guard ledger.ticks == scenario.recordedTicks else { return .failed("the clock ticked for an ordered-out window after the application was unhidden") }
                 let dormant = scenario.dormantLedger
                 guard dormant.created == 0, dormant.appeared == 0, dormant.ticks == 0 else {
-                    return "a never-shown window mounted content during application hide/unhide (created \(dormant.created), appeared \(dormant.appeared), ticks \(dormant.ticks))"
+                    return .failed("a never-shown window mounted content during application hide/unhide (created \(dormant.created), appeared \(dormant.appeared), ticks \(dormant.ticks))")
                 }
-                return nil
+                return .done
             }),
         ]
-        let driver = Timer(timeInterval: 0.3, repeats: true) { _ in
+        let driver = Timer(timeInterval: WindowProbeScenario.driverInterval, repeats: true) { _ in
             MainActor.assumeIsolated { scenario.advance() }
         }
         RunLoop.main.add(driver, forMode: .common)
-        let watchdog = Timer(timeInterval: 25, repeats: false) { _ in
+        // Every settle is bounded by `pendingTickLimit`; this only catches a
+        // run loop that stopped delivering the driver at all.
+        let watchdog = Timer(timeInterval: 60, repeats: false) { _ in
             MainActor.assumeIsolated {
-                scenario.failure = scenario.failure ?? "the window lifetime scenario timed out at step \(scenario.index)"
+                let step = scenario.index < scenario.steps.count ? scenario.steps[scenario.index].0 : "the end"
+                scenario.failure = scenario.failure ?? "the window lifetime scenario timed out at \(step); \(scenario.facts)"
                 scenario.stopLoop()
             }
         }
