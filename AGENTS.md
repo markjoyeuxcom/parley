@@ -417,7 +417,13 @@ created on demand, and a check that cannot fail is not coverage.
 
 Host vendor CLIs launch directly as trusted local applications, with their own
 permissions and approval prompts. Do not put Parley's Seatbelt profile around
-host CLIs: it prevents Codex from applying its tool sandbox. Host bypass flags
+host CLIs: it prevents Codex from applying its tool sandbox. A host Codex
+launch takes `HostAgentPermissions.launchArguments`; the generic
+`PermissionProfileAdapter.launchPlan` is what the review displays and what
+container and non-Codex launches use. Anything that must reach a host Codex
+pane has to be carried in both: v0.1.44 put the approvals choice in the plan
+only, so a host Codex pane never received auto review while the review said
+it had. Host bypass flags
 remain forbidden. `HostAgentPermissions` supplies Codex-native private-runtime
 denials with exact protocol/shim read access and own-endpoint write access;
 its built-in profile parent retains Codex's Git and configuration protections.
@@ -1034,7 +1040,12 @@ alter an existing model context.
   rules for Parley's own command (`Bash(parley:*)` and the runtime-local shim
   path), the counterpart of Copilot's `shell(parley)`, so protocol commands do
   not prompt while every other shell command keeps Claude's prompt; a profile
-  that asks before shell commands keeps asking for `parley` too. A host team
+  that asks before shell commands keeps asking for `parley` too, because
+  Claude evaluates deny, then ask, then allow and specificity does not change
+  that order. Flexible allows both execution rules since 13 September 2026
+  (Mark's decision after it had asked before every Bash command), so it places
+  no shell restriction on any vendor; Default and Workspace folders still ask.
+  A host team
   is therefore supervised automation: Codex asks on sandbox escalation, Agy
   asks before commands and has no allowlist (only `--dangerously-skip-permissions`,
   which invariant 3 forbids on the host), and only container members with

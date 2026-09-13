@@ -703,7 +703,7 @@ public enum ParleyHelpGuide {
                     items: [
                         "Review only supports project reads and Git inspection without project mutation.",
                         "Default keeps routine reads available while writes and execution remain vendor decisions.",
-                        "Flexible prepares project-local reads, writes, tests and builds; network, external folders and consequential actions stay explicit.",
+                        "Flexible prepares project-local reads, writes, tests, builds and local processes, so it places no shell restriction on any vendor and a vendor's remaining prompts are its own; network, external folders and consequential actions stay explicit.",
                         "Workspace folders keeps Flexible-style project capabilities but can pass several exact, checked workspace attachments to one pane. Right-click a running agent and choose Folder Access to review changes; applying them explicitly restarts that vendor session without changing its working folder.",
                         "Broad workspace applies only to its exact approved roots and is session-scoped by default. It is never host-wide access and never becomes the next pane's default silently.",
                         "Attaching a folder never grants it. A pane keeps its reviewed roots until the person changes them, and adding another attachment later has no effect on a running process.",
