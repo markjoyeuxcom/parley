@@ -115,6 +115,7 @@ struct PermissionProfilePickerView: View {
                         to: request,
                         profileID: selectedProfileID,
                         approvedRoots: approvedRoots,
+                        approvals: approvals,
                         containerConfiguration: runInContainer ? containerConfiguration : nil
                     ) }
                 }

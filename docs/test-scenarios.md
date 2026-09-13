@@ -241,8 +241,11 @@ question, or the refusal is a bare error.
   overrides the choice), or that it sets none.
   **Fail:** the line never appears, or says nothing when the config has it.
 - **Approvals → Vendor's automatic reviewer** on a Claude pane (auto mode) and
-  a Codex pane (auto review): a routine command such as `ls` runs with no
-  prompt; a destructive one such as `git push --force` is refused or asked.
+  a Codex pane (auto review): the Claude pane's status line says "auto mode
+  on" from the first frame, not "accept edits on" (v0.1.44 to v0.1.48 opened
+  in accept-edits because the review dropped the choice); a routine command
+  such as `ls` runs with no prompt; a destructive one such as
+  `git push --force` is refused or asked.
   On an Agy pane the picker is disabled and the review says Agy has no
   reviewer. Vendor Enforcement names the mode.
   **Fail:** a routine command still prompts, a destructive one runs silently,
