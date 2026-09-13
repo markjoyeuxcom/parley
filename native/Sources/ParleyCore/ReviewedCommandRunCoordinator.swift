@@ -53,11 +53,11 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
             guard deletedRequests[owner]?.contains(fingerprint) != true else {
                 throw ReviewedCommandRunError.invalid("The person deleted this command run and its result. The original request cannot be replayed.")
             }
-            if let previous = records.values.first(where: { $0.source.id == id && $0.source.launchGeneration == source.launchGeneration && $0.idempotencyKey == idempotencyKey }) {
+            if let previous = records.values.first(where: { $0.source?.id == id && $0.source?.launchGeneration == source.launchGeneration && $0.idempotencyKey == idempotencyKey }) {
                 guard previous.requestedCommand == command else { throw ReviewedCommandRunError.invalid("A request identity cannot name different commands.") }
                 return previous
             }
-            guard !records.values.contains(where: { $0.source.id == id && (!$0.state.isTerminal || $0.workerStillRunning) }) else {
+            guard !records.values.contains(where: { $0.source?.id == id && (!$0.state.isTerminal || $0.workerStillRunning) }) else {
                 throw ReviewedCommandRunError.invalid("This pane already has an active command run.")
             }
             let grant = sessionGrants.first { $0.matches(source: source, command: command) }
@@ -75,15 +75,47 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
         }
     }
 
+    /// A run the person proposes from the native app, such as Integrate… on
+    /// a worktree. Only the native app calls this; no transport route reaches
+    /// it. It always waits for the person's approval in the editable preview:
+    /// neither the automatic-approval switch nor an exact-command grant
+    /// applies, because that preview is where the person confirms the exact
+    /// command. The folder is its own containment root. No pane requested it,
+    /// so `wait` refuses it and a pane change never interrupts it.
+    public func propose(argv: [String], folder: String, workspaceID: String, workspaceName: String?) throws -> ReviewedCommandRun {
+        try lock.withLock {
+            guard !stopped else { throw ReviewedCommandRunError.invalid("The command-run service has stopped.") }
+            reconcile()
+            let command = try ReviewedCommand(argv: argv, folder: folder, sourceFolder: folder)
+            guard !workspaceID.isEmpty else { throw ReviewedCommandRunError.invalid("Choose a workspace for the run's Shell pane.") }
+            guard !records.values.contains(where: { $0.origin == .person && (!$0.state.isTerminal || $0.workerStillRunning) }) else {
+                throw ReviewedCommandRunError.invalid("A run you proposed is still waiting or running. Approve, reject or cancel it in Review runs and trust first.")
+            }
+            let now = Date()
+            let run = ReviewedCommandRun(id: UUID().uuidString.lowercased(), idempotencyKey: UUID().uuidString, requestedCommand: command,
+                revision: UUID().uuidString, source: nil, sourceFolder: command.folder, command: command, state: .pending,
+                createdAt: now, updatedAt: now, shellPaneID: "pane-" + UUID().uuidString.lowercased(),
+                autoApprovalGrantID: nil, approvedAutomatically: false, result: nil,
+                detail: "Proposed by you; waiting for your approval in the editable preview",
+                origin: .person, workspaceID: workspaceID, workspaceName: workspaceName)
+            try save(run)
+            prune()
+            return run
+        }
+    }
+
     public func approve(id: String, revision: String, argv: [String], folder: String, autoApprove: Bool) throws {
         try lock.withLock {
             guard !stopped, var run = records[id], run.state == .pending, run.revision == revision,
-                  let source = try currentSource(run) else {
+                  let containment = try currentContainmentRoot(run) else {
                 throw ReviewedCommandRunError.invalid("This preview is stale or its requesting pane changed. Refresh before approving.")
             }
-            run.command = try ReviewedCommand(argv: argv, folder: folder, sourceFolder: source.cwd)
+            run.command = try ReviewedCommand(argv: argv, folder: folder, sourceFolder: containment)
             run.state = .approved
-            let grant = autoApprove ? ReviewedCommandGrant(source: source, command: run.command) : nil
+            // A grant is keyed to a requesting pane generation; a run the
+            // person proposed has none, so the toggle cannot create one.
+            let source = try currentSource(run)
+            let grant = autoApprove && source != nil ? ReviewedCommandGrant(source: source!, command: run.command) : nil
             // This run has its own explicit approval; revoking future trust must not revoke it.
             run.autoApprovalGrantID = nil
             run.detail = autoApprove
@@ -91,7 +123,7 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
                 : "Human approved this one run outside the agent boundary"
             // Grant creation follows durable approval; failure cannot authorize execution.
             try save(changed(run))
-            if let grant {
+            if let grant, let source {
                 sessionGrants.removeAll { $0.matches(source: source, command: run.command) }
                 sessionGrants.append(grant)
             }
@@ -128,7 +160,9 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
                 return
             }
             reconcile()
-            for id in records.values.filter({ $0.state == .pending }).sorted(by: { $0.createdAt < $1.createdAt }).map(\.id) {
+            // A run the person proposed is theirs to confirm in the preview;
+            // the switch covers agent requests only.
+            for id in records.values.filter({ $0.state == .pending && $0.origin == .agentPane }).sorted(by: { $0.createdAt < $1.createdAt }).map(\.id) {
                 guard var run = records[id], (try? currentSource(run)) != nil else { continue }
                 run.state = .approved
                 run.autoApprovalGrantID = nil
@@ -148,10 +182,10 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
             for id in records.values.filter({ $0.state == .approved }).sorted(by: { $0.createdAt < $1.createdAt }).map(\.id) {
                 guard !stopped, var run = records[id] else { continue }
                 do {
-                    guard let source = try currentSource(run) else {
+                    guard let containment = try currentContainmentRoot(run) else {
                         throw ReviewedCommandRunError.invalid("The requesting pane changed before launch.")
                     }
-                    _ = try ReviewedCommand(argv: run.command.argv, folder: run.command.folder, sourceFolder: source.cwd)
+                    _ = try ReviewedCommand(argv: run.command.argv, folder: run.command.folder, sourceFolder: containment)
                     run.state = .running
                     run.launchedAt = Date()
                     run.detail = "Starting the approved command in a new Shell pane outside the agent boundary"
@@ -325,7 +359,7 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
         lock.withLock {
             let removed = delete(Array(records.values))
             for run in records.values where removed.contains(run.id) && run.state.isTerminal && !run.workerStillRunning {
-                let owner = RequestOwner(paneID: run.source.id, generation: run.source.launchGeneration)
+                let owner = RequestOwner(paneID: run.source?.id ?? "person", generation: run.source?.launchGeneration ?? 0)
                 deletedRequests[owner, default: []].insert(Data(SHA256.hash(data: Data(run.idempotencyKey.utf8))))
             }
             records = records.filter { id, run in
@@ -368,7 +402,8 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
             for id in records.values.filter({ !$0.state.isTerminal }).map(\.id) {
                 guard var run = records[id] else { continue }
                 let expired = run.state == .pending && Date().timeIntervalSince(run.createdAt) > 30 * 60
-                guard expired || !live.contains(where: { sourceMatches($0, run: run) }) else { continue }
+                // A person-proposed run has no requesting pane to lose; only expiry ends it here.
+                guard expired || (run.origin == .agentPane && !live.contains(where: { sourceMatches($0, run: run) })) else { continue }
                 _ = try? cancellationHandler?(run)
                 run.state = .interrupted
                 run.detail = expired ? "The unapproved request expired." : "The requesting pane stopped, moved, changed folder or restarted."
@@ -400,7 +435,7 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
         while true {
             let response: RelayTextResponse? = lock.withLock {
                 reconcile()
-                guard let run = records[id], authenticate(token) == run.source.id,
+                guard let run = records[id], run.origin == .agentPane, let source = run.source, authenticate(token) == source.id,
                       (try? currentSource(run)) != nil else {
                     return RelayTextResponse(status: 403, text: "Only the same live requesting pane generation can recover this run.")
                 }
@@ -423,11 +458,21 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
             && source.automationPolicy.allows(.commandRun)
     }
     private func sourceMatches(_ source: WorkbenchPane, run: ReviewedCommandRun) -> Bool {
-        eligible(source) && source.id == run.source.id
-            && source.automationPolicy == run.source.automationPolicy
-            && source.launchGeneration == run.source.launchGeneration && source.workspaceID == run.source.workspaceID
+        guard let requester = run.source else { return false }
+        return eligible(source) && source.id == requester.id
+            && source.automationPolicy == requester.automationPolicy
+            && source.launchGeneration == requester.launchGeneration && source.workspaceID == requester.workspaceID
             && URL(fileURLWithPath: source.cwd).resolvingSymlinksInPath().standardizedFileURL.path
                 == run.sourceFolder
+    }
+    /// The folder the approved command must stay inside: the live requesting
+    /// pane's folder, or, for a run the person proposed, the folder they
+    /// proposed it in. nil means an agent run's pane is no longer current.
+    private func currentContainmentRoot(_ run: ReviewedCommandRun) throws -> String? {
+        switch run.origin {
+        case .agentPane: try currentSource(run)?.cwd
+        case .person: run.sourceFolder
+        }
     }
     private func changed(_ value: ReviewedCommandRun) -> ReviewedCommandRun {
         var run = value

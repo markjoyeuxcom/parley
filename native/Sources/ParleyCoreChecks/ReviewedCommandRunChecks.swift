@@ -34,6 +34,8 @@ let reviewedCommandRunChecks: [(String, () throws -> Void)] = [
     ("reviewed command run bounded capture preserves whitespace", reviewedRunCaptureChecks),
     ("reviewed command run direct argv streams exit and cancellation", reviewedRunProcessChecks),
     ("reviewed command run approvals, exact grants and restart revocation", reviewedRunLifecycleChecks),
+    ("reviewed command run proposed by the person waits for the preview, survives pane changes and is nobody's to recover", reviewedRunPersonProposalChecks),
+    ("reviewed command run proposed by the person opens its Shell in the chosen workspace", reviewedRunPersonPaneChecks),
     ("reviewed command run automatic approval is a native switch that approves eligible requests as requested", reviewedRunAutomaticApprovalChecks),
     ("reviewed command run pane auto-close applies only to clean, saved, finished runs", reviewedRunPaneCloseChecks),
     ("reviewed command run authorization is native and session-only", reviewedRunAuthorizationStoreChecks),
@@ -1294,4 +1296,105 @@ func terminalLinkPolicyChecks() throws {
     try runExpect(TerminalLinkPolicy.openableURL("https://example.com/" + String(repeating: "a", count: 5000)) == nil,
         "an oversized link was accepted")
     try runExpect(TerminalLinkPolicy.openableURL("HTTPS://Example.com") != nil, "scheme matching must be case-insensitive")
+}
+
+/// A run the person proposes (Integrate… on a worktree) goes through the
+/// same coordinator as an agent request but with the person as requester:
+/// it is always pending until the preview approves it, the automatic switch
+/// and grants never touch it, a pane restart never interrupts it, an agent
+/// cannot recover it, and the journal names the person, not a pane.
+func reviewedRunPersonProposalChecks() throws {
+    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("parley-run-person-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var source = WorkbenchPane(id: "source", kind: .codex, customName: nil, terminalTitle: "",
+        cwd: root.path, currentCommand: "codex", isActive: true, workspaceID: "workspace",
+        relayEnabled: true, inputAvailable: true, launchGeneration: 7)
+    var recorded: [ReviewedCommandRun] = []
+    let coordinator = ReviewedCommandRunCoordinator(authenticate: { $0 == "capability" ? "source" : nil },
+        panes: { [source] }, record: { recorded.append($0) })
+    let argv = ["/usr/bin/git", "merge", "--no-ff", "--no-edit", "--end-of-options", "feat/x"]
+    // Automatic approval is on, and still the person's own proposal waits for the preview.
+    coordinator.setAutomaticApproval(true)
+    let proposed = try coordinator.propose(argv: argv, folder: root.path, workspaceID: "workspace", workspaceName: "Work")
+    try runExpect(proposed.origin == .person && proposed.source == nil && proposed.state == .pending && !proposed.approvedAutomatically
+        && proposed.workspaceID == "workspace" && proposed.requesterName == "You", "a person proposal did not wait as a person-origin run: \(proposed.state)")
+    coordinator.setAutomaticApproval(false)
+    coordinator.setAutomaticApproval(true)
+    try runExpect(coordinator.runs().first(where: { $0.id == proposed.id })?.state == .pending, "turning the switch on approved the person's proposal")
+    // One proposal at a time; agent requests are unaffected by it.
+    try runRejects { _ = try coordinator.propose(argv: argv, folder: root.path, workspaceID: "workspace", workspaceName: nil) }
+    let agentRun = try coordinator.request(token: "capability", argv: ["/usr/bin/true"], folder: root.path)
+    try runExpect(agentRun.state == .approved && agentRun.approvedAutomatically, "the switch stopped approving agent requests")
+    try coordinator.cancel(id: agentRun.id)
+    // A folder outside itself is refused like any other containment failure; an empty workspace is refused.
+    try runRejects { _ = try coordinator.propose(argv: argv, folder: root.path, workspaceID: "", workspaceName: nil) }
+    // No pane can recover it, and a pane restart does not interrupt it.
+    try runExpect(coordinator.wait(token: "capability", id: proposed.id).status == 403, "an agent recovered a person's run")
+    source.launchGeneration += 1
+    coordinator.reconcile()
+    try runExpect(coordinator.runs().first(where: { $0.id == proposed.id })?.state == .pending, "a pane restart interrupted a person's run")
+    // Approval with the trust toggle creates no grant: there is no pane generation to key it to.
+    try coordinator.approve(id: proposed.id, revision: proposed.revision, argv: argv, folder: root.path, autoApprove: true)
+    try runExpect(coordinator.runs().first(where: { $0.id == proposed.id })?.state == .approved && coordinator.grants().isEmpty,
+        "approving a person's run created a session grant")
+    var launched: ReviewedCommandRun?
+    coordinator.launchApproved { launched = $0 }
+    try runExpect(launched?.id == proposed.id && launched?.state == .running, "the approved person run did not launch")
+    // The journal record names the person and no pane.
+    let last = recorded.last { $0.id == proposed.id }
+    try runExpect(last?.source == nil && last?.origin == .person, "the durable record attributed the run to a pane")
+    // A second proposal is still refused while the first runs; after it ends, allowed.
+    try runRejects { _ = try coordinator.propose(argv: argv, folder: root.path, workspaceID: "workspace", workspaceName: nil) }
+    coordinator.complete(id: proposed.id, result: ReviewedCommandRunResult(exitStatus: 0, stdout: Data(), stderr: Data()))
+    let again = try coordinator.propose(argv: argv, folder: root.path, workspaceID: "workspace", workspaceName: nil)
+    try runExpect(again.state == .pending, "a later proposal was not accepted")
+    // Old records decode as agent-pane runs; a person record decodes without a pane.
+    let encoder = JSONEncoder()
+    let decoder = JSONDecoder()
+    var legacy = try JSONSerialization.jsonObject(with: try encoder.encode(agentRun)) as! [String: Any]
+    legacy.removeValue(forKey: "origin"); legacy.removeValue(forKey: "workspaceID"); legacy.removeValue(forKey: "workspaceName")
+    let decodedLegacy = try decoder.decode(ReviewedCommandRun.self, from: try JSONSerialization.data(withJSONObject: legacy))
+    try runExpect(decodedLegacy.origin == .agentPane && decodedLegacy.source?.id == "source" && decodedLegacy.workspaceID == "workspace",
+        "a record without an origin did not decode as an agent-pane run")
+    let decodedPerson = try decoder.decode(ReviewedCommandRun.self, from: try encoder.encode(again))
+    try runExpect(decodedPerson.origin == .person && decodedPerson.source == nil && decodedPerson.workspaceID == "workspace", "a person record did not round-trip")
+    var broken = try JSONSerialization.jsonObject(with: try encoder.encode(agentRun)) as! [String: Any]
+    broken.removeValue(forKey: "source")
+    try runRejects { _ = try decoder.decode(ReviewedCommandRun.self, from: try JSONSerialization.data(withJSONObject: broken)) }
+}
+
+/// The Shell for a person-proposed run opens in the workspace the person
+/// chose, with the same worker ticket path as an agent run; a workspace
+/// that no longer exists refuses before any ticket is staged.
+func reviewedRunPersonPaneChecks() throws {
+    let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent("parley-run-person-pane-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let controller = try WorkbenchController(applicationDirectory: root.appendingPathComponent("runtime"), environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"])
+    let workspace = try controller.createWorkspace(folder: root.path)
+    let coordinator = ReviewedCommandRunCoordinator(authenticate: { _ in nil }, panes: { try controller.listPanes() }, record: { _ in })
+    let missing = try coordinator.propose(argv: ["/usr/bin/true"], folder: root.path, workspaceID: "no-such-workspace", workspaceName: nil)
+    try coordinator.approve(id: missing.id, revision: missing.revision, argv: missing.command.argv, folder: root.path, autoApprove: false)
+    var refused: String?
+    coordinator.launchApproved { run in
+        do { _ = try controller.createApprovedCommandPane(run: run, workerExecutable: URL(fileURLWithPath: "/usr/bin/true")) }
+        catch { refused = error.localizedDescription; throw error }
+    }
+    try runExpect(refused?.contains("workspace") == true && coordinator.runs().first(where: { $0.id == missing.id })?.state == .failed,
+        "a run for a missing workspace was not refused before launch: \(String(describing: refused))")
+    let tickets = (try? FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("runtime/approved-command-runs").path)) ?? []
+    try runExpect(tickets.isEmpty, "a worker ticket was staged for a refused run: \(tickets)")
+    let proposed = try coordinator.propose(argv: ["/usr/bin/true"], folder: root.path, workspaceID: workspace.workspaceID, workspaceName: workspace.name)
+    try runRejects { _ = try controller.createApprovedCommandPane(run: proposed, workerExecutable: URL(fileURLWithPath: "/usr/bin/true")) }
+    try coordinator.approve(id: proposed.id, revision: proposed.revision, argv: proposed.command.argv, folder: root.path, autoApprove: false)
+    var created: WorkbenchPane?
+    coordinator.launchApproved { run in
+        created = try controller.createApprovedCommandPane(run: run, workerExecutable: URL(fileURLWithPath: "/usr/bin/true"))
+    }
+    guard let created else { throw ReviewedCommandRunError.invalid("The approved person run did not create a new Shell pane.") }
+    try runExpect(created.kind == .shell && created.id == proposed.shellPaneID && created.workspaceID == workspace.workspaceID
+        && created.cwd == root.path, "the person run's Shell was misplaced")
+    let launch = try controller.launchConfiguration(for: created.id)
+    try runExpect(launch.command.contains(ApprovedCommandWorker.argument), "the person run's Shell did not carry the worker")
 }

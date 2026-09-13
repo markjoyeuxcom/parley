@@ -2350,13 +2350,16 @@ public final class RelayBroker: @unchecked Sendable {
         // Retention may keep an owned recovery copy; explicit deletion removes
         // that copy too and retains only a hash that refuses request replay.
         guard previous != nil || run.launchedAt == nil else { return }
+        // A run the person proposed has no requesting pane: its source is
+        // the person, recorded with an empty pane id and the Shell kind the
+        // command runs as, so nothing ever attributes it to an agent.
         var handoff = RelayHandoff(id: run.id, idempotencyKey: run.idempotencyKey,
-            kind: .commandRun, sourcePaneID: run.source.id, sourceName: run.source.displayName,
-            sourceLaunchGeneration: run.source.launchGeneration, sourceKind: run.source.kind,
-            sourceWorkspaceID: run.source.workspaceID, sourceWorkspaceName: run.source.workspaceName,
+            kind: .commandRun, sourcePaneID: run.source?.id ?? "", sourceName: run.requesterName,
+            sourceLaunchGeneration: run.source?.launchGeneration ?? 0, sourceKind: run.source?.kind ?? .shell,
+            sourceWorkspaceID: run.workspaceID, sourceWorkspaceName: run.workspaceName,
             targetPaneID: run.shellPaneID, targetName: "New Shell for approved run", targetKind: .shell,
-            targetWorkspaceID: run.source.workspaceID, targetWorkspaceName: run.source.workspaceName,
-            text: "REQUESTED COMMAND RUN\nArgv: \(run.command.display)\nFolder: \(run.command.folder)\n\(ReviewedCommandRunCoordinator.trustDisclosure)",
+            targetWorkspaceID: run.workspaceID, targetWorkspaceName: run.workspaceName,
+            text: "\(run.origin == .person ? "COMMAND RUN PROPOSED BY THE PERSON" : "REQUESTED COMMAND RUN")\nArgv: \(run.command.display)\nFolder: \(run.command.folder)\n\(ReviewedCommandRunCoordinator.trustDisclosure)",
             submitted: run.launchedAt != nil,
             resultText: run.result?.text, state: state, updatedAt: run.updatedAt,
             transitions: previous?.transitions ?? [])
@@ -3461,7 +3464,7 @@ public final class RelayBroker: @unchecked Sendable {
         // The recovery cache can outlive journal retention. Include finished
         // cached runs whose history is already absent, without widening scope.
         let orphanedRunIDs = Set(finishedCommandRuns.filter {
-            handoffRecords[$0.id] == nil && matches($0.source.workspaceID, $0.source.workspaceName)
+            handoffRecords[$0.id] == nil && matches($0.workspaceID, $0.workspaceName)
         }.map(\.id))
         removalIDs.formUnion(orphanedRunIDs)
         let activityRemovalIDs = Set(activityRecords.values.lazy.filter {

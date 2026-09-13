@@ -728,6 +728,7 @@ let managedWorktreeChecks: [(String, () throws -> Void)] = [
     ("managed worktree creation never adopts a competing creator's tree", managedWorktreeCompetingCreatorChecks),
     ("managed worktree removal reports observed outcomes and never reruns git for a stale record", managedWorktreeRemovalOutcomeChecks),
     ("managed worktree facts keep read failures unknown", managedWorktreeFactsUncertaintyChecks),
+    ("managed worktree facts measure divergence from the primary checkout with real Git", managedWorktreeDivergenceFactsChecks),
     ("workbench folder reservation refuses creation, start and restart inside a tree under removal", workbenchFolderReservationChecks),
     ("managed worktree identity, NUL-safe listing and scrubbed git environment", managedWorktreeIdentityChecks),
     ("managed worktree creation validates names, refs, paths and records the base", managedWorktreeCreationChecks),
@@ -871,4 +872,34 @@ func worktreeUnknownRuntimeChecks() throws {
     let result = try f.service.inspectLifecycle(record, panes: [], workspaces: [], handoffs: [], activeTeamPaths: [], otherRuntimeStateFiles: [other])
     try wtExpect(result.usage.otherRuntimeUnknown && !result.usage.isInactive,
                  "malformed other-runtime pane folders were silently ignored")
+}
+
+/// Ahead, behind and containment come from Git, not from the record: a
+/// commit on the tree is one ahead, a commit on the primary is one behind,
+/// and only after the primary merges the tree does it read as contained.
+func managedWorktreeDivergenceFactsChecks() throws {
+    let f = try WorktreeFixture()
+    defer { f.cleanup() }
+    let record = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "feat/board", baseRef: "main"))
+    let tree = URL(fileURLWithPath: record.path)
+    let atBase = f.service.facts(for: record)
+    try wtExpect(atBase.aheadOfPrimary == 0 && atBase.behindPrimary == 0 && atBase.containedInPrimary == true
+        && atBase.primaryHead == record.baseCommit, "a fresh tree at the base was not level with the primary: \(atBase)")
+    _ = try f.commit("tree work", in: tree, file: "src/board.swift", contents: "let board = 1\n")
+    let ahead = f.service.facts(for: record)
+    try wtExpect(ahead.aheadOfPrimary == 1 && ahead.behindPrimary == 0 && ahead.containedInPrimary == false, "one tree commit was not one ahead: \(ahead)")
+    _ = try f.commit("primary work", in: f.repo, file: "src/other.swift", contents: "let other = 1\n")
+    let diverged = f.service.facts(for: record)
+    try wtExpect(diverged.aheadOfPrimary == 1 && diverged.behindPrimary == 1 && diverged.containedInPrimary == false, "a diverged tree was misread: \(diverged)")
+    try f.git(["merge", "--no-ff", "--no-edit", "--end-of-options", "feat/board"], in: f.repo)
+    let merged = f.service.facts(for: record)
+    try wtExpect(merged.aheadOfPrimary == 0 && merged.behindPrimary == 2 && merged.containedInPrimary == true
+        && merged.primaryHead == (try f.git(["rev-parse", "HEAD"], in: f.repo)), "a merged tree was not contained and behind by the merge: \(merged)")
+    // A row built from these facts reads Integrated only once the merge happened and the tree is clean.
+    let before = WorktreeBoardRow.derive(record: record, facts: diverged, panesInside: [], requester: nil, teamObjective: nil, teamState: nil)
+    let after = WorktreeBoardRow.derive(record: record, facts: merged, panesInside: [], requester: nil, teamObjective: nil, teamState: nil)
+    try wtExpect(before.state == .idle && after.state == .integrated, "board state did not follow the merge: \(before.state) then \(after.state)")
+    // Removal after integration passes the existing policy on its own: HEAD is contained in the primary.
+    let preview = try f.service.cleanupPreview(record, livePaneFolders: [], otherRuntimeStateFiles: [])
+    try wtExpect(preview.decision == .removeTree, "an integrated, clean tree was still refused removal: \(preview.decision)")
 }

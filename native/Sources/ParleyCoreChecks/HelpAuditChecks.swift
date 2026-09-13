@@ -105,6 +105,8 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
         try helpAuditRequire(ParleyHelpGuide.matching("team sessions").contains(team), "Team Sessions cannot be found")
         try helpAuditRequire(ParleyHelpGuide.matching("command runs").contains(runs), "Command runs cannot be found")
         try helpAuditContains(team.searchableText, ["Tools", "provisioning", "Stop", "parley team status"])
+        // A person-proposed run (ReviewedCommandRunCoordinator.propose) is documented beside agent requests.
+        try helpAuditContains(runs.searchableText, ["Integrate…", "Proposed by you", "always waits for your approval", "creates no session trust", "no agent pane can recover"])
         let context = try helpAuditTopic("context-packs")
         let commands = context.sections.flatMap(\.commands).map(\.command)
         try helpAuditRequire(commands.contains("parley context list"), "Missing context list example")
@@ -142,6 +144,9 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
             "never requires one worktree per agent", "silently creates one",
             "inside the requesting pane's working folder",
             "never commits, merges, rebases, pushes, stashes, forces or deletes a branch",
+            // The board and Integrate… (WorktreeBrowserView.swift, WorktreeBoardRow, AppModel.proposeWorktreeIntegration).
+            "worktree board", "ahead of and behind the primary checkout", "never as zero", "nothing about the board is stored",
+            "Integrate…", "always waits for your approval", "Parley itself runs no merge", "reads Integrated",
         ])
         try helpAuditRequire(text.contains(ManagedWorktreeService.CreatePreview.executionNotice),
                              "Help must carry the exact creation execution notice")

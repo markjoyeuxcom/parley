@@ -319,6 +319,20 @@ question, or the refusal is a bare error.
 - Merge preview against main — conflicts predicted, nothing mutated.
 - Finish & Cleanup: each destructive step separately confirmed; removal refuses
   with a live pane inside, then succeeds once closed.
+- Board: the **Managed by Parley** list shows owner, base, HEAD, changed
+  paths, ahead/behind the primary and a state. With the team active the row
+  reads IN USE; after Stop with no pane inside it reads IDLE (commits ahead)
+  or INTEGRATED, as the facts say. A count Git could not read shows as
+  unknown, never as 0.
+- Integrate…: commit in the tree, press **Integrate…**. The Requested
+  command runs sheet opens on a run headed "Proposed by you" with the exact
+  `git merge --no-ff --no-edit --end-of-options <branch>` argv and the primary
+  checkout as folder, and no session-trust toggle. Approve; a new Shell pane
+  runs it and the captured result appears. Reopen the browser: the row reads
+  INTEGRATED and removal now passes. With **Approve agent command runs
+  automatically** on, the proposal still waits for the preview. **Fail:** the
+  run starts without the preview, the row claims Integrated before the merge,
+  or a second Integrate… is accepted while the first is waiting.
 
 ## P3.5 Recipes
 

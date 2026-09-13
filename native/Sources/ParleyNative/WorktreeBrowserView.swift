@@ -187,15 +187,14 @@ struct WorktreeBrowserView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(model.managedWorktrees) { record in
+                            let row = model.worktreeBoardRow(record)
                             HStack(alignment: .top, spacing: 8) {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(record.path).font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
-                                    Text(model.managedWorktreeSummary(record)).font(.system(size: 10)).foregroundStyle(.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                    if let warning = record.warning { Text(warning).font(.system(size: 10)).foregroundStyle(.orange) }
-                                }
+                                WorktreeBoardRowView(row: row)
                                 Spacer(minLength: 4)
                                 Button("Open") { model.openManagedWorktree(record) }.controlSize(.small)
+                                Button("Integrate…") { model.proposeWorktreeIntegration(record) }.controlSize(.small)
+                                    .disabled(!row.canIntegrate || model.managedWorktreeMutation != nil)
+                                    .help("Propose git merge --no-ff of this branch into the primary checkout as a reviewed command run: you approve the exact command in the same preview an agent's request gets, it runs in a new Shell pane, and Parley records the captured result. Parley runs no merge itself.")
                                 Button("Finish…") { lifecycleID = record.id; tab = 1 }.controlSize(.small)
                                 if record.parleyCreated {
                                     Button("Remove…") { model.removeManagedWorktree(record) }.controlSize(.small)
@@ -207,7 +206,7 @@ struct WorktreeBrowserView: View {
                             }
                         }
                     }
-                }.frame(maxHeight: 150)
+                }.frame(maxHeight: 210)
             }
         }
         .padding(.horizontal, 18).padding(.vertical, 10)
@@ -243,6 +242,41 @@ struct WorktreeBrowserView: View {
             .disabled(tab != 0 || selectedWorktree.map(model.canOpenDiscoveredWorktree) != true)
         }
         .padding(14)
+    }
+}
+
+/// One board row: branch and state, who owns it, then the facts line. Every
+/// value comes from `WorktreeBoardRow`, which the model derives from the
+/// record, the last background Git read, the panes inside and the team.
+private struct WorktreeBoardRowView: View {
+    let row: WorktreeBoardRow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 7) {
+                Text(row.record.branch).font(.system(size: 11, weight: .semibold, design: .monospaced))
+                Text(row.state.label.uppercased()).font(.system(size: 9, weight: .semibold)).foregroundStyle(stateColor)
+                Text(row.ownerLabel).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                Text("·").foregroundStyle(.secondary)
+                Text(row.panesLabel).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            Text(row.record.path).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).textSelection(.enabled)
+            Text(row.factsLine).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let warning = row.record.warning { Text(warning).font(.system(size: 10)).foregroundStyle(.orange) }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(row.record.branch), \(row.state.label), \(row.ownerLabel)")
+        .accessibilityValue(row.factsLine)
+    }
+
+    private var stateColor: Color {
+        switch row.state {
+        case .inUse: .accentColor
+        case .integrated: .green
+        case .idle, .unread: .secondary
+        case .missing: .red
+        case .unknown: .orange
+        }
     }
 }
 

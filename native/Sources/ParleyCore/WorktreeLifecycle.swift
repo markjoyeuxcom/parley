@@ -139,3 +139,174 @@ public enum WorktreePermissionGuide {
         }
     }
 }
+
+// MARK: - Board
+
+/// One row of the worktree board: the facts Parley already records about a
+/// managed tree, arranged so ownership, divergence and state read at a
+/// glance. Everything here is derived when the row is built and nothing is
+/// stored; a tree's state is what its record, the last background Git read,
+/// the panes inside it and its team say right now.
+public struct WorktreeBoardRow: Equatable, Sendable {
+    public enum PanePresence: String, Equatable, Sendable {
+        case running, stopped, closed
+    }
+
+    public enum Owner: Equatable, Sendable {
+        /// Bound to a team session at approval.
+        case team(objective: String, state: TeamSessionState)
+        /// Created for an agent pane's request (a team member's tree keeps
+        /// the team owner; this is the pane-requested case).
+        case pane(name: String, presence: PanePresence)
+        /// Created by the person from the browser, with no requester.
+        case you
+        /// Selected or tracked rather than created; Parley never removes it.
+        case person
+    }
+
+    public enum State: String, Equatable, Sendable {
+        /// No background read has happened yet.
+        case unread
+        /// The folder is gone or Git no longer lists the tree.
+        case missing
+        /// Git could not be read; nothing is inferred.
+        case unknown
+        /// A pane is running inside it or its team is active.
+        case inUse
+        /// HEAD is contained in the primary checkout's HEAD and the tree is clean.
+        case integrated
+        /// Registered, nothing running, work not (or not fully) integrated.
+        case idle
+
+        public var label: String {
+            switch self {
+            case .unread: "Not read yet"
+            case .missing: "Missing"
+            case .unknown: "Unknown"
+            case .inUse: "In use"
+            case .integrated: "Integrated"
+            case .idle: "Idle"
+            }
+        }
+    }
+
+    public let record: ManagedWorktreeRecord
+    public let facts: ManagedWorktreeFacts?
+    public let owner: Owner
+    public let state: State
+    public let runningPaneCount: Int
+    public let stoppedPaneCount: Int
+
+    /// Integrate proposes a merge of the tree's branch; that needs a tree
+    /// Git still lists. It is offered even at zero ahead, because Git says
+    /// "Already up to date" itself and the preview shows the exact command.
+    public var canIntegrate: Bool { facts?.registered == true }
+
+    public var ownerLabel: String {
+        switch owner {
+        case let .team(objective, state):
+            let short = objective.count > 48 ? String(objective.prefix(47)) + "…" : objective
+            return "Team: \(short) (\(state.label.lowercased()))"
+        case let .pane(name, presence):
+            return "\(name) (\(presence.rawValue))"
+        case .you:
+            return "You"
+        case .person:
+            return "Person-owned"
+        }
+    }
+
+    public var baseLabel: String {
+        guard let base = record.baseCommit else { return "base not recorded" }
+        return "base \(base.prefix(12))" + (record.baseRef.map { " (\($0))" } ?? "")
+    }
+
+    public var headLabel: String {
+        guard let facts, facts.registered == true else { return "" }
+        guard let head = facts.head, !head.isEmpty else { return "HEAD unknown" }
+        var text = "HEAD \(head.prefix(12))"
+        if let branch = facts.currentBranch, branch != record.branch, branch != "HEAD" { text += " on \(branch)" }
+        return text
+    }
+
+    public var changesLabel: String {
+        guard let facts, facts.registered == true else { return "" }
+        switch facts.changedPathCount {
+        case 0?: return "clean"
+        case let count?: return "\(count) changed"
+        case nil: return "status unknown"
+        }
+    }
+
+    public var divergenceLabel: String {
+        guard let facts, facts.registered == true else { return "" }
+        guard let ahead = facts.aheadOfPrimary, let behind = facts.behindPrimary else { return "divergence from primary unknown" }
+        return "ahead \(ahead) · behind \(behind)"
+    }
+
+    public var panesLabel: String {
+        var parts: [String] = []
+        if runningPaneCount > 0 { parts.append("\(runningPaneCount) running") }
+        if stoppedPaneCount > 0 { parts.append("\(stoppedPaneCount) stopped") }
+        return parts.isEmpty ? "no panes" : parts.joined(separator: ", ") + (runningPaneCount + stoppedPaneCount == 1 ? " pane" : " panes")
+    }
+
+    /// The facts line under the branch, omitting whatever the state makes
+    /// meaningless (a missing tree has no HEAD to show).
+    public var factsLine: String {
+        var parts = [baseLabel]
+        switch state {
+        case .missing: parts.append("folder gone or no longer listed by Git")
+        case .unknown: parts.append("Git could not be read")
+        case .unread: parts.append("live state not read yet")
+        case .inUse, .integrated, .idle:
+            parts.append(headLabel)
+            parts.append(changesLabel)
+            parts.append(divergenceLabel)
+        }
+        parts.append(record.parleyCreated ? "created by Parley" : "existing tree")
+        return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// `requester` is the pane that asked for the tree if it still exists;
+    /// nil with a recorded requester means that pane was closed. Team facts
+    /// win over the requester, because a team member's tree belongs to the
+    /// session even though one pane asked for it.
+    public static func derive(record: ManagedWorktreeRecord, facts: ManagedWorktreeFacts?, panesInside: [WorkbenchPane],
+                              requester: WorkbenchPane?, teamObjective: String?, teamState: TeamSessionState?) -> WorktreeBoardRow {
+        let running = panesInside.filter { $0.isStarted && !$0.isDead }.count
+        let stopped = panesInside.count - running
+        let owner: Owner
+        if record.teamSessionID != nil, let teamObjective, let teamState {
+            owner = .team(objective: teamObjective, state: teamState)
+        } else if let requesterID = record.requestedByPaneID {
+            if let requester {
+                owner = .pane(name: requester.displayName, presence: requester.isStarted && !requester.isDead ? .running : .stopped)
+            } else {
+                owner = .pane(name: requesterID, presence: .closed)
+            }
+        } else if record.parleyCreated {
+            owner = .you
+        } else {
+            owner = .person
+        }
+        let state: State
+        if let facts {
+            switch facts.registered {
+            case false?: state = .missing
+            case nil: state = .unknown
+            case true?:
+                if running > 0 || teamState == .active {
+                    state = .inUse
+                } else if facts.containedInPrimary == true, facts.changedPathCount == 0 {
+                    state = .integrated
+                } else {
+                    state = .idle
+                }
+            }
+        } else {
+            state = .unread
+        }
+        return WorktreeBoardRow(record: record, facts: facts, owner: owner, state: state, runningPaneCount: running, stoppedPaneCount: stopped)
+    }
+}
