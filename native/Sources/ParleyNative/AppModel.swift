@@ -6934,6 +6934,26 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// What Codex's own configuration says about who answers its prompts, for
+    /// the permission review to state before the person chooses. Read off the
+    /// main actor; a failure is worded as one rather than hidden.
+    func codexApprovalsReviewerFact(folder: String) async -> String {
+        guard let controller else { return "Codex configuration could not be read: the workbench is unavailable." }
+        do {
+            let setting = try await Task.detached(priority: .userInitiated) { try controller.codexApprovalsReviewer(folder: folder) }.value
+            switch setting {
+            case nil:
+                return "Codex's own configuration sets no approvals_reviewer for this folder, so the choice above decides who answers."
+            case "auto_review"?:
+                return "Codex's own configuration sets approvals_reviewer = auto_review for this folder: Codex sends sandbox escalations to its automatic reviewer and shows no prompt, whichever you choose above. Remove that line from ~/.codex/config.toml to see Codex's prompt."
+            case let other?:
+                return "Codex's own configuration sets approvals_reviewer = \(other) for this folder; that setting, not the choice above, decides who answers escalations."
+            }
+        } catch {
+            return "Codex configuration could not be read: \(error.localizedDescription)"
+        }
+    }
+
     private func rememberFolder(_ folder: String) {
         let standardized = WorkspaceFolderIdentity.normalized(folder)
         recentFolders.removeAll {

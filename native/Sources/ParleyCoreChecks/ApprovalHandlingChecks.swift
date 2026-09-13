@@ -119,6 +119,39 @@ func approvalHandlingLaunchPlanChecks() throws {
     }
 }
 
+/// An allowed network rule reaches Codex's sandbox table and nowhere else,
+/// and the plan says so per vendor. Codex's built-in profiles have no
+/// network, so without the key the review's "Allowed by profile" was false.
+func networkRuleChecks() throws {
+    let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().path
+    let withNetwork = try approvalRequire(PermissionProfileDefinition.builtIns.first { $0.id == "flexible-network" }, "no Flexible + network profile")
+    let flexible = try approvalRequire(PermissionProfileDefinition.builtIns.first { $0.id == "flexible" }, "no flexible profile")
+    try approvalExpect(withNetwork.rule(for: .networkAccess) == .allow && flexible.rule(for: .networkAccess) == .requireApproval,
+        "the two profiles do not differ in the network rule")
+
+    func hostCodex(_ definition: PermissionProfileDefinition) throws -> [String] {
+        let profile = try PermissionProfileResolver.resolve(definition: definition, paneFolder: folder)
+        return HostAgentPermissions(
+            applicationDirectory: URL(fileURLWithPath: "/tmp/parley-app"), protocolDirectory: URL(fileURLWithPath: "/tmp/parley-protocol"),
+            shimDirectory: URL(fileURLWithPath: "/tmp/parley-shim"), transportDirectory: URL(fileURLWithPath: "/tmp/parley-transport"),
+            endpointDirectory: URL(fileURLWithPath: "/tmp/parley-endpoint"), profile: profile
+        ).configurationArguments
+    }
+    let table = try approvalRequire(try hostCodex(withNetwork).first { $0.hasPrefix("permissions.parley_host=") }, "no permissions table")
+    try approvalExpect(table.contains("network={enabled=true}"), "an allowing profile did not enable network in Codex's table: \(table)")
+    let plainTable = try approvalRequire(try hostCodex(flexible).first { $0.hasPrefix("permissions.parley_host=") }, "no permissions table")
+    try approvalExpect(!plainTable.contains("network="), "a profile that asks for network enabled it in Codex's table: \(plainTable)")
+
+    for kind in [PaneKind.claude, .agy, .copilot] {
+        let profile = try PermissionProfileResolver.resolve(definition: withNetwork, paneFolder: folder)
+        let plan = PermissionProfileAdapter.launchPlan(for: kind, profile: profile)
+        try approvalExpect(plan.detail.contains("only Codex's sandbox can carry"), "\(kind.label)'s plan does not say network is not carried: \(plan.detail)")
+        try approvalExpect(!plan.arguments.contains { $0.contains("network") }, "\(kind.label) received a network argument it cannot honour: \(plan.arguments)")
+    }
+    let codexPlan = PermissionProfileAdapter.launchPlan(for: .codex, profile: try PermissionProfileResolver.resolve(definition: withNetwork, paneFolder: folder))
+    try approvalExpect(codexPlan.detail.contains("enabled in Codex's sandbox"), "Codex's plan does not disclose the enabled network: \(codexPlan.detail)")
+}
+
 private func approvalRequire<T>(_ value: T?, _ message: String) throws -> T {
     guard let value else { throw NSError(domain: "ApprovalHandling", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
     return value
@@ -128,4 +161,5 @@ private func approvalRequire<T>(_ value: T?, _ message: String) throws -> T {
 let approvalHandlingChecks: [(String, () throws -> Void)] = [
     ("a permission selection decodes without an approvals choice and keeps one it has", approvalHandlingSelectionDecodingChecks),
     ("vendor automatic review is reached only through documented non-bypass options", approvalHandlingLaunchPlanChecks),
+    ("an allowed network rule reaches Codex's sandbox and is disclosed elsewhere", networkRuleChecks),
 ]

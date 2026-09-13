@@ -22,7 +22,7 @@ skip vendor permission checks while Docker supplies the execution boundary.
   palettes and colours.
 - Explicit cross-vendor Relay, Paste, Ask, Answer, Delegate, Progress, Done,
   Fail, Status and Wait commands.
-- Human Ask and Return previews, correlated answers, recoverable Ask ids and
+- Human Ask and Answer previews, correlated answers, recoverable Ask ids and
   tracked delegation receipts.
 - Durable local handoff history, Status Center recovery actions and explicit
   multi-select promotion of returned Ask or Delegate results into an editable

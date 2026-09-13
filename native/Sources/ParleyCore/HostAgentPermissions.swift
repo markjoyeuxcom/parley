@@ -11,6 +11,11 @@ public struct HostAgentPermissions: Sendable {
     /// Who answers Codex's escalation prompts. The vendor reviewer is Codex's
     /// own auto review inside the same sandbox; it is not a bypass.
     public let approvals: PermissionApprovalHandling
+    /// Whether the profile allows network access. Codex's built-in `:workspace`
+    /// and `:read-only` profiles have no network, so an allowing profile has
+    /// to say so in the table or Codex refuses every network command and the
+    /// review's "Allowed by profile" would be false.
+    public let networkAllowed: Bool
 
     public init(applicationDirectory: URL, protocolDirectory: URL, shimDirectory: URL,
                 transportDirectory: URL, endpointDirectory: URL, profile: EffectivePermissionProfile,
@@ -31,6 +36,7 @@ public struct HostAgentPermissions: Sendable {
         writable = profile.definition.rule(for: .projectWrite) == .allow
         self.profileName = profileName
         approvals = profile.approvals
+        networkAllowed = profile.definition.rule(for: .networkAccess) == .allow
     }
 
     /// One TOML table override: quoted path fragments in dotted CLI keys are
@@ -38,7 +44,8 @@ public struct HostAgentPermissions: Sendable {
     public var configurationArguments: [String] {
         let files = filesystem.sorted { $0.key < $1.key }.map { "\(literal($0.key))=\(literal($0.value))" }.joined(separator: ",")
         let roots = workspaceRoots.map { "\(literal($0))=true" }.joined(separator: ",")
-        let table = "{extends=\(literal(writable ? ":workspace" : ":read-only")),workspace_roots={\(roots)},filesystem={\(files)}}"
+        let network = networkAllowed ? ",network={enabled=true}" : ""
+        let table = "{extends=\(literal(writable ? ":workspace" : ":read-only")),workspace_roots={\(roots)},filesystem={\(files)}\(network)}"
         return ["-c", "permissions.\(profileName)=\(table)", "-c", "default_permissions=\(literal(profileName))"]
     }
 

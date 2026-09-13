@@ -244,7 +244,7 @@ public enum AgentProtocol {
     Features in the native UI are person-controlled, not additional agent commands:
     - Pane and workspace menus manage splits, folders, zoom, moving, roles and
       the workspace lead.
-    - Ask, Review and Return provide editable handoff previews. Context manages
+    - Ask, Review and Answer provide editable handoff previews. Context manages
       attributed Context Packs. Human captures keep their provenance; agent
       drafts remain claims. Independent Compare keeps its targets' answers separate.
     - Recipes coordinate visible cross-vendor work under the workspace's

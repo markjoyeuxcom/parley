@@ -298,7 +298,7 @@ missing, same-pane, shell and busy targets. Permit same-vendor routing only
 between distinct panes. Allow at most one unanswered consultation or active
 delegation per target.
 
-Human Ask and Return submit only after an editable preview. A real current
+Human Ask and Answer submit only after an editable preview. Answer is the manual completion of an Ask the active pane was asked, for a target that printed its reply without running `parley answer`; the toolbar shows it only while such an Ask is waiting, and it completes the waiting command directly without pasting into either pane. A real current
 Ghostty selection may prefill it; otherwise it starts empty. Never capture
 scrollback or a whole conversation implicitly. The composer is inline chrome,
 not a sheet, so it requests focus when it appears and again for each new
@@ -434,7 +434,13 @@ remain forbidden. `HostAgentPermissions` supplies Codex-native private-runtime
 denials with exact protocol/shim read access and own-endpoint write access;
 its built-in profile parent retains Codex's Git and configuration protections.
 Those rules cover sandboxed tools, not the CLI parent, integrations or approved
-unsandboxed commands. Other vendors keep their existing native launch controls;
+unsandboxed commands. When the profile allows network access the table also
+carries `network={enabled=true}`, because Codex's built-in `:workspace` and
+`:read-only` profiles have none; the built-in **Flexible + network** profile
+exists for that, and only Codex can carry the rule, which every other
+vendor's plan says. The Codex review also reads the person's own
+`approvals_reviewer` through the same bounded config query and states it,
+since `auto_review` overrides whatever Approvals choice is made. Other vendors keep their existing native launch controls;
 never present a profile intention as OS enforcement.
 
 The Codex start/restart/resume review and host-team approval run a bounded

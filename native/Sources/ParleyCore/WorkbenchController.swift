@@ -1263,6 +1263,19 @@ public final class WorkbenchController: @unchecked Sendable {
             environment: environment)
     }
 
+    /// Codex's own `approvals_reviewer` setting as it resolves for a folder,
+    /// read through the same bounded config query the preflight uses. Run
+    /// away from the main actor. Nil when Codex is not installed or sets none;
+    /// a read failure is reported, never guessed.
+    public func codexApprovalsReviewer(folder: String) throws -> String? {
+        guard let executable = environment["PATH", default: "/usr/bin:/bin"].split(separator: ":")
+            .map({ URL(fileURLWithPath: String($0)).appendingPathComponent("codex") })
+            .first(where: { FileManager.default.isExecutableFile(atPath: $0.path) }) else {
+            return nil
+        }
+        return try CodexHostConfiguration.approvalsReviewer(executable: executable, environment: environment, folder: folder)
+    }
+
     /// Applies a title in memory and schedules one coalesced write. Returns
     /// false, changing nothing durable, when the title is unchanged; a
     /// repeated title still counts as pane activity in memory because the

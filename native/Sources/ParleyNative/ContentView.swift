@@ -932,7 +932,9 @@ struct ContentView: View {
             reviewMenu
             contextPackMenu
             recipeMenu
-            returnMenu
+            if model.canReturn {
+                returnMenu
+            }
 
             if hasWaitingWork {
                 Divider().frame(height: 18)
@@ -1181,20 +1183,24 @@ struct ContentView: View {
     }
 
     private var returnMenu: ToolbarActionMenu {
+        // Shown only while the active pane holds an unanswered Ask: this is the
+        // manual completion for a target that printed its reply without
+        // running `parley answer`, not a general send.
         ToolbarActionMenu(
-            title: "Return", systemImage: "arrow.turn.down.left",
+            title: "Answer", systemImage: "arrow.turn.down.left",
             isEnabled: model.canReturn,
-            accessibilityLabel: "Return answer",
-            accessibilityValue: model.canReturn ? "Answer destination available" : "No answer destination",
-            accessibilityHint: "Return the active pane's answer to its waiting requester",
+            accessibilityLabel: "Answer waiting Ask",
+            accessibilityValue: model.canReturn ? "A pane is waiting for this pane's answer" : "No waiting Ask",
+            accessibilityHint: "Complete the Ask this pane was asked, by hand, when it printed its reply without running parley answer",
             items: model.activePaneConsultations.map { consultation in
-                .action("Answer \(consultation.sourceName)") { model.returnConsultation(consultation) }
+                .action("Answer \(consultation.sourceName)…") { model.returnConsultation(consultation) }
             }
         )
     }
 
     private var compactActionsMenu: ToolbarActionMenu {
-        var items = [reviewMenu.asSubmenu, contextPackMenu.asSubmenu, recipeMenu.asSubmenu, returnMenu.asSubmenu]
+        var items = [reviewMenu.asSubmenu, contextPackMenu.asSubmenu, recipeMenu.asSubmenu]
+        if model.canReturn { items.append(returnMenu.asSubmenu) }
         if hasWaitingWork { items.append(waitingMenu.asSubmenu) }
         items += [.separator, .action("Balance Panes", perform: model.balance)]
         return ToolbarActionMenu(
@@ -1627,7 +1633,7 @@ struct ContentView: View {
         }
         let awaiting = model.awaitingAnswerCount(for: pane.id)
         if awaiting > 0 {
-            return (awaiting > 1 ? "Return \(awaiting)" : "Return", .accentColor)
+            return (awaiting > 1 ? "Answer \(awaiting)" : "Answer", .accentColor)
         }
         let unread = model.unreadResultCount(forPane: pane.id)
         if unread > 0 { return (unread > 1 ? "Result \(unread)" : "Result", .accentColor) }
