@@ -4058,10 +4058,16 @@ final class AppModel: ObservableObject {
 
     @Published var applyingPanePermissions = false
 
+    /// `approvals` is required, not defaulted: the review re-resolves the
+    /// profile from the current store here, and v0.1.44 resolved it without
+    /// the person's approvals choice, so a Claude pane reviewed as "Vendor's
+    /// automatic reviewer" launched in accept-edits mode while the review
+    /// said auto mode.
     func applyPermissionProfile(
         to request: PanePermissionRequest,
         profileID: String,
         approvedRoots: [String],
+        approvals: PermissionApprovalHandling,
         containerConfiguration: ContainerConfiguration? = nil
     ) async {
         guard !applyingPanePermissions else { return }
@@ -4076,7 +4082,8 @@ final class AppModel: ObservableObject {
             let effective = try PermissionProfileResolver.resolve(
                 definition: definition,
                 paneFolder: request.folder,
-                approvedRoots: definition.rootMode == .exactApprovedRoots ? approvedRoots : []
+                approvedRoots: definition.rootMode == .exactApprovedRoots ? approvedRoots : [],
+                approvals: approvals
             )
             guard effective.approvedRoots.contains(canonicalFolder(request.folder)) else {
                 throw RelayUIError.message("The pane folder must remain one of the approved roots.")

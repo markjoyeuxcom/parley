@@ -426,7 +426,14 @@ permissions and approval prompts. Do not put Parley's Seatbelt profile around
 host CLIs: it prevents Codex from applying its tool sandbox. A host Codex
 launch takes `HostAgentPermissions.launchArguments`; the generic
 `PermissionProfileAdapter.launchPlan` is what the review displays and what
-container and non-Codex launches use. Anything that must reach a host Codex
+container and non-Codex launches use. A value on
+`PermissionProfileSelection` reaches a pane only if every resolver call site
+passes it: `applyPermissionProfile` re-resolves from the current store when
+the review's Start is pressed, and v0.1.44 through v0.1.48 resolved there
+without `approvals`, so a Claude pane reviewed as "Vendor's automatic
+reviewer" launched in accept-edits mode. When adding a selection field, grep
+every `PermissionProfileResolver.resolve(` and make the new argument
+required at the review hand-off rather than defaulted. Anything that must reach a host Codex
 pane has to be carried in both: v0.1.44 put the approvals choice in the plan
 only, so a host Codex pane never received auto review while the review said
 it had. Host bypass flags
