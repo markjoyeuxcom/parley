@@ -302,6 +302,7 @@ final class AppModel: ObservableObject {
     @Published var askManyComparisonPresented = false
     @Published var contextPackPresented = false
     @Published var worktreeBrowserPresented = false
+    @Published var folderManagerPresented = false
     @Published var releaseLifecyclePresented = false
     @Published var betaFeedbackPresented = false
     @Published var focusCanvasPaneID: String?
@@ -526,6 +527,7 @@ final class AppModel: ObservableObject {
             preferences.set(true, forKey: Self.workspaceIdentityRecentResetKey)
         }
         recentFolders = preferences.stringArray(forKey: Self.recentFoldersKey) ?? []
+        pruneMissingRecentFolders()
         if let data = preferences.data(forKey: Self.workspaceContinuityKey),
            let decoded = try? JSONDecoder().decode(WorkspaceContinuityState.self, from: data) {
             workspaceContinuity = decoded
@@ -6939,7 +6941,40 @@ final class AppModel: ObservableObject {
         }
         recentFolders.insert(standardized, at: 0)
         if recentFolders.count > 8 { recentFolders.removeLast(recentFolders.count - 8) }
+        pruneMissingRecentFolders()
         preferences.set(recentFolders, forKey: Self.recentFoldersKey)
+    }
+
+    /// Recent history is automatic, so a folder that no longer exists leaves
+    /// it on its own; it cannot be used for new panes and was being offered
+    /// for weeks after deletion. Favourites are the person's bookmarks and are
+    /// only reported as missing, never removed here.
+    private func pruneMissingRecentFolders() {
+        let kept = FolderListMaintenance.existing(recentFolders, exists: { FolderListMaintenance.directoryExists($0) })
+        guard kept != recentFolders else { return }
+        recentFolders = kept
+        preferences.set(recentFolders, forKey: Self.recentFoldersKey)
+    }
+
+    func removeRecentFolder(_ folder: String) {
+        recentFolders = FolderListMaintenance.removing(folder, from: recentFolders)
+        preferences.set(recentFolders, forKey: Self.recentFoldersKey)
+    }
+
+    func clearRecentFolders() {
+        recentFolders = []
+        preferences.removeObject(forKey: Self.recentFoldersKey)
+    }
+
+    func removeFavouriteFolder(_ folder: String) {
+        guard isFavouriteFolder(folder) else { return }
+        toggleFavouriteFolder(folder)
+    }
+
+    /// Favourites that no longer exist on disk, for the folder manager to show
+    /// as missing with a Remove button.
+    var missingFavouriteFolders: [String] {
+        FolderListMaintenance.missing(favouriteFolders, exists: { FolderListMaintenance.directoryExists($0) })
     }
 
     private func availableWorkspaceName(_ proposed: String) -> String {
