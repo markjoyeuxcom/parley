@@ -39,8 +39,13 @@ public struct RelayAgentIdentity: Codable, Equatable, Sendable {
     public let relayEnabled: Bool
     public let protocolVersion: String?
     public let executionBoundary: String?
+    /// How this very request was authenticated: peer-verified or token-only.
+    public let attestation: String?
+    /// Whether this pane's requests must carry a ticket, and why.
+    public let ticketPolicy: String?
+    public let ticketPolicyReason: String?
 
-    init(pane: WorkbenchPane) {
+    init(pane: WorkbenchPane, attestation: RelayAttestation? = nil, ticketPolicy: RelayTicketPolicy? = nil) {
         let canonicalRole = canonicalAgentRole(pane.role)
         let canonicalWorkspaceName = boundedAgentLabel(pane.workspaceName ?? pane.workspaceID)
         paneID = boundedAgentLabel(pane.id)
@@ -56,6 +61,9 @@ public struct RelayAgentIdentity: Codable, Equatable, Sendable {
         relayEnabled = pane.relayEnabled
         protocolVersion = pane.protocolVersion.map(boundedAgentLabel)
         executionBoundary = pane.containerConfiguration == nil ? "host" : "container"
+        self.attestation = attestation?.rawValue
+        self.ticketPolicy = ticketPolicy?.requirement.rawValue
+        ticketPolicyReason = ticketPolicy.map { boundedAgentLabel($0.reason) }
     }
 }
 

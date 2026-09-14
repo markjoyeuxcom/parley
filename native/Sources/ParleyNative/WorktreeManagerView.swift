@@ -139,9 +139,9 @@ struct WorktreeManagerView: View {
                     Text("Git's registry is the list; Parley's records add base, team and requester. Facts are read while this window is on screen and never stored.")
                         .font(.system(size: 10)).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Remove integrated…") { model.removeIntegratedWorktrees(in: entry) }.controlSize(.small)
-                        .disabled(entry.isMissing || busy || model.managedWorktreeMutation != nil || !entry.linked.contains { model.worktreeManagerRow(for: $0).state == .integrated })
-                        .help("One preview over every INTEGRATED tree of this repository, built from fresh checks; trees with a refusal are listed and skipped. Removes the passing ones one git worktree remove at a time, without --force, stopping at the first outcome that is not a confirmed removal. Branches are offered separately afterwards.")
+                    Button("Remove integrated and unused…") { model.removeIntegratedWorktrees(in: entry) }.controlSize(.small)
+                        .disabled(entry.isMissing || busy || model.managedWorktreeMutation != nil || !entry.linked.contains { [.integrated, .unused].contains(model.worktreeManagerRow(for: $0).state) })
+                        .help("One preview over every INTEGRATED or UNUSED tree of this repository, built from fresh checks; trees with a refusal are listed and skipped. Removes the passing ones one git worktree remove at a time, without --force, stopping at the first outcome that is not a confirmed removal. Branches are offered separately afterwards.")
                 }.padding(.horizontal, 18).padding(.vertical, 10)
             }
         } else {
@@ -179,6 +179,9 @@ struct WorktreeManagerView: View {
                 Button("Open") { model.openWorktreeFromManager(tree) }.controlSize(.small)
                     .disabled(!model.canOpenDiscoveredWorktree(tree))
                 if !tree.isPrimary {
+                    Button("Predict…") { model.predictWorktreeMerge(tree, in: entry) }.controlSize(.small)
+                        .disabled(!row.canIntegrate || tree.branch == nil || mutating)
+                        .help("Predict the merge with git merge-tree in a private temporary repository against the primary checkout's HEAD: no checkout, index, branch or object changes. A prediction, not a verdict; the result offers Integrate….")
                     Button("Integrate…") { model.integrateWorktreeFromManager(tree, in: entry) }.controlSize(.small)
                         .disabled(!row.canIntegrate || tree.branch == nil || mutating)
                         .help("Propose git merge --no-ff of this branch into the primary checkout as a reviewed command run you approve; Parley runs no merge itself.")
@@ -270,6 +273,7 @@ struct WorktreeBoardRowView: View {
         switch row.state {
         case .inUse: .accentColor
         case .integrated: .green
+        case .unused: .secondary
         case .idle, .unread: .secondary
         case .missing, .stale: .red
         case .unknown: .orange

@@ -464,6 +464,10 @@ struct PermissionProfilePickerView: View {
         if let network = plan.network, network.carried {
             lines.append(ReviewLine(title: "Network", tag: enforcedByVendor, detail: network.text))
         }
+        if ticketPolicy.requirement == .required {
+            lines.append(ReviewLine(title: "Peer-attested requests", tag: "ENFORCED BY PARLEY",
+                detail: "Every parley command from this pane must present a one-use ticket that Parley issued over its ticket socket to a process descended from this launch of the pane. A copied capability alone is refused, and so is a process left over from an earlier launch."))
+        }
         switch kind {
         case .claude where !runInContainer && PermissionProfileAdapter.shellCommandRule(effectiveProfile) == .allow:
             lines.append(ReviewLine(title: "Parley's command", tag: "ALLOWED WITHOUT A PROMPT",
@@ -490,9 +494,22 @@ struct PermissionProfilePickerView: View {
         }
     }
 
+    private var ticketPolicy: RelayTicketPolicy {
+        RelayTicketPolicy.policy(kind: kind, inContainer: runInContainer, socketListening: model.ticketSocketListening,
+            claudeSandbox: kind == .claude && !runInContainer ? ClaudeHostConfiguration.sandbox(folder: request.folder) : nil,
+            codexNetworkAllowed: kind == .codex && !runInContainer ? selectedProfile.map { $0.rule(for: .networkAccess) == .allow } : nil)
+    }
+
     private func notCarriedLines(_ profile: PermissionProfileDefinition) -> [ReviewLine] {
         let vendor = kind.label
         var lines: [ReviewLine] = []
+        if ticketPolicy.requirement != .required {
+            lines.append(ReviewLine(title: "Peer attestation",
+                detail: ticketPolicy.reason.prefix(1).uppercased() + ticketPolicy.reason.dropFirst()
+                    + (ticketPolicy.requirement == .optional
+                        ? ". A ticket is redeemed when one arrives and not demanded; requests are otherwise authenticated by the pane capability alone."
+                        : ". Requests from this pane are authenticated by the pane capability alone, which any process running as you could read.")))
+        }
         if runInContainer {
             if bypassVendorPermissions {
                 lines.append(ReviewLine(title: "Profile: \(profile.name)",

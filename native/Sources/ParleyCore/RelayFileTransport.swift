@@ -28,6 +28,10 @@ public final class RelayFileTransport: @unchecked Sendable {
 
     private let broker: RelayBroker
     private let credentials: RelayCredentials
+    /// Issues and redeems one-use tickets. Nil in fixtures that have no
+    /// socket; every pane's policy is then unavailable and requests stay
+    /// token-only, exactly as before tickets existed.
+    private let tickets: RelayTicketServer?
     private let fileManager: FileManager
     private let queue = DispatchQueue(label: "parley.native.agent-file-transport", qos: .utility)
     private let workers = DispatchGroup()
@@ -60,11 +64,13 @@ public final class RelayFileTransport: @unchecked Sendable {
         broker: RelayBroker,
         credentials: RelayCredentials,
         runtimeDirectory: URL,
+        tickets: RelayTicketServer? = nil,
         fileManager: FileManager = .default,
         abandonedRequestAge: TimeInterval = 30
     ) {
         self.broker = broker
         self.credentials = credentials
+        self.tickets = tickets
         self.runtimeDirectory = runtimeDirectory
         self.fileManager = fileManager
         self.abandonedRequestAge = max(0.1, abandonedRequestAge)
@@ -295,7 +301,7 @@ public final class RelayFileTransport: @unchecked Sendable {
         case "team-status":
             return encode(broker.handleTeamStatus(token: request.token))
         case "whoami":
-            return encode(broker.agentIdentity(token: request.token))
+            return encode(broker.agentIdentity(token: request.token, attestation: request.attestation, ticketPolicy: request.ticketPolicy))
         case "panes":
             return encode(broker.agentPanes(token: request.token))
         case "events":
@@ -437,15 +443,42 @@ public final class RelayFileTransport: @unchecked Sendable {
         guard token == expectedToken else {
             throw RelayFileTransportError.runtime("pane capability does not match its endpoint")
         }
+        // A ticket proves the kernel saw the caller and that the caller
+        // descends from this pane. Whether one is demanded is the pane's
+        // policy; a ticket that arrives is always checked and consumed.
+        let policy = broker.ticketPolicy(token: token, socketListening: tickets?.isListening ?? false)
+        let attestation: RelayAttestation
+        if let ticket = try readOptionalField("ticket", from: directory, maximumBytes: 64) {
+            guard let tickets, tickets.redeem(ticket, token: token) else {
+                throw RelayFileTransportError.runtime("the ticket is invalid, expired or already used")
+            }
+            attestation = .peerVerified
+        } else if policy?.requirement == .required {
+            throw RelayFileTransportError.runtime("a ticket is required for this pane and none was presented: \(policy?.reason ?? "no policy")")
+        } else {
+            attestation = .tokenOnly
+        }
         let request = FileRequest(
             command: command,
             target: try readField("target", from: directory, maximumBytes: command == "request-run" ? 4_096 : 1_024),
             item: try readField("item", from: directory, maximumBytes: 128),
             idempotencyKey: try readField("idempotency-key", from: directory, maximumBytes: 128),
             token: token,
-            body: try readField("body", from: directory, maximumBytes: Self.maximumBodyBytes)
+            body: try readField("body", from: directory, maximumBytes: Self.maximumBodyBytes),
+            attestation: attestation,
+            ticketPolicy: policy
         )
         return request
+    }
+
+    /// A field the shim writes only when it has something to say; absence is
+    /// not an error, any other problem is.
+    private func readOptionalField(_ name: String, from directory: URL, maximumBytes: Int) throws -> String? {
+        let file = directory.appendingPathComponent(name, isDirectory: false)
+        var metadata = stat()
+        if lstat(file.path, &metadata) != 0, errno == ENOENT { return nil }
+        let value = try readField(name, from: directory, maximumBytes: maximumBytes).trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
     }
 
     private func readField(_ name: String, from directory: URL, maximumBytes: Int) throws -> String {
@@ -613,6 +646,8 @@ private struct FileRequest {
     let idempotencyKey: String
     let token: String
     let body: String
+    let attestation: RelayAttestation
+    let ticketPolicy: RelayTicketPolicy?
 }
 
 private struct FileResponse {

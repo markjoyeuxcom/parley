@@ -36,6 +36,10 @@ final class AppResidentCoordinationCore {
 
     private let server: RelayHTTPServer
     private let agentTransport: RelayFileTransport
+    /// The peer-verified ticket socket. Its failure to listen is not the
+    /// core's failure: the transport then runs token-only for every pane and
+    /// says so in each pane's policy.
+    let ticketServer: RelayTicketServer
     private let pidFile: URL
 
     init(
@@ -114,10 +118,21 @@ final class AppResidentCoordinationCore {
             infoFile: infoFile,
             controlToken: controlToken
         )
+        broker.hostNetworkAllowed = { pane in
+            guard let profileID = pane.permissionSelection?.profileID,
+                  let profile = (try? permissionProfiles())?.first(where: { $0.id == profileID }) else { return nil }
+            return profile.rule(for: .networkAccess) == .allow
+        }
+        ticketServer = RelayTicketServer(
+            socketFile: RelayTicketServer.socketURL(transportDirectory: transportDirectory),
+            credentials: credentials,
+            paneGeneration: { [controller] paneID in (try? controller.listPanes())?.first { $0.id == paneID }?.launchGeneration }
+        )
         agentTransport = RelayFileTransport(
             broker: broker,
             credentials: credentials,
-            runtimeDirectory: transportDirectory
+            runtimeDirectory: transportDirectory,
+            tickets: ticketServer
         )
         client = RelayCoreClient(infoFile: infoFile, controlToken: controlToken)
         pidFile = applicationDirectory.appendingPathComponent("core.pid")
@@ -125,6 +140,9 @@ final class AppResidentCoordinationCore {
         do {
             try server.start()
             try agentTransport.start()
+            // Kept out of the failure path on purpose: the failure is retained
+            // on the server and reported through every pane's policy.
+            try? ticketServer.start()
             try String(ProcessInfo.processInfo.processIdentifier).write(
                 to: pidFile,
                 atomically: true,
@@ -137,6 +155,7 @@ final class AppResidentCoordinationCore {
         } catch {
             server.stop()
             agentTransport.stop()
+            ticketServer.stop()
             throw error
         }
     }
@@ -148,6 +167,7 @@ final class AppResidentCoordinationCore {
         teamSessions.stopAll(reason: "Parley stopped; team session grants were revoked. Created panes were not stopped separately.")
         server.stop()
         agentTransport.stop()
+        ticketServer.stop()
         try? FileManager.default.removeItem(at: pidFile)
     }
 }

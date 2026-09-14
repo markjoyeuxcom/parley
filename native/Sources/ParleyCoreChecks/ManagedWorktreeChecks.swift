@@ -1043,6 +1043,9 @@ func worktreeBulkRemovalPlanChecks() throws {
     try wtExpect(plan.skipped.map(\.record.branch) == ["bulk/dirty", "bulk/gone"], "the wrong trees were skipped: \(plan.skipped.map(\.record.branch))")
     try wtExpect(plan.skipped[0].refusals.contains { $0.contains("untracked") }, "the dirty tree's reason was lost")
     try wtExpect(plan.skipped[1].preview.decision == .clearRecordOnly, "a gone folder was not a record-only case")
+    // An unused tree (clean, at its base) passes the same preview and keeps the state it was proposed for.
+    let unused = WorktreeBulkRemovalPlan.Item(record: clean, preview: try f.service.cleanupPreview(clean, livePaneFolders: [], otherRuntimeStateFiles: []), state: .unused)
+    try wtExpect(unused.passes && unused.state == .unused && items[0].state == .integrated, "an unused tree did not pass the bulk plan with its state")
     let removed = try f.service.remove(clean, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
     try wtExpect(WorktreeBulkRemovalPlan.shouldContinue(after: removed.state), "a confirmed removal stopped the run")
     try wtExpect(!WorktreeBulkRemovalPlan.shouldContinue(after: .uncertain), "an uncertain outcome did not stop the run")

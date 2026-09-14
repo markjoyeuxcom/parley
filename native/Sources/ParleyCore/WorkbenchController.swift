@@ -1174,6 +1174,9 @@ public final class WorkbenchController: @unchecked Sendable {
             var launchEnvironment: [String: String] = [
                 "PARLEY_PANE": "1",
                 "PARLEY_PANE_ID": pane.id,
+                // The ticket socket admits only a process of this launch, not
+                // one left over from an earlier generation of the same pane.
+                RelayTicketServer.generationMarkerKey: String(pane.launchGeneration),
                 "PARLEY_PANE_KIND": pane.kind.rawValue,
                 "PARLEY_APP_PID": String(ProcessInfo.processInfo.processIdentifier),
             ]
