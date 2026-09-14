@@ -301,15 +301,45 @@ public struct EffectivePermissionProfile: Equatable, Sendable {
 }
 
 
+/// One sentence of a launch plan, and whether the launch carries the rule it
+/// describes or leaves it to the vendor's own prompts.
+public struct PermissionLaunchPlanNote: Equatable, Sendable {
+    public let text: String
+    public let carried: Bool
+
+    public init(text: String, carried: Bool) {
+        self.text = text
+        self.carried = carried
+    }
+}
+
 public struct PermissionProfileLaunchPlan: Equatable, Sendable {
     public let arguments: [String]
     public let enforcement: PermissionEnforcementLevel
+    /// Every part below joined into one text, for callers that show one line.
     public let detail: String
+    /// What the launch arguments configure.
+    public let mode: String
+    /// The vendor's automatic reviewer, when the selection asks for one.
+    public let reviewer: String?
+    /// The profile's execution rules: carried as a rule (Claude) or left to
+    /// the vendor's prompts (every other vendor). Nil when the profile
+    /// restricts nothing there.
+    public let execution: PermissionLaunchPlanNote?
+    /// The profile's network rule: carried by Codex's sandbox, a vendor
+    /// decision everywhere else. Nil when nothing needs saying.
+    public let network: PermissionLaunchPlanNote?
 
-    public init(arguments: [String], enforcement: PermissionEnforcementLevel, detail: String) {
+    public init(arguments: [String], enforcement: PermissionEnforcementLevel, detail: String,
+                mode: String? = nil, reviewer: String? = nil,
+                execution: PermissionLaunchPlanNote? = nil, network: PermissionLaunchPlanNote? = nil) {
         self.arguments = arguments
         self.enforcement = enforcement
         self.detail = detail
+        self.mode = mode ?? detail
+        self.reviewer = reviewer
+        self.execution = execution
+        self.network = network
     }
 }
 
@@ -352,7 +382,8 @@ public enum PermissionProfileAdapter {
             ? profile.approvedRoots.flatMap { ["--add-dir", $0] }
             : []
         let arguments: [String]
-        let detail: String
+        let mode: String
+        let reviewerText: String?
         // The vendor's own automatic reviewer, where it has one. Every form
         // keeps the sandbox and the deny and ask rules and can still refuse;
         // none is a skip-all flag, which stays forbidden on the host.
@@ -361,62 +392,73 @@ public enum PermissionProfileAdapter {
         switch kind {
         case .shell:
             arguments = []
-            detail = "Shell panes use the person's interactive shell permissions."
+            mode = "Shell panes use the person's interactive shell permissions."
+            reviewerText = nil
         case .claude:
-            let mode = switch write {
+            let permissionMode = switch write {
             case .allow: reviewer ? "auto" : "acceptEdits"
             case .requireApproval: reviewer ? "auto" : "default"
             case .deny: "plan"
             }
-            arguments = ["--permission-mode", mode] + rootArguments
-            detail = "Claude permission mode and exact additional directories are configured at launch."
-                + (reviewer
-                    ? (write == .deny
-                        ? " Plan mode leaves nothing for Claude's auto mode classifier to approve, so it is not enabled."
-                        : " Auto mode: Claude's classifier approves routine actions and blocks irreversible, destructive or outward-aimed ones; deny and ask rules still apply first.")
-                    : "")
+            arguments = ["--permission-mode", permissionMode] + rootArguments
+            mode = "Claude permission mode and exact additional directories are configured at launch."
+            reviewerText = reviewer
+                ? (write == .deny
+                    ? "Plan mode leaves nothing for Claude's auto mode classifier to approve, so it is not enabled."
+                    : "Auto mode: Claude's classifier approves routine actions and blocks irreversible, destructive or outward-aimed ones; deny and ask rules still apply first.")
+                : nil
         case .codex:
             let sandbox = write == .allow ? "workspace-write" : "read-only"
             arguments = ["--sandbox", sandbox, "--ask-for-approval", "on-request"]
                 + (reviewer ? ["-c", "approvals_reviewer=auto_review"] : [])
                 + rootArguments
-            detail = "Codex sandbox and approval policy are configured at launch."
-                + (reviewer ? " Auto review: Codex's reviewer agent decides escalation requests inside the same sandbox; it grants no network or extra roots and can refuse." : "")
+            mode = "Codex sandbox and approval policy are configured at launch."
+            reviewerText = reviewer ? "Auto review: Codex's reviewer agent decides escalation requests inside the same sandbox; it grants no network or extra roots and can refuse." : nil
         case .agy:
-            let mode = write == .allow ? "accept-edits" : "plan"
-            arguments = ["--mode", mode, "--sandbox"] + rootArguments
-            detail = "Agy mode, sandbox and exact additional directories are configured at launch."
-                + (reviewer ? " Agy has no automatic reviewer, only a skip-all-permissions flag Parley never passes on the host, so Agy still asks; to stop it asking for Parley's command, add command(parley) to the allow list in ~/.gemini/antigravity-cli/settings.json yourself." : "")
+            let agyMode = write == .allow ? "accept-edits" : "plan"
+            arguments = ["--mode", agyMode, "--sandbox"] + rootArguments
+            mode = "Agy mode, sandbox and exact additional directories are configured at launch."
+            reviewerText = reviewer ? "Agy has no automatic reviewer, only a skip-all-permissions flag Parley never passes on the host, so Agy still asks; to stop it asking for Parley's command, add command(parley) to the allow list in ~/.gemini/antigravity-cli/settings.json yourself." : nil
         case .copilot:
             arguments = (write == .deny ? ["--plan"] : [])
                 + (reviewer ? ["--assisted-approval"] : [])
                 + rootArguments
-            detail = "Copilot plan mode and exact additional directories are configured where supported."
-                + (reviewer ? " Assisted approval: Copilot's judge reviews tool permission requests; it needs Copilot's AUTO_APPROVAL feature flag, and Copilot reports if that is off." : "")
+            mode = "Copilot plan mode and exact additional directories are configured where supported."
+            reviewerText = reviewer ? "Assisted approval: Copilot's judge reviews tool permission requests; it needs Copilot's AUTO_APPROVAL feature flag, and Copilot reports if that is off." : nil
         }
 
         // Claude now carries the execution rule as a permission rule in its
         // settings, so the disclosure has to narrow with the behaviour rather
         // than keep claiming the restriction is dropped.
         let carriesExecution = kind == .claude
-        let untranslated = execution.isEmpty || carriesExecution ? "" :
-            " This profile restricts \(PermissionCapability.sentence(execution)), which is not translated into a launch argument: only project write is. Those remain the vendor's own prompts to make."
-        let carried = execution.isEmpty || !carriesExecution ? "" :
-            " It also restricts \(PermissionCapability.sentence(execution)), carried as a rule that asks before a shell command and outranks the permission mode."
+        let executionNote: PermissionLaunchPlanNote? = execution.isEmpty ? nil : carriesExecution
+            ? PermissionLaunchPlanNote(text: "It also restricts \(PermissionCapability.sentence(execution)), carried as a rule that asks before a shell command and outranks the permission mode.", carried: true)
+            : PermissionLaunchPlanNote(text: "This profile restricts \(PermissionCapability.sentence(execution)), which is not translated into a launch argument: only project write is. Those remain the vendor's own prompts to make.", carried: false)
         // Only Codex has a network sandbox Parley can set. Everywhere else an
         // allowed network rule is the vendor's own prompt, and a restricted one
         // is enforced by Codex's sandbox alone.
         let networkRule = profile.definition.rule(for: .networkAccess)
-        let network = switch (kind, networkRule) {
-        case (.codex, .allow): " Network access is enabled in Codex's sandbox."
-        case (.codex, _): " Network access stays off in Codex's sandbox; a command that needs it escalates."
-        case (_, .allow): " This profile allows network access, which only Codex's sandbox can carry; \(kind.label) decides network use itself."
-        default: ""
+        let networkNote: PermissionLaunchPlanNote? = switch (kind, networkRule) {
+        case (.codex, .allow): PermissionLaunchPlanNote(text: "Network access is enabled in Codex's sandbox.", carried: true)
+        case (.codex, _): PermissionLaunchPlanNote(text: "Network access stays off in Codex's sandbox; a command that needs it escalates.", carried: true)
+        case (_, .allow): PermissionLaunchPlanNote(text: "This profile allows network access, which only Codex's sandbox can carry; \(kind.label) decides network use itself.", carried: false)
+        default: nil
         }
+        // `detail` is the same joined text as before this split; checks pin
+        // phrases in it, and every other caller shows it as one line.
+        let detail = mode
+            + (reviewerText.map { " " + $0 } ?? "")
+            + " Vendor prompts remain authoritative for capabilities the CLI cannot express."
+            + (executionNote.map { " " + $0.text } ?? "")
+            + (networkNote.map { " " + $0.text } ?? "")
         return PermissionProfileLaunchPlan(
             arguments: arguments,
             enforcement: arguments.isEmpty ? .guidanceOnly : .partiallyEnforced,
-            detail: detail + " Vendor prompts remain authoritative for capabilities the CLI cannot express." + untranslated + carried + network
+            detail: detail,
+            mode: mode,
+            reviewer: reviewerText,
+            execution: executionNote,
+            network: networkNote
         )
     }
 }

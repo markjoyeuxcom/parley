@@ -102,7 +102,9 @@ enum PanePermissionAction: Equatable {
 
 struct PanePermissionRequest: Identifiable, Equatable {
     let id = UUID()
-    let kind: PaneKind
+    /// Mutable because a creation review lets the person change the vendor;
+    /// the id stays, so the review still matches the request it was opened for.
+    var kind: PaneKind
     let folder: String
     let workspaceName: String
     let workspaceFolders: [String]
@@ -452,6 +454,9 @@ final class AppModel: ObservableObject {
             } else {
                 preferences.removeObject(forKey: Self.terminalAppearanceImportKey)
             }
+        }
+        if let stored = preferences.string(forKey: Self.lastAgentVendorKey), let kind = PaneKind(rawValue: stored), kind.isAgent {
+            lastAgentVendor = kind
         }
         if preferences.object(forKey: Self.collaborationDockVisibleKey) != nil {
             collaborationDockVisible = preferences.bool(forKey: Self.collaborationDockVisibleKey)
@@ -3578,7 +3583,7 @@ final class AppModel: ObservableObject {
     /// Closes the stopped placeholders this session created, each named in one
     /// confirmation. Ownership is re-read from the live workbench after the
     /// confirmation, so a pane the person restarted meanwhile is skipped and
-    /// reported rather than closed, and the last pane of a workspace stays.
+    /// reported rather than closed. A workspace left with no panes stays.
     func closeStoppedTeamPanes(_ session: TeamSession) {
         let candidates = session.stoppedPlaceholders(in: panes)
         guard !candidates.isEmpty else { return }
@@ -3597,10 +3602,6 @@ final class AppModel: ObservableObject {
                 let live = try controller.listPanes()
                 guard session.stoppedPlaceholders(in: live).contains(where: { $0.id == pane.id }) else {
                     skipped.append("\(pane.displayName) (no longer a stopped placeholder of this session)")
-                    continue
-                }
-                guard live.filter({ $0.workspaceID == pane.workspaceID }).count > 1 else {
-                    skipped.append("\(pane.displayName) (last pane in its workspace)")
                     continue
                 }
                 try controller.closePane(pane.id)
@@ -4463,6 +4464,22 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The vendor the Agent menu items and the review preselect: the last
+    /// one a creation review started, Claude until then. A preference, not a
+    /// launch fact; the review is where the vendor is actually chosen.
+    static let lastAgentVendorKey = "lastAgentVendor"
+    @Published private(set) var lastAgentVendor: PaneKind = .claude
+
+    func createAgent(direction: SplitDirection) {
+        create(lastAgentVendor, direction: direction)
+    }
+
+    private func rememberAgentVendor(_ kind: PaneKind) {
+        guard kind.isAgent else { return }
+        lastAgentVendor = kind
+        preferences.set(kind.rawValue, forKey: Self.lastAgentVendorKey)
+    }
+
     func create(_ kind: PaneKind, direction: SplitDirection) {
         if kind.isAgent,
            activeWorkspace?.isFolderless == true,
@@ -4632,6 +4649,7 @@ final class AppModel: ObservableObject {
                 )
                 recordNativeSplit(created: created, target: splitTarget, direction: direction)
                 rememberFolder(request.folder)
+                rememberAgentVendor(request.kind)
                 if let containerConfiguration {
                     // Retain one stopped placeholder if preparation fails; another
                     // click must not create duplicate panes or vendor-state volumes.

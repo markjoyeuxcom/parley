@@ -223,7 +223,7 @@ private struct TeamSessionApproval: View {
     }
 
     @ViewBuilder private var containerSection: some View {
-        ForEach([PaneKind.claude, .codex].filter { vendors.contains($0) }, id: \.self) { vendor in
+        ForEach(PaneKind.allCases.filter { $0.isAgent && vendors.contains($0) }, id: \.self) { vendor in
             VStack(alignment: .leading) {
                 Text("\(vendor.label) team members").font(.system(size: 11, weight: .medium))
                 ContainerLaunchOptionsView(model: model, vendor: vendor, folder: containerFolder,

@@ -278,8 +278,10 @@ A workspace is a named collaboration container with:
 - one automation policy and optional workspace lead;
 - durable owner-controlled pane roles.
 
-**New Workspace** creates a normal folderless container. **Open or Focus
-Folder** is the folder-first fast path. Existing panes keep their own live
+**New Workspace** creates a folderless container with no panes; open a shell
+or start an agent from its empty state, and closing a workspace's last pane
+leaves the workspace in place. **Open or Focus Folder** is the folder-first
+fast path and seeds one shell. Existing panes keep their own live
 working directories when attachments or the New Pane Folder change, and those
 metadata changes never grant filesystem permission. Several workspaces may
 intentionally attach the same folder. Opening a folder focuses one match, asks
@@ -606,12 +608,14 @@ Parley is licensed under Apache-2.0. Embedded third-party notices are in
 
 ## Container panes (experimental)
 
-Claude Code and Codex can run in a person-reviewed local Linux container while
-Ghostty keeps their real terminal interface. In the pane's permission review,
-select **Run in a container**, enter a locally installed image and choose
+Any agent pane (Claude Code, Codex, Agy or Copilot) can run in a
+person-reviewed local Linux container while Ghostty keeps its real terminal
+interface. In the pane's permission review,
+choose **In a container** under Runs, enter a locally installed image and choose
 **Check Image and Daemon**. Review the daemon, pinned image and disclosure
 before starting. Parley does not build or download images. The image must
-provide `/usr/local/bin/claude` or `/usr/local/bin/codex`, POSIX sh, GNU
+provide the pane's vendor at `/usr/local/bin/claude`, `/usr/local/bin/codex`,
+`/usr/local/bin/agy` or `/usr/local/bin/copilot`, plus POSIX sh, GNU
 stat/coreutils and `/bin/chown`.
 
 The working folder, the pane's own relay endpoint and read-only protocol
@@ -629,8 +633,8 @@ it; vendor permission prompts remain active. Submodules and arbitrary additional
 folders are refused. The image check also validates the required Linux utilities.
 
 **Bypass vendor permissions (container only)** is off by default. Selecting it
-launches Codex with `--dangerously-bypass-approvals-and-sandbox` or Claude with
-`--dangerously-skip-permissions`. Docker keeps the same mounts and isolation;
+launches Codex with `--dangerously-bypass-approvals-and-sandbox`, Claude or Agy
+with `--dangerously-skip-permissions`, or Copilot with `--allow-all`. Docker keeps the same mounts and isolation;
 the agent can change mounted files, run commands, use the network and access its
 saved vendor login without the usual vendor prompts. The selected profile's
 restrictions are not applied. Codex's inner sandbox is not required in this mode,

@@ -1004,7 +1004,8 @@ struct ContentView: View {
         PaneCreationMenu(
             offersActivePaneFolder: model.activePane.map {
                 !WorkspaceFolderIdentity.matches($0.cwd, model.defaultFolder)
-            } ?? false
+            } ?? false,
+            defaultAgentKind: model.lastAgentVendor
         ) { kind, direction, folder in
             switch folder {
             case .newPane: model.create(kind, direction: direction)
@@ -1668,12 +1669,17 @@ struct ContentView: View {
                     .disabled(!model.canRetryConnections)
             }
         } else if model.activePaneState == .empty {
+            // A workspace with no panes is a valid state, not a dead end: its
+            // attachments, New Pane Folder and history are all still here.
             ContentUnavailableView {
-                Label("No pane in this workspace", systemImage: "rectangle.split.2x1")
+                Label("No panes in this workspace", systemImage: "rectangle.split.2x1")
             } description: {
-                Text("Create another workspace or restore a saved layout to continue.")
+                Text("Open a shell here, or start an agent and choose its vendor in the review. The workspace, its folders and its history stay either way.")
             } actions: {
-                Button("New Workspace", action: model.createWorkspace)
+                HStack {
+                    Button("New Shell") { model.create(.shell, direction: .horizontal) }
+                    Button("New Agent…") { model.createAgent(direction: .horizontal) }
+                }
             }
         } else if !model.nativePaneSurfaces.isEmpty {
             nativePaneSplit

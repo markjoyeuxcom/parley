@@ -193,6 +193,10 @@ func checkContainerLaunchProjection() throws {
     try containerExpect(argv.contains("--log-driver=none") && argv.contains("--cap-drop=ALL"), "container defaults gained logging or capabilities")
     try containerExpect(argv.contains("type=bind,source=/project with spaces,target=/project with spaces"), "project path spelling or argument boundaries changed")
     try containerExpect(argv.filter { $0.hasPrefix("type=bind,") }.count == 4, "unexpected host mount")
+    // The home volume is never populated from the image: an image that carries
+    // /home/parley would otherwise hand root ownership back to the volume on
+    // every create while it is empty, undoing the initializer's chown.
+    try containerExpect(argv.contains("type=volume,source=parley-home-fixture,target=/home/parley,volume-nocopy=true"), "home volume mount copies the image directory: \(argv)")
     try containerExpect(!argv.contains(where: { $0.contains("PARLEY_RELAY_TOKEN=") }), "credential value leaked into argv")
     try containerExpect(argv.contains("PARLEY_RELAY_TOKEN"), "credential is not passed by environment name")
     for bypass in [["--yolo"], ["--sandbox=danger-full-access"], ["--permission-mode", "bypassPermissions"], ["-c", "sandbox_mode='danger-full-access'"], ["--ask-for-approval=never"]] {
@@ -215,6 +219,35 @@ func checkContainerLaunchProjection() throws {
     var remote = config; remote.daemonEndpoint = "ssh://host"
     do { _ = try ContainerLaunchProjection.createArguments(configuration: remote, facts: facts, vendorArguments: []); throw NSError(domain: "accepted remote daemon", code: 1) }
     catch is ContainerPaneError {}
+
+    // Every agent vendor has a container form; a Shell pane never does.
+    for vendor in PaneKind.allCases where vendor.isAgent {
+        var vendorFacts = facts; vendorFacts.vendor = vendor
+        let args = try ContainerLaunchProjection.createArguments(configuration: config, facts: vendorFacts, vendorArguments: [])
+        try containerExpect(args.contains("/usr/local/bin/\(vendor.rawValue)") && args[args.firstIndex(of: "--entrypoint")! + 1] == "/usr/local/bin/\(vendor.rawValue)", "\(vendor.label) entrypoint is wrong")
+        try containerExpect(!args.contains { $0.hasPrefix("COPILOT_") }, "\(vendor.label) received vendor environment nobody passed")
+    }
+    var shell = facts; shell.vendor = .shell
+    do { _ = try ContainerLaunchProjection.createArguments(configuration: config, facts: shell, vendorArguments: []); throw NSError(domain: "accepted a shell container", code: 1) }
+    catch is ContainerPaneError {}
+    // Copilot's own skip-all flags are refused as vendor arguments exactly like
+    // the other vendors' flags; the review adds --allow-all, nothing else does.
+    for bypass in [["--allow-all"], ["--allow-all-tools"], ["--allow-all-paths"], ["--allow-all-urls"], ["--allow-tool=shell(parley)", "--allow-all-tools"]] {
+        do { _ = try ContainerLaunchProjection.createArguments(configuration: config, facts: facts, vendorArguments: bypass); throw NSError(domain: "accepted Copilot allow-all", code: 1) }
+        catch is ContainerPaneError {}
+    }
+    _ = try ContainerLaunchProjection.createArguments(configuration: config, facts: facts, vendorArguments: ["--allow-tool=shell(parley)"])
+    // Vendor environment: one documented key, placed before the image, and
+    // nothing else, so a mistaken caller is refused rather than widened.
+    var copilotFacts = facts; copilotFacts.vendor = .copilot
+    let copilot = try ContainerLaunchProjection.createArguments(configuration: config, facts: copilotFacts, vendorArguments: ["--allow-tool=shell(parley)"],
+        vendorEnvironment: ["COPILOT_CUSTOM_INSTRUCTIONS_DIRS": "/runtime/agent-protocol"])
+    let entry = copilot.firstIndex(of: "COPILOT_CUSTOM_INSTRUCTIONS_DIRS=/runtime/agent-protocol")
+    try containerExpect(entry != nil && copilot[entry! - 1] == "--env" && entry! < copilot.firstIndex(of: config.imageID)!, "Copilot's environment is missing or landed after the image: \(copilot)")
+    for environment in [["COPILOT_ALLOW_ALL": "1"], ["PARLEY_COMMAND": "/x"], ["COPILOT_CUSTOM_INSTRUCTIONS_DIRS": ""], ["COPILOT_CUSTOM_INSTRUCTIONS_DIRS": "/a\nb"], ["COPILOT_CUSTOM_INSTRUCTIONS_DIRS": String(repeating: "x", count: 5000)]] {
+        do { _ = try ContainerLaunchProjection.createArguments(configuration: config, facts: copilotFacts, vendorArguments: [], vendorEnvironment: environment); throw NSError(domain: "accepted vendor environment \(environment)", code: 1) }
+        catch is ContainerPaneError {}
+    }
 }
 
 func checkContainerReceiptStore() throws {
@@ -799,7 +832,7 @@ func checkContainerReviewedBypass() throws {
     var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(standard)) as! [String: Any]
     json["bypassVendorPermissions"] = true
     let reviewed = try JSONDecoder().decode(ContainerConfiguration.self, from: JSONSerialization.data(withJSONObject: json))
-    for (vendor, flag) in [(PaneKind.codex, "--dangerously-bypass-approvals-and-sandbox"), (.claude, "--dangerously-skip-permissions")] {
+    for (vendor, flag) in [(PaneKind.codex, "--dangerously-bypass-approvals-and-sandbox"), (.claude, "--dangerously-skip-permissions"), (.agy, "--dangerously-skip-permissions"), (.copilot, "--allow-all")] {
         for mode in [AgentLaunchMode.fresh, .resume] {
             let facts = ContainerLaunchFacts(paneID: "pane-fixture", generation: 1, vendor: vendor, folder: "/project",
                 endpoint: "/transport/fixture", protocolDirectory: "/runtime/protocol", shimDirectory: "/runtime/bin",
@@ -871,11 +904,12 @@ func checkContainerBypassPreflight() throws {
     defer { try? FileManager.default.removeItem(at: directory) }
     let runner = ContainerLifecycleRunner()
     let service = try ContainerPaneService(directory: directory, environment: [:], runner: runner)
-    for (vendor, flag) in [(PaneKind.codex, "--dangerously-bypass-approvals-and-sandbox"), (.claude, "--dangerously-skip-permissions")] {
+    for (vendor, flag) in [(PaneKind.codex, "--dangerously-bypass-approvals-and-sandbox"), (.claude, "--dangerously-skip-permissions"), (.agy, "--dangerously-skip-permissions"), (.copilot, "--allow-all")] {
         runner.calls = []
         let configuration = try service.preview(image: "fixture", vendor: vendor, legacyCodexSandbox: false, bypassVendorPermissions: true)
         let probe = runner.calls.first { $0.contains("create") && $0.contains("--network=none") }!
         try containerExpect(configuration.bypassVendorPermissions && probe.suffix(3) == ["/usr/local/bin/\(vendor.rawValue)", flag, "--version"], "image preflight used an inner sandbox or lost bypass mode")
+        try containerExpect(probe.contains { $0.hasPrefix(ContainerLaunchProjection.home + ":") && $0.contains(",exec") && $0.contains("size=") }, "the probe home is noexec or default-sized: Copilot's launcher cannot map its native addon there")
         try containerExpect(!probe.contains("--mount") && !probe.contains("sandbox") && probe.contains(ContainerPaneService.imageUtilityProbe), "bypass probe exposed files or skipped the utility contract")
         try containerExpect((try service.records()).allSatisfy(\.removed), "bypass probe retained a live receipt")
     }
@@ -893,7 +927,7 @@ func checkContainerBypassPreflight() throws {
 
 func checkContainerBypassController() throws {
     try requireContainerControllerShell()
-    for vendor in [PaneKind.codex, .claude] {
+    for (vendor, expectedFlag) in [(PaneKind.codex, "--dangerously-bypass-approvals-and-sandbox"), (.claude, "--dangerously-skip-permissions"), (.agy, "--dangerously-skip-permissions"), (.copilot, "--allow-all")] {
         let fixture = try ContainerReviewFixture()
         let profile = try fixture.profile(folder: fixture.project.path)
         let pane = try fixture.controller.createPane(kind: vendor, cwd: fixture.project.path, permissionProfile: profile)
@@ -901,9 +935,33 @@ func checkContainerBypassController() throws {
         var reviewed = fixture.configuration; reviewed.bypassVendorPermissions = true
         try fixture.controller.prepareContainerStart(pane.id, configuration: reviewed, permissionProfile: profile, launchMode: .resume)
         let create = fixture.runner.calls.first { $0.contains("create") && $0.contains(reviewed.imageID) && $0.contains("--network=bridge") }!
-        let expectedFlag = vendor == .codex ? "--dangerously-bypass-approvals-and-sandbox" : "--dangerously-skip-permissions"
-        try containerExpect(create.contains(expectedFlag), "controller lost reviewed bypass")
-        try containerExpect(!create.contains("--sandbox") && !create.contains("--permission-mode") && !create.contains("--ask-for-approval"), "profile arguments conflicted with bypass")
+        try containerExpect(create.contains(expectedFlag), "controller lost reviewed bypass for \(vendor.label)")
+        let initializer = fixture.runner.calls.first { $0.contains("create") && $0.contains("/bin/chown") }
+        try containerExpect(initializer != nil && initializer!.contains { $0.hasPrefix("type=volume,") && $0.hasSuffix(",volume-nocopy=true") }
+            && create.contains { $0.hasPrefix("type=volume,") && $0.hasSuffix(",volume-nocopy=true") },
+            "the home initializer or the pane mounts the volume with image copy enabled for \(vendor.label)")
+        try containerExpect(!create.contains("--sandbox") && !create.contains("--permission-mode") && !create.contains("--ask-for-approval") && !create.contains("--mode") && !create.contains("--plan"),
+            "profile arguments conflicted with bypass for \(vendor.label)")
+        // Copilot reads its instructions directory from the environment, so the
+        // container carries that one key, before the image, at the protocol
+        // mount's own path; no other vendor gets it. Agy's protocol directory
+        // travels as its --add-dir argument, after the image.
+        let instructions = create.filter { $0.hasPrefix("COPILOT_CUSTOM_INSTRUCTIONS_DIRS=") }
+        let imageIndex = create.firstIndex(of: reviewed.imageID)!
+        if vendor == .copilot {
+            try containerExpect(instructions.count == 1 && instructions[0].hasSuffix("/agent-protocol") && create.firstIndex(of: instructions[0])! < imageIndex
+                && create[create.firstIndex(of: instructions[0])! - 1] == "--env", "Copilot's instructions directory did not reach the container as environment: \(create)")
+            let mounted = create.first { $0.hasPrefix("type=bind,") && $0.contains("/agent-protocol,") }
+            try containerExpect(mounted != nil && instructions[0].hasSuffix(String(mounted!.split(separator: ",")[1].dropFirst("source=".count))),
+                "Copilot's instructions path is not the mounted protocol directory")
+            try containerExpect(create.contains("--plugin-dir") && create.contains("--allow-tool=shell(parley)"), "Copilot lost its hooks or its Parley allow rule in the container")
+        } else {
+            try containerExpect(instructions.isEmpty, "\(vendor.label) received Copilot's environment")
+        }
+        if vendor == .agy {
+            let addDir = create.firstIndex(of: "--add-dir")
+            try containerExpect(addDir != nil && addDir! > imageIndex && create[addDir! + 1].hasSuffix("/agent-protocol"), "Agy's protocol directory did not follow the image as --add-dir")
+        }
         do {
             try fixture.controller.startPane(pane.id, permissionProfile: profile, launchMode: .resume, containerConfiguration: fixture.configuration)
             throw NSError(domain: "changed bypass review activated", code: 1)
@@ -918,8 +976,19 @@ func checkContainerBypassController() throws {
         try fixture.controller.startPane(pane.id, permissionProfile: profile)
         let host = try fixture.controller.listPanes().first { $0.id == pane.id }!
         let launch = try fixture.controller.launchConfiguration(for: pane.id)
-        try containerExpect(host.containerConfiguration == nil && host.permissionEnforcement == .partiallyEnforced, "return to host kept bypass metadata")
-        try containerExpect(!launch.command.contains(expectedFlag) && launch.command.contains(vendor == .codex ? "default_permissions=" : "--permission-mode"), "container bypass leaked into host launch")
+        // Back on the host the pane shows its vendor's own plan: partially
+        // enforced where a launch argument exists, guidance only where none does
+        // (Copilot's host plan carries nothing for this profile). Never bypass.
+        let hostEnforcement = PermissionProfileAdapter.launchPlan(for: vendor, profile: profile).enforcement
+        try containerExpect(host.containerConfiguration == nil && host.permissionEnforcement == hostEnforcement && hostEnforcement != .enforced,
+            "return to host kept bypass metadata for \(vendor.label): \(host.permissionEnforcement)")
+        let hostMarker = switch vendor {
+        case .codex: "default_permissions="
+        case .claude: "--permission-mode"
+        case .agy: "--mode"
+        default: "--allow-tool=shell(parley)"
+        }
+        try containerExpect(!launch.command.contains(expectedFlag) && launch.command.contains(hostMarker), "container bypass leaked into host launch")
         try fixture.controller.shutdown()
     }
 }
@@ -929,7 +998,7 @@ func checkContainerBypassSpike(image: String) throws {
     let directory = URL(fileURLWithPath: "/private/tmp/parley-bypass-spike-\(UUID().uuidString.lowercased())")
     let service = try ContainerPaneService(directory: directory, environment: ["HOME": NSHomeDirectory()])
     do {
-        for vendor in [PaneKind.codex, .claude] {
+        for vendor in PaneKind.allCases where vendor.isAgent {
             let configuration = try service.preview(image: image, vendor: vendor, legacyCodexSandbox: false, bypassVendorPermissions: true)
             try containerExpect(configuration.bypassVendorPermissions && !configuration.legacyCodexSandbox, "real image probe lost bypass selection")
             print("PASS Docker \(vendor.label) bypass startup and Linux utility probe without an inner sandbox")

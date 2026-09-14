@@ -393,7 +393,6 @@ public enum ParleyWorkbenchError: LocalizedError, Equatable {
     case noRelayText
     case samePane
     case notAgentPane
-    case cannotCloseLastPane
     case workspaceNotFound(String)
     case cannotCloseLastWorkspace
     case copilotTrustRequired
@@ -418,8 +417,6 @@ public enum ParleyWorkbenchError: LocalizedError, Equatable {
             "Choose another agent pane; a pane cannot send an Ask to itself."
         case .notAgentPane:
             "Ask requires two agent panes."
-        case .cannotCloseLastPane:
-            "Keep one pane open so the workspace remains available."
         case let .workspaceNotFound(id):
             "The workspace no longer exists: \(id)"
         case .cannotCloseLastWorkspace:

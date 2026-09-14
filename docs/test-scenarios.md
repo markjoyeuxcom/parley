@@ -55,10 +55,18 @@ handoffs work. Agy reports hook state as Unknown by design.
 
 ## P1.3 Container pane acceptance
 
-1. Start a Claude container pane and a Codex container pane.
+1. Start one container pane per vendor: Claude, Codex, Agy and Copilot
+   (Runs › In a container in each review; `parley-agents:local` carries all
+   four, see `docs/container-images.md`).
 2. Sign each in. Claude: paste-code flow. Codex: either device code (no
    port) or, with **Published port** set to 1455 in the container review,
-   browser sign-in — the callback must complete on the Mac.
+   browser sign-in — the callback must complete on the Mac. Agy: choose
+   Google OAuth, open the printed address on the Mac and paste the code
+   back. Copilot: confirm folder trust first, then its device-code flow.
+   **Fail:** the vendor cannot write its home (Agy: "mkdir
+   /home/parley/.gemini: permission denied"; Copilot: "EACCES … .cache"),
+   which every image with a `/home/parley` directory did before 14
+   September 2026 until the home volume was mounted with nocopy.
 3. Confirm protocol uptake (`parley whoami`, protocol 32) fresh and resumed.
 4. Send an Ask and a Delegate between a container pane and a host pane.
 5. Check normal permission prompts appear (unless you chose bypass — then the
@@ -110,6 +118,9 @@ question, or the refusal is a bare error.
 - Close a pane — its process ends (check Status Center → Health).
 - Restart a pane — new launch generation, old session not claimed to survive.
 - Move a pane to another workspace — surface, scrollback and process preserved.
+- Move the last pane out of a workspace: the source stays, empty, offering
+  New Shell and New Agent…; nothing about it is deleted.
+  **Fail:** the source workspace disappears, or the move is refused.
   Move the **selected** pane: the source workspace stays on screen with one of
   its remaining panes selected, and the moved pane is drawing when you switch
   to the target.
@@ -123,7 +134,13 @@ question, or the refusal is a bare error.
 
 ## P2.2 Workspaces and folders
 
-- New Workspace creates a folderless container; it is a valid state.
+- New Workspace creates a folderless container with no panes; it is a valid
+  state: the empty view offers New Shell and New Agent…, and attachments and
+  the New Pane Folder can be set before any pane exists.
+- Close the last pane in a workspace: the workspace stays, empty; quit and
+  relaunch: it is still there. Close the workspace itself to remove it.
+  **Fail:** the workspace vanishes with its last pane, or a relaunch treats
+  the empty workbench as a fresh install.
 - Attach two or more folders; both appear; search covers them.
 - Remove a folder attachment while a pane is live in it — the pane is unchanged.
 - `parley open <folder>` from a shell: focuses one match, asks on several,
@@ -232,8 +249,9 @@ question, or the refusal is a bare error.
   under a network-restricted profile. Remove that line to see Codex's prompt.
 - **Flexible + network** on a Codex host pane: `curl -I https://example.com`
   runs inside the sandbox with no escalation. On Flexible it still escalates.
-  Vendor Enforcement says network is enabled in Codex's sandbox; for Claude,
-  Agy and Copilot it says only Codex can carry the rule.
+  What is carried lists Network as enforced by Codex; for Claude, Agy and
+  Copilot, Network sits under What is not carried and says only Codex's
+  sandbox can carry the rule.
   **Fail:** the network command escalates on Flexible + network, or a
   non-Codex review claims to enforce network.
 - Codex review, Approvals section: a line states what your own Codex config
@@ -247,7 +265,8 @@ question, or the refusal is a bare error.
   such as `ls` runs with no prompt; a destructive one such as
   `git push --force` is refused or asked.
   On an Agy pane the picker is disabled and the review says Agy has no
-  reviewer. Vendor Enforcement names the mode.
+  reviewer. What is carried names the mode on its Profile line and the
+  reviewer on its Approvals line.
   **Fail:** a routine command still prompts, a destructive one runs silently,
   or the pane launch carries any skip-all flag.
 - A container pane with **Bypass vendor permissions**: badge, review, Status
@@ -297,7 +316,8 @@ question, or the refusal is a bare error.
   **Fail:** older workspace handoffs appear under Work. v0.1.42 did this.
 - Stop team panes; confirm a pane you restarted yourself is skipped and reported.
 - An Agy host member keeps its own approval prompts; a run that needs them is
-  not unattended, by design. Container bypass exists for Claude and Codex only.
+  not unattended, by design. Container bypass exists for every vendor; only a
+  container member with approved bypass runs unattended.
 - A Claude host member on **Flexible** or **Broad workspace** runs
   `parley whoami` with no prompt and still prompts for `ls`, which is Claude's
   own acceptEdits behaviour, not a Parley rule. Neither profile carries a Bash

@@ -11,13 +11,18 @@ public enum PaneCreationFolder {
 /// item or its submenu while the person is choosing a split.
 public struct PaneCreationMenu: NSViewRepresentable {
     public let offersActivePaneFolder: Bool
+    /// The vendor an Agent item opens the review with. The review's own
+    /// Vendor row is where the person chooses; this only preselects it.
+    public let defaultAgentKind: PaneKind
     public let onCreate: (PaneKind, SplitDirection, PaneCreationFolder) -> Void
 
     public init(
         offersActivePaneFolder: Bool,
+        defaultAgentKind: PaneKind = .claude,
         onCreate: @escaping (PaneKind, SplitDirection, PaneCreationFolder) -> Void
     ) {
         self.offersActivePaneFolder = offersActivePaneFolder
+        self.defaultAgentKind = defaultAgentKind.isAgent ? defaultAgentKind : .claude
         self.onCreate = onCreate
     }
 
@@ -36,8 +41,8 @@ public struct PaneCreationMenu: NSViewRepresentable {
         button.selectItem(at: 0)
         button.imagePosition = .imageLeading
         button.setAccessibilityLabel("New pane")
-        button.setAccessibilityHelp("Choose an agent or shell and where to split the active workspace")
-        button.toolTip = "Open a new agent or shell pane"
+        button.setAccessibilityHelp("Choose a shell or an agent pane and where to split the active workspace; the agent's vendor is chosen in the review")
+        button.toolTip = "Open a new shell or agent pane"
         button.sizeToFit()
         return button
     }
@@ -65,9 +70,12 @@ public struct PaneCreationMenu: NSViewRepresentable {
             // A pull-down button reserves its first item for the button label.
             let label = menu.addItem(withTitle: "Pane", action: nil, keyEquivalent: "")
             label.image = NSImage(systemSymbolName: "plus", accessibilityDescription: nil)
-            for kind in PaneKind.allCases {
-                let item = NSMenuItem(title: kind.label, action: nil, keyEquivalent: "")
-                let submenu = NSMenu(title: kind.label)
+            // Two entries, not one per vendor: a shell opens at once, an agent
+            // opens the review, and the review's Vendor row is where the vendor
+            // is chosen. The Agent entry preselects the last vendor used.
+            for (title, kind) in [("Shell", PaneKind.shell), ("Agent", snapshot.defaultAgentKind)] {
+                let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                let submenu = NSMenu(title: title)
                 submenu.autoenablesItems = false
                 addHeading("New Pane Folder", to: submenu)
                 addAction("Split Right", kind, .horizontal, .newPane, snapshot, to: submenu)

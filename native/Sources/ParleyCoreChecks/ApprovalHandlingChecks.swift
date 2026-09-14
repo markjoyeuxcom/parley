@@ -152,6 +152,51 @@ func networkRuleChecks() throws {
     try approvalExpect(codexPlan.detail.contains("enabled in Codex's sandbox"), "Codex's plan does not disclose the enabled network: \(codexPlan.detail)")
 }
 
+/// The plan's parts are what the review lists under What is carried and
+/// What is not carried; its joined `detail` is the same text as before the
+/// split, and each part says truthfully whether the launch carries it.
+func launchPlanPartsChecks() throws {
+    let folder = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().path
+    let flexible = try approvalRequire(PermissionProfileDefinition.builtIns.first { $0.id == "flexible" }, "no flexible profile")
+    let asking = try approvalRequire(PermissionProfileDefinition.builtIns.first { $0.id == "default" }, "no default profile")
+    try approvalExpect(asking.rule(for: .projectToolExecution) != .allow || asking.rule(for: .localProcessExecution) != .allow,
+        "this check needs a profile that restricts execution")
+    let withNetwork = try approvalRequire(PermissionProfileDefinition.builtIns.first { $0.id == "flexible-network" }, "no flexible + network profile")
+
+    for kind in [PaneKind.claude, .codex, .agy, .copilot] {
+        for definition in [flexible, asking, withNetwork] {
+            for approvals in [PermissionApprovalHandling.person, .vendorReviewer] {
+                let profile = try PermissionProfileResolver.resolve(definition: definition, paneFolder: folder, approvals: approvals)
+                let plan = PermissionProfileAdapter.launchPlan(for: kind, profile: profile)
+                let joined = plan.mode
+                    + (plan.reviewer.map { " " + $0 } ?? "")
+                    + " Vendor prompts remain authoritative for capabilities the CLI cannot express."
+                    + (plan.execution.map { " " + $0.text } ?? "")
+                    + (plan.network.map { " " + $0.text } ?? "")
+                try approvalExpect(plan.detail == joined, "\(kind.label)/\(definition.id)/\(approvals): detail is not the join of its parts:\n\(plan.detail)\n\(joined)")
+                try approvalExpect((plan.reviewer != nil) == (approvals == .vendorReviewer),
+                    "\(kind.label)/\(definition.id): the reviewer part does not follow the approvals choice")
+                try approvalExpect(!plan.mode.contains("Auto mode") && !plan.mode.contains("Auto review"),
+                    "\(kind.label): the reviewer sentence leaked into the mode part: \(plan.mode)")
+            }
+        }
+        // Execution rules reach Claude as a settings rule and nobody else.
+        let restricted = PermissionProfileAdapter.launchPlan(for: kind, profile: try PermissionProfileResolver.resolve(definition: asking, paneFolder: folder))
+        let execution = try approvalRequire(restricted.execution, "\(kind.label): a restricting profile produced no execution part")
+        try approvalExpect(execution.carried == (kind == .claude), "\(kind.label): execution carried flag is wrong: \(execution)")
+        try approvalExpect(PermissionProfileAdapter.launchPlan(for: kind, profile: try PermissionProfileResolver.resolve(definition: flexible, paneFolder: folder)).execution == nil,
+            "\(kind.label): Flexible restricts nothing yet produced an execution part")
+        // The network rule is carried by Codex's sandbox alone.
+        let networked = PermissionProfileAdapter.launchPlan(for: kind, profile: try PermissionProfileResolver.resolve(definition: withNetwork, paneFolder: folder))
+        let network = try approvalRequire(networked.network, "\(kind.label): an allowing profile produced no network part")
+        try approvalExpect(network.carried == (kind == .codex), "\(kind.label): network carried flag is wrong: \(network)")
+    }
+    // A plan built the old way still reads as one line.
+    let shell = PermissionProfileLaunchPlan(arguments: [], enforcement: .guidanceOnly, detail: "Shell panes use the person's interactive shell permissions.")
+    try approvalExpect(shell.mode == shell.detail && shell.reviewer == nil && shell.execution == nil && shell.network == nil,
+        "a plan without parts did not default its mode to the detail")
+}
+
 private func approvalRequire<T>(_ value: T?, _ message: String) throws -> T {
     guard let value else { throw NSError(domain: "ApprovalHandling", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
     return value
@@ -162,4 +207,5 @@ let approvalHandlingChecks: [(String, () throws -> Void)] = [
     ("a permission selection decodes without an approvals choice and keeps one it has", approvalHandlingSelectionDecodingChecks),
     ("vendor automatic review is reached only through documented non-bypass options", approvalHandlingLaunchPlanChecks),
     ("an allowed network rule reaches Codex's sandbox and is disclosed elsewhere", networkRuleChecks),
+    ("a launch plan's parts join into its detail and say what the launch carries", launchPlanPartsChecks),
 ]
