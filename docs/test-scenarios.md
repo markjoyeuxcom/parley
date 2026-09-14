@@ -171,6 +171,16 @@ question, or the refusal is a bare error.
 ## P2.4 Discovery and protocol
 
 - `parley whoami`, `parley panes`, `parley events --since beginning`.
+  whoami on a Claude, Copilot or Agy host pane reports `attestation:
+  peer-verified` and `ticketPolicy: required`; on a Codex host pane on
+  Flexible + network the same, and on Flexible `ticketPolicy: optional`
+  naming the escalation; inside a container
+  `token-only` and `unavailable` with the mount as the reason.
+  With `"sandbox": {"enabled": true}` in the folder's `.claude/settings.local.json`,
+  a Claude host pane reports `ticketPolicy: optional` naming that file.
+  **Fail:** a Claude host pane reads token-only while the socket listens and
+  its sandbox is off, or a copied capability used from a plain Terminal is
+  served for a Claude pane.
 - `parley help` and `parley protocol` work with no broker.
 - Events contain no prompts, terminal text or folders.
 
@@ -234,6 +244,11 @@ question, or the refusal is a bare error.
   run closes the pane and a failed one keeps it.
 
 ## P2.9 Permission profiles
+
+- Start Claude Code or Copilot on this machine and read the review: What is
+  carried lists Peer-attested requests as enforced by Parley. For Codex, a
+  container, or Agy, What is not carried says why a ticket is not required.
+  **Fail:** the line is missing, or claims attestation for Codex or a container.
 
 - Start an agent and review the permission profile; the review names what is
   and is not carried to the vendor.
@@ -334,6 +349,12 @@ question, or the refusal is a bare error.
 
 ## P3.4 Managed worktrees
 
+- In the Worktrees window, a tree created and never committed to reads
+  UNUSED, not Integrated; Remove integrated and unused… proposes it labelled
+  unused; after one commit merged into the primary it reads Integrated, and
+  its facts line says pushed, N unpushed commits, or no upstream.
+  **Fail:** a fresh empty tree reads Integrated.
+
 - Create one through a team request with `--worktree`.
 - A pane inside it; the pane row shows path, branch and base.
 - Merge preview against main — conflicts predicted, nothing mutated.
@@ -359,7 +380,9 @@ question, or the refusal is a bare error.
   lists every prunable entry and forgets them, then offers **Delete
   Branch…** for the branches they held; a merged one is deleted after its
   own confirmation. **Integrate…** on an unrecorded tree opens the same
-  "Proposed by you" preview. **Remove integrated…** with two integrated
+  "Proposed by you" preview. **Predict…** on a row with a known conflict
+  says so and lists the paths; on a clean branch it offers Integrate….
+  **Remove integrated and unused…** with two integrated
   trees and one dirty tree: the dirty tree reads IDLE and is not a
   candidate; the single preview lists the two with their checks (a tree
   that reads INTEGRATED but fails its fresh check, say a pane opened inside

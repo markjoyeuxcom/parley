@@ -237,6 +237,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var contextReviews: [AgentContextReview] = []
     @Published private(set) var contextCommandCapturing = false
     @Published private(set) var coreAvailable = false
+    /// Whether the peer-verified ticket socket is listening; the launch
+    /// review's attestation line reads this at review time.
+    var ticketSocketListening: Bool { residentCore?.ticketServer.isListening ?? false }
     @Published private(set) var terminalAvailable = false
     @Published private(set) var coreError: String?
     @Published private(set) var historyPersistenceError: String?
@@ -1716,6 +1719,33 @@ final class AppModel: ObservableObject {
         proposeWorktreeIntegration(branch: tree.branch ?? "", treePath: tree.path, primaryPath: entry.primaryPath)
     }
 
+    /// Predict… on a row: the same merge-tree prediction Finish… offers,
+    /// against the primary checkout's HEAD, shown with its limitation and
+    /// offering Integrate… from the result. A prediction, never a verdict,
+    /// and no checkout, index, branch or object changes.
+    func predictWorktreeMerge(_ tree: GitWorktreeRecord, in entry: WorktreeRepositoryEntry) {
+        guard let primary = entry.worktrees.first(where: \.isPrimary), let branch = tree.branch else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let record = try await self.ensureWorktreeRecord(for: tree, in: entry)
+                let preview = try await self.previewWorktreeMerge(record, target: primary.head)
+                let row = self.worktreeManagerRow(for: tree)
+                let alert = NSAlert()
+                alert.messageText = preview.headline(branch: branch, into: primary.shortIdentity)
+                alert.informativeText = preview.detail(limit: 40)
+                alert.alertStyle = .informational
+                if row.canIntegrate { alert.addButton(withTitle: "Integrate…") }
+                alert.addButton(withTitle: "Close")
+                if alert.runModal() == .alertFirstButtonReturn, row.canIntegrate {
+                    self.proposeWorktreeIntegration(branch: branch, treePath: tree.path, primaryPath: entry.primaryPath)
+                }
+            } catch {
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
     // MARK: Worktree manager
 
     @Published private(set) var worktreeRepositories: [WorktreeRepositoryEntry] = []
@@ -2082,12 +2112,13 @@ final class AppModel: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             let candidates = entry.linked.filter { tree in
-                tree.pruneReason == nil && self.worktreeManagerRow(for: tree).state == .integrated
+                tree.pruneReason == nil && [.integrated, .unused].contains(self.worktreeManagerRow(for: tree).state)
             }
+            let statesByPath = Dictionary(uniqueKeysWithValues: candidates.map { ($0.path, self.worktreeManagerRow(for: $0).state) })
             guard !candidates.isEmpty else {
                 let none = NSAlert()
                 none.messageText = "Nothing to remove"
-                none.informativeText = "No linked worktree of \(entry.name) reads Integrated right now. Refresh, or remove trees one at a time."
+                none.informativeText = "No linked worktree of \(entry.name) reads Integrated or Unused right now. Refresh, or remove trees one at a time."
                 none.runModal()
                 return
             }
@@ -2116,16 +2147,18 @@ final class AppModel: ObservableObject {
             var unreadable: [String] = []
             for (record, result) in zip(records, previews) {
                 switch result {
-                case let .success(item): items.append(item)
+                case let .success(item):
+                    items.append(WorktreeBulkRemovalPlan.Item(record: item.record, preview: item.preview,
+                        state: statesByPath[item.record.path] ?? statesByPath.first { Self.samePathSpelling($0.key, item.record.path) }?.value ?? .integrated))
                 case let .failure(error): unreadable.append("\(record.branch): \(error.localizedDescription)")
                 }
             }
             let plan = WorktreeBulkRemovalPlan.plan(items: items)
             let alert = NSAlert()
-            alert.messageText = plan.passing.isEmpty ? "No integrated worktree of \(entry.name) can be removed" : "Remove \(plan.passing.count) integrated worktree\(plan.passing.count == 1 ? "" : "s") of \(entry.name)?"
+            alert.messageText = plan.passing.isEmpty ? "No integrated or unused worktree of \(entry.name) can be removed" : "Remove \(plan.passing.count) integrated or unused worktree\(plan.passing.count == 1 ? "" : "s") of \(entry.name)?"
             var lines: [String] = []
             for item in plan.passing {
-                lines.append("• \(item.record.branch) at \(DelegationGitFacts.displayPath(item.record.path))\n  \(item.preview.preservationSummary)."
+                lines.append("• \(item.record.branch) (\(item.state == .unused ? "unused: no commits since its base" : "integrated")) at \(DelegationGitFacts.displayPath(item.record.path))\n  \(item.preview.preservationSummary)."
                     + (item.preview.ignoredPaths.isEmpty ? "" : " \(item.preview.ignoredPaths.count) ignored entr\(item.preview.ignoredPaths.count == 1 ? "y" : "ies") will be deleted with it (listed below)."))
             }
             for item in plan.skipped {

@@ -42,6 +42,38 @@ func worktreeBoardDerivationChecks() throws {
     try boardExpect(derive(boardFacts(), [boardPane("a", started: false)], nil).state == .integrated, "a stopped placeholder counted as use")
     try boardExpect(derive(boardFacts(), [boardPane("a", started: true, dead: true)], nil).state == .integrated, "a dead process counted as use")
     try boardExpect(derive(boardFacts(), [], nil).state == .integrated, "a clean tree contained in the primary was not integrated")
+    // Integrated means the work landed; a tree still at its recorded base never had any.
+    let atBase = ManagedWorktreeFacts(recordID: "record", currentBranch: "feat/x", head: "abcdef0123456789", changedPathCount: 0,
+        upstreamAheadCount: nil, hasUpstream: false, registered: true, primaryHead: "2222222222222222", aheadOfPrimary: 0, behindPrimary: 0, containedInPrimary: true)
+    try boardExpect(derive(atBase, [], nil).state == .unused, "a clean tree still at its base claimed integrated")
+    let dirtyAtBase = ManagedWorktreeFacts(recordID: "record", currentBranch: "feat/x", head: "abcdef0123456789", changedPathCount: 3,
+        upstreamAheadCount: nil, hasUpstream: false, registered: true, primaryHead: "2222222222222222", aheadOfPrimary: 0, behindPrimary: 0, containedInPrimary: true)
+    try boardExpect(derive(dirtyAtBase, [], nil).state == .idle, "a dirty tree at its base was called unused")
+    try boardExpect(derive(atBase, [boardPane("a", started: true)], nil).state == .inUse, "a running pane in a tree at its base was not in use")
+    try boardExpect(WorktreeBoardRow.derive(record: boardRecord(base: nil), facts: atBase, panesInside: [], requester: nil, teamObjective: nil, teamState: nil).state == .integrated,
+        "a tree with no recorded base cannot know it is unused and should read integrated")
+    try boardExpect(!derive(atBase, [], nil).canIntegrate && derive(atBase, [], nil).factsLine.contains("HEAD"), "an unused tree offered a merge or hid its HEAD")
+    // The push label says what the removal policy already allows for.
+    func pushed(_ upstream: Bool?, _ ahead: Int?) -> String {
+        derive(ManagedWorktreeFacts(recordID: "record", currentBranch: "feat/x", head: "1111111111111111", changedPathCount: 0,
+            upstreamAheadCount: ahead, hasUpstream: upstream, registered: true, primaryHead: "2222222222222222",
+            aheadOfPrimary: 1, behindPrimary: 0, containedInPrimary: false), [], nil).pushLabel
+    }
+    try boardExpect(pushed(true, 0) == "pushed", "a pushed branch was not labelled pushed")
+    try boardExpect(pushed(true, 2) == "2 unpushed commits" && pushed(true, 1) == "1 unpushed commit", "unpushed commits were not counted")
+    try boardExpect(pushed(true, nil) == "push state unknown" && pushed(false, nil) == "no upstream" && pushed(nil, nil) == "", "upstream states were mislabelled")
+    try boardExpect(derive(ManagedWorktreeFacts(recordID: "record", currentBranch: "feat/x", head: "1111111111111111", changedPathCount: 0,
+        upstreamAheadCount: 0, hasUpstream: true, registered: true, primaryHead: "2222222222222222", aheadOfPrimary: 1, behindPrimary: 0, containedInPrimary: false), [], nil)
+        .factsLine.contains("pushed"), "the facts line did not carry the push label")
+    // Predict…'s text is a prediction with its limitation, never a verdict.
+    let conflict = WorktreeMergePreview(sourceCommit: String(repeating: "a", count: 40), targetCommit: String(repeating: "b", count: 40), targetRef: "main",
+        hasConflicts: true, conflictedPaths: (1...45).map { "src/file\($0).swift" }, capturedAt: Date(timeIntervalSince1970: 0))
+    try boardExpect(conflict.headline(branch: "feat/x", into: "main") == "Conflicts predicted merging feat/x into main", "the conflict headline is wrong")
+    let detail = conflict.detail(limit: 40)
+    try boardExpect(detail.contains("• src/file40.swift") && !detail.contains("src/file41.swift") && detail.contains("…and 5 more") && detail.contains(WorktreeMergePreview.limitation),
+        "the conflict detail is unbounded or lost its limitation")
+    let clean = WorktreeMergePreview(sourceCommit: "a", targetCommit: "b", targetRef: "main", hasConflicts: false, conflictedPaths: [], capturedAt: Date())
+    try boardExpect(clean.headline(branch: "feat/x", into: "main").hasPrefix("No conflicts predicted") && !clean.detail(limit: 40).contains("Conflicting"), "a clean prediction mentioned conflicts")
     try boardExpect(derive(boardFacts(changed: 2), [], nil).state == .idle, "a dirty tree contained in the primary claimed integrated")
     try boardExpect(derive(boardFacts(ahead: 3, contained: false), [], nil).state == .idle, "a tree with commits ahead claimed integrated")
     try boardExpect(derive(boardFacts(contained: nil), [], nil).state == .idle, "unknown containment claimed integrated")

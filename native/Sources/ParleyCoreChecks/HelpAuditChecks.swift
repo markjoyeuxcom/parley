@@ -24,6 +24,14 @@ private func helpAuditContains(_ text: String, _ phrases: [String]) throws {
 
 @MainActor
 let helpAuditChecks: [(String, () throws -> Void)] = [
+    ("Help audit explains ticket attestation and the Unused worktree state", {
+        let coordination = try helpAuditTopic("handoffs")
+        try helpAuditContains(coordination.searchableText, ["peer-verified", "token-only", "ticket socket", "Codex is asked", "not mounted", "Copilot and Agy host panes must"])
+        let permissions = try helpAuditTopic("cli-permissions")
+        try helpAuditContains(permissions.searchableText, ["peer-attested requests"])
+        let worktrees = try helpAuditTopic("workspaces")
+        try helpAuditContains(worktrees.searchableText, ["Unused rather than Integrated"])
+    }),
     ("Help audit names the Shell and Agent pane menu and the review's Vendor row", {
         let topic = try helpAuditTopic("workspaces")
         try helpAuditContains(topic.searchableText, ["Shell and Agent", "Vendor row", "New Agent Pane", "Option-Command-N", "preselected",
@@ -163,7 +171,7 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
             "Tools › Worktrees…", "needs no pane or workspace", "Add Repository…", "Forget", "never removable here", "Not recorded", "Stale",
             "only while the window is on screen",
             "no tracking step", "Prune…", "Git has no per-entry form", "Delete branch…", "one git branch -d", "never uses -D",
-            "Remove integrated…", "stops at the first outcome that is not a confirmed removal", "Nothing runs across repositories at once",
+            "Remove integrated and unused…", "Predict…", "pushed to its upstream", "stops at the first outcome that is not a confirmed removal", "Nothing runs across repositories at once",
         ])
         try helpAuditRequire(text.contains(ManagedWorktreeService.CreatePreview.executionNotice),
                              "Help must carry the exact creation execution notice")

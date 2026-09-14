@@ -10090,6 +10090,33 @@ if let executable = argument(named: "--host-vendor-spike") {
     }
 }
 
+// Helpers for the ticket socket checks. They run in a child process so the
+// kernel reports a real peer and the pane marker sits on a real ancestor.
+if let socketPath = argument(named: "--ticket-client") {
+    do {
+        print(try TicketClient.request(socketPath: socketPath, token: argument(named: "--ticket-token") ?? ""))
+        exit(0)
+    } catch {
+        print("ERROR \(error)")
+        exit(1)
+    }
+}
+if let executable = argument(named: "--run-marked") {
+    // Stays alive as an ancestor while the child runs, carrying whatever
+    // environment (including PARLEY_PANE_ID) the parent gave this process.
+    let arguments = Array(CommandLine.arguments.drop(while: { $0 != "--run-marked" }).dropFirst(2))
+    do {
+        let result = try ProcessCommandRunner(timeout: 20).run(executable: URL(fileURLWithPath: executable), arguments: arguments,
+            environment: ProcessInfo.processInfo.environment, input: nil)
+        FileHandle.standardOutput.write(result.stdout)
+        FileHandle.standardError.write(result.stderr)
+        exit(Int32(result.status))
+    } catch {
+        print("ERROR \(error)")
+        exit(1)
+    }
+}
+
 if let image = argument(named: "--container-ghostty-spike") {
     do {
         try checkContainerGhosttySpike(image: image, docker: argument(named: "--docker") ?? "/usr/local/bin/docker")
@@ -10122,7 +10149,7 @@ if let image = argument(named: "--container-transport-spike") {
 
 // `--only <substring>` runs the matching checks alone during local iteration.
 let onlyFilter = argument(named: "--only")?.lowercased()
-let selectedChecks = (containerPaneChecks + checks + reviewRegressionChecks + approvalHandlingChecks + folderListChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + worktreeBoardChecks + worktreeRepositoryChecks + emptyWorkspaceChecks + auxiliaryWindowChecks + helpAuditChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + askCorrelationChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
+let selectedChecks = (containerPaneChecks + checks + reviewRegressionChecks + approvalHandlingChecks + folderListChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + worktreeBoardChecks + worktreeRepositoryChecks + emptyWorkspaceChecks + relayTicketChecks + protocolDriftChecks + auxiliaryWindowChecks + helpAuditChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + askCorrelationChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
     onlyFilter.map { name.lowercased().contains($0) } ?? true
 }
 var failureCount = 0

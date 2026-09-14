@@ -465,6 +465,17 @@ Host vendor CLIs run as trusted local applications with their own sandbox and
 approval prompts. Parley adds no outer Seatbelt wrapper and never supplies host
 approval-bypass flags. An unrestricted same-user process can read pane credentials
 or change local records; attribution does not isolate host agents from each other.
+Where a vendor's shell is unsandboxed (Claude Code and Copilot on this Mac), every
+`parley` command must also present a one-use ticket that Parley issues over a
+peer-verified socket only to a process descended from that pane, so a copied
+credential alone is refused; `parley whoami` reports `attestation` and the
+pane's ticket policy. Agy's own sandbox admits the socket, so Agy is held to
+the same rule. A Codex pane on a
+profile that enables network must present one too, because its sandbox admits
+Unix sockets exactly then; on a profile without network it presents one only
+if an approved escalation reaches the socket and is not refused without one. A
+container has no socket mounted and stays capability-only. The
+review says which applies.
 Choose a reviewed container when you need stronger separation.
 
 Codex receives native private-runtime denies, read access to the protocol and

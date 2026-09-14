@@ -2116,9 +2116,20 @@ public final class RelayBroker: @unchecked Sendable {
         }
     }
 
-    public func agentIdentity(token: String) -> RelayTextResponse {
+    /// Whether a pane's own permission profile allows network, from the
+    /// profile store; nil when the profile is unknown. Set by the core.
+    public var hostNetworkAllowed: ((WorkbenchPane) -> Bool?)?
+
+    /// The ticket policy of the pane a capability belongs to, or nil for a
+    /// capability nobody holds. The transport asks before it reads a request.
+    public func ticketPolicy(token: String, socketListening: Bool) -> RelayTicketPolicy? {
+        guard let sender = try? authenticatedSender(token: token) else { return nil }
+        return RelayTicketPolicy.policy(for: sender, socketListening: socketListening, networkAllowed: hostNetworkAllowed?(sender))
+    }
+
+    public func agentIdentity(token: String, attestation: RelayAttestation? = nil, ticketPolicy: RelayTicketPolicy? = nil) -> RelayTextResponse {
         do {
-            return encodeAgentValue(RelayAgentIdentity(pane: try authenticatedSender(token: token)))
+            return encodeAgentValue(RelayAgentIdentity(pane: try authenticatedSender(token: token), attestation: attestation, ticketPolicy: ticketPolicy))
         } catch let error as BrokerFailure {
             return RelayTextResponse(status: error.status, text: error.message)
         } catch {
@@ -4595,6 +4606,11 @@ public enum RelayShim {
             // literal subpath rules.
             with: shellLiteral(transportDirectory.path)
         ).replacingOccurrences(
+            of: "__PARLEY_TICKET_SOCKET__",
+            // The socket lives beside the endpoints; a container never has it
+            // mounted, so its shim carries no path and asks for no ticket.
+            with: shellLiteral(platform == .macOS ? RelayTicketServer.socketURL(transportDirectory: transportDirectory).path : "")
+        ).replacingOccurrences(
             of: "__PARLEY_RUNTIME_MARKER__",
             with: shellLiteral(runtimeMarker ?? "")
         ).replacingOccurrences(
@@ -4972,7 +4988,7 @@ public enum RelayShim {
         "$inbox"/*|"$outbox"/*) ;;
         *) return 0 ;;
       esac
-      for field in command target item idempotency-key token body handoff-id accepted status ready; do
+      for field in command target item idempotency-key token ticket body handoff-id accepted status ready; do
         /bin/rm -f "$directory/$field" 2>/dev/null || true
       done
       /bin/rmdir "$directory" 2>/dev/null || true
@@ -4985,6 +5001,18 @@ public enum RelayShim {
       cleanup_directory "$response_dir"
     }
     trap cleanup EXIT
+
+    # A one-use ticket from the peer-verified ticket socket, when this pane can
+    # reach it. The broker knows which panes must present one; a pane whose
+    # sandbox denies the socket sends none and is authenticated by capability.
+    ticket_socket=__PARLEY_TICKET_SOCKET__
+    ticket=""
+    request_ticket() {
+      ticket=""
+      [ -n "$ticket_socket" ] && [ -S "$ticket_socket" ] && [ -x /usr/bin/nc ] || return 0
+      ticket="$(/usr/bin/printf '%s\n' "$pane_token" | /usr/bin/nc -U -w 3 "$ticket_socket" 2>/dev/null | /usr/bin/tr -d '\r\n')" || ticket=""
+      case "$ticket" in refused:*) ticket="" ;; esac
+    }
 
     post() {
       if ! protected_directory "$endpoint" || ! protected_directory "$inbox" || ! protected_directory "$outbox" || ! heartbeat_is_fresh; then
@@ -5001,6 +5029,10 @@ public enum RelayShim {
       /usr/bin/printf '%s' "$item" > "$request_dir/item"
       /usr/bin/printf '%s' "$idempotency_key" > "$request_dir/idempotency-key"
       /usr/bin/printf '%s' "$pane_token" > "$request_dir/token"
+      request_ticket
+      if [ -n "$ticket" ]; then
+        /usr/bin/printf '%s' "$ticket" > "$request_dir/ticket"
+      fi
       /bin/cat > "$request_dir/body"
       /usr/bin/printf '%s' ready > "$request_dir/ready"
 

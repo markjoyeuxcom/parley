@@ -96,7 +96,41 @@ public struct WorktreeMergePreview: Equatable, Sendable {
     public let hasConflicts: Bool
     public let conflictedPaths: [String]
     public let capturedAt: Date
+
+    public init(sourceCommit: String, targetCommit: String, targetRef: String, hasConflicts: Bool, conflictedPaths: [String], capturedAt: Date) {
+        self.sourceCommit = sourceCommit
+        self.targetCommit = targetCommit
+        self.targetRef = targetRef
+        self.hasConflicts = hasConflicts
+        self.conflictedPaths = conflictedPaths
+        self.capturedAt = capturedAt
+    }
+
     public static let limitation = "Prediction for these committed revisions using Git's built-in merge behavior. Uses isolated Git defaults; uncommitted edits, project/global configuration and merge drivers, working-tree attributes and remote updates are not included. Actual merge results may differ. No checkout, index, branch or source Git object is changed."
+}
+
+extension WorktreeMergePreview {
+    /// One line for a row's Predict… result.
+    public func headline(branch: String, into target: String) -> String {
+        hasConflicts ? "Conflicts predicted merging \(branch) into \(target)" : "No conflicts predicted merging \(branch) into \(target)"
+    }
+
+    /// The commits, the conflicting paths bounded to `limit`, and the
+    /// limitation that keeps a prediction from reading as a verdict.
+    public func detail(limit: Int) -> String {
+        var lines = ["Into \(targetCommit.prefix(12)) ← \(sourceCommit.prefix(12)), predicted \(capturedAt.formatted(date: .abbreviated, time: .shortened))."]
+        if hasConflicts {
+            if conflictedPaths.isEmpty {
+                lines.append("Git reported a conflict without individual file paths. Inspect it with Git.")
+            } else {
+                lines.append("Conflicting paths:")
+                lines += conflictedPaths.prefix(limit).map { "• " + DelegationGitFacts.displayPath($0) }
+                if conflictedPaths.count > limit { lines.append("…and \(conflictedPaths.count - limit) more") }
+            }
+        }
+        lines.append(Self.limitation)
+        return lines.joined(separator: "\n")
+    }
 }
 
 public struct WorktreeLifecycleInspection: Equatable, Sendable {
@@ -180,6 +214,9 @@ public struct WorktreeBoardRow: Equatable, Sendable {
         case unknown
         /// A pane is running inside it or its team is active.
         case inUse
+        /// HEAD is still the recorded base and the tree is clean: nothing was
+        /// ever committed here. Not integrated, because no work landed.
+        case unused
         /// HEAD is contained in the primary checkout's HEAD and the tree is clean.
         case integrated
         /// Registered, nothing running, work not (or not fully) integrated.
@@ -192,6 +229,7 @@ public struct WorktreeBoardRow: Equatable, Sendable {
             case .stale: "Stale"
             case .unknown: "Unknown"
             case .inUse: "In use"
+            case .unused: "Unused"
             case .integrated: "Integrated"
             case .idle: "Idle"
             }
@@ -268,6 +306,20 @@ public struct WorktreeBoardRow: Equatable, Sendable {
         return "ahead \(ahead) · behind \(behind)"
     }
 
+    /// What the branch's own upstream says, from the last facts pass. The
+    /// removal policy allows a pushed branch that is not yet merged, so the
+    /// row says "pushed" rather than leaving a tester to know the rule.
+    public var pushLabel: String {
+        guard let facts, facts.registered == true else { return "" }
+        switch (facts.hasUpstream, facts.upstreamAheadCount) {
+        case (true?, 0?): return "pushed"
+        case (true?, let count?): return "\(count) unpushed commit\(count == 1 ? "" : "s")"
+        case (true?, nil): return "push state unknown"
+        case (false?, _): return "no upstream"
+        case (nil, _): return ""
+        }
+    }
+
     public var panesLabel: String {
         var parts: [String] = []
         if runningPaneCount > 0 { parts.append("\(runningPaneCount) running") }
@@ -284,10 +336,11 @@ public struct WorktreeBoardRow: Equatable, Sendable {
         case .stale: parts.append("folder gone; Git lists the entry as prunable")
         case .unknown: parts.append("Git could not be read")
         case .unread: parts.append("live state not read yet")
-        case .inUse, .integrated, .idle:
+        case .inUse, .unused, .integrated, .idle:
             parts.append(headLabel)
             parts.append(changesLabel)
             parts.append(divergenceLabel)
+            parts.append(pushLabel)
         }
         if let lockReason { parts.append(lockReason.isEmpty ? "locked" : "locked: \(lockReason)") }
         if let record { parts.append(record.parleyCreated ? "created by Parley" : "existing tree") }
@@ -338,6 +391,10 @@ public struct WorktreeBoardRow: Equatable, Sendable {
             case true?:
                 if running > 0 || teamState == .active {
                     state = .inUse
+                } else if let base = record?.baseCommit, let head = facts.head, head == base, facts.changedPathCount == 0 {
+                    // Integrated must mean the tree's work landed, not that it
+                    // never had any: a tree still at its base has no work.
+                    state = .unused
                 } else if facts.containedInPrimary == true, facts.changedPathCount == 0 {
                     state = .integrated
                 } else {
@@ -360,11 +417,16 @@ public enum WorktreeBulkRemovalPlan {
     public struct Item: Equatable, Sendable {
         public let record: ManagedWorktreeRecord
         public let preview: WorktreeCleanupPreview
+        /// The board state that made the tree a candidate: Integrated, or
+        /// Unused for a clean tree still at its base. Shown beside the tree
+        /// in the preview so the person knows which kind they are removing.
+        public let state: WorktreeBoardRow.State
         public var passes: Bool { preview.decision == .removeTree }
         public var refusals: [String] { preview.refusals }
-        public init(record: ManagedWorktreeRecord, preview: WorktreeCleanupPreview) {
+        public init(record: ManagedWorktreeRecord, preview: WorktreeCleanupPreview, state: WorktreeBoardRow.State = .integrated) {
             self.record = record
             self.preview = preview
+            self.state = state
         }
     }
 
@@ -375,10 +437,10 @@ public enum WorktreeBulkRemovalPlan {
         public var totalIgnored: Int { passing.reduce(0) { $0 + $1.preview.ignoredPaths.count } }
     }
 
-    /// Only trees whose row reads Integrated are candidates; the previews
-    /// then decide. A tree with any refusal is shown and skipped, never
-    /// forced. Record-only cleanups (folder already gone) are skipped too:
-    /// Prune is the action for those.
+    /// Only trees whose row reads Integrated or Unused are candidates; the
+    /// previews then decide. A tree with any refusal is shown and skipped,
+    /// never forced. Record-only cleanups (folder already gone) are skipped
+    /// too: Prune is the action for those.
     public static func plan(items: [Item]) -> Plan {
         Plan(passing: items.filter(\.passes), skipped: items.filter { !$0.passes })
     }

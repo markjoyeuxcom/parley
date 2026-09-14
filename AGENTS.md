@@ -505,7 +505,47 @@ Pane capabilities still authenticate and route explicit messages.
 `RelayFileTransport` rejects a valid token through a different endpoint. An
 unrestricted same-user host process can nevertheless read another pane's
 credential or alter local records. Attribution is not isolation against such a
-process. Human Shell panes are unsandboxed; reviewed containers provide stronger
+process. Since 14 September 2026 the transport narrows that where a vendor's
+own sandbox allows it (a design lifted from the donkeykong review):
+`RelayTicketServer` listens on `tickets.sock` beside the endpoints (or in the
+user's temporary directory when that path would exceed a Unix socket's 103
+bytes; `socketURL(transportDirectory:)` decides for server and shim alike),
+verifies the connecting peer's uid and `LOCAL_PEERPID`, and issues a one-use
+ten-second ticket only when the peer's nearest marked ancestor carries this
+pane's `PARLEY_PANE_ID` and, beside it, `PARLEY_PANE_GENERATION` equal to
+the pane's current launch generation (both are in every host launch
+environment), so a process left over from an earlier generation of the same
+pane is refused like a process of another pane. The shim asks for one with `/usr/bin/nc -U` and
+writes it as the `ticket` request field; the transport redeems it once, for
+that capability. `RelayTicketPolicy` says per pane whether a ticket is
+required, optional or unavailable, from what real panes were observed to do
+on 14 September 2026 (every vendor: Claude, Agy, Codex and Copilot each
+returned peer-verified from its own pane that evening), never from
+documentation: required for Claude and
+Copilot host panes, whose shell commands run unsandboxed, and for Agy, whose
+own `--sandbox` admitted the socket from a real pane; required for Codex when
+its profile allows network and optional otherwise: `codex sandbox` run with
+Parley's own `permissions.parley_host` table denies Unix sockets while the
+table keeps network off and admits them once `network={enabled=true}` is in
+it, which `HostAgentPermissions` writes exactly for a network-allowing
+profile (Mark's Flexible + network Codex pane was peer-verified for that
+reason; with network off only an approved escalation could reach the
+socket, so a ticket is welcome, not demanded; the broker answers the
+network question from the profile store through `hostNetworkAllowed`, nil
+meaning unknown and therefore optional); unavailable for any container,
+where the socket is not mounted, and whenever the socket is not listening;
+and optional for a Claude
+host pane whose own sandbox is switched on: `ClaudeHostConfiguration` reads
+`sandbox.enabled` where Claude reads it and in Claude's precedence (managed
+settings, `CLAUDE_CODE_FORCE_SANDBOX`, the project's `.claude/settings.local.json`,
+its `.claude/settings.json`, then `~/.claude/settings.json`; unreadable or
+silent files are skipped, unknown is never on or off), and that sandbox
+denies Unix sockets unless its `allowUnixSockets` list admits one, which
+Parley has not checked. Parley never writes Claude's settings. `whoami`
+reports `attestation` (peer-verified or token-only) and the pane's policy
+with its reason, and the launch review lists the same fact under What is
+carried or What is not carried. A ticket socket that fails to start never
+fails the core: every pane is then token-only and says so. Human Shell panes are unsandboxed; reviewed containers provide stronger
 separation, subject to their mounts and trusted local daemon.
 
 Vendor CLIs may rebuild `PATH`. The runtime-local shim is preferred but not
@@ -842,9 +882,13 @@ confirmation each); it is not on a STALE row, because Git counts a prunable
 entry as still holding its branch and refuses until the entry is pruned,
 which the preview states when it happens.
 Integrate on an unrecorded row uses the registry's branch and refuses a
-detached HEAD. **Remove integrated…** in the window's footer is the one bulk
-action: every linked tree whose row reads Integrated gets a record if it
-lacks one, a fresh `cleanupPreview` each, and `WorktreeBulkRemovalPlan`
+detached HEAD. **Predict…** on a row runs the existing `merge-tree`
+prediction against the primary checkout's HEAD and offers Integrate… from
+its result (14 September 2026); the row's facts line also says whether the
+branch is pushed, unpushed by N commits, or has no upstream, since the
+removal policy allows a pushed unmerged branch. **Remove integrated and
+unused…** in the window's footer is the one bulk action: every linked tree
+whose row reads Integrated or Unused gets a record if it lacks one, a fresh `cleanupPreview` each, and `WorktreeBulkRemovalPlan`
 splits them into passing and skipped (any refusal, or a folder already
 gone, which is Prune's case); the single preview lists each passing tree
 with its preservation summary and every ignored entry that would go,
@@ -918,6 +962,13 @@ exact commits and limitations. UI requests discard stale selection/ref
 results. No checkout, index, branch or source Git objects are changed.
 Permission guidance is person-selected by vendor, does not inspect terminal
 text or claim to know a prompt, and never grants a permission root.
+
+A tree whose HEAD is still its recorded base and whose status is clean
+reads **Unused**, not Integrated (kingpong's distinction, taken on 14
+September 2026): integrated means the work landed, and a tree that never had
+any work is not that. A tree with no recorded base cannot tell and keeps
+reading Integrated. Remove integrated and unused… proposes unused trees too,
+each labelled as such in the preview.
 
 Deferred: merges, rebases, pushes and stashes performed by Parley itself
 (Integrate is a reviewed command run the person approves, not a Parley Git
@@ -1215,7 +1266,11 @@ only those three fields, never a RelayHandoff or an item label.
 
 ## Shared protocol launch behavior
 
-Increment `AgentProtocol.version` whenever canonical semantics change. A live
+Increment `AgentProtocol.version` whenever canonical semantics change.
+`ProtocolDriftChecks` pins a SHA-256 of `AgentProtocol.text` beside the
+version (donkeykong's drift gate, taken on 14 September 2026): a wording
+change that forgets the bump fails the suite with the new digest in the
+message, and pinning both is the deliberate act. A live
 pane with a mismatched stamp shows **RESTART FOR PROTOCOL**. UI remounting cannot
 alter an existing model context.
 
