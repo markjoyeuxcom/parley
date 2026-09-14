@@ -110,9 +110,9 @@ public final class ContainerPaneService: @unchecked Sendable {
     /// pulls images, uses a host login, grants extra capabilities or contacts a model.
     public func preview(image: String, vendor: PaneKind, legacyCodexSandbox: Bool, bypassVendorPermissions: Bool = false, publishedPort: Int? = nil) throws -> ContainerConfiguration {
         let image = image.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard [.codex, .claude].contains(vendor), !image.isEmpty, image.utf8.count <= 256,
+        guard vendor.isAgent, !image.isEmpty, image.utf8.count <= 256,
               !image.hasPrefix("-"), !image.contains(where: { $0.isWhitespace || $0.isNewline }) else {
-            throw ContainerPaneError.refused("Choose a locally installed image containing /usr/local/bin/claude or /usr/local/bin/codex.")
+            throw ContainerPaneError.refused("Choose a locally installed image containing /usr/local/bin/\(vendor.isAgent ? vendor.rawValue : "<vendor>").")
         }
         let executable = ["/usr/local/bin/docker", "/opt/homebrew/bin/docker"].first { FileManager.default.isExecutableFile(atPath: $0) }
         guard let executable else { throw ContainerPaneError.refused("Install and start a local Docker-compatible runtime first.") }
@@ -130,10 +130,14 @@ public final class ContainerPaneService: @unchecked Sendable {
         var args = prefix + ["create", "--rm", "--name", "parley-\(probeID)", "--cidfile", probeCID.path,
             "--label", "\(ContainerLaunchProjection.ownerLabel)=\(probeID)", "--label", "\(ContainerLaunchProjection.runtimeLabel)=PROBE", "--log-driver=none", "--network=none", "--cap-drop=ALL", "--security-opt=no-new-privileges=true",
             "--user", "\(getuid()):\(getgid())", "--env", "HOME=\(ContainerLaunchProjection.home)",
-            "--tmpfs", "\(ContainerLaunchProjection.home):uid=\(getuid()),gid=\(getgid()),mode=700",
+            // exec: Copilot's launcher unpacks a native addon into its cache under
+            // HOME and maps it executable, which Docker's default noexec tmpfs
+            // refuses ("failed to map segment"). size: that unpack is ~150 MB
+            // and the default tmpfs is 64 MB. The real pane's home is a volume.
+            "--tmpfs", "\(ContainerLaunchProjection.home):uid=\(getuid()),gid=\(getgid()),mode=700,exec,size=1g",
             "--entrypoint", "/bin/sh", id, "-c", Self.imageUtilityProbe, "parley-image-check", "/usr/local/bin/\(vendor.rawValue)"]
         if bypassVendorPermissions {
-            args += [vendor == .codex ? "--dangerously-bypass-approvals-and-sandbox" : "--dangerously-skip-permissions", "--version"]
+            args += ContainerLaunchProjection.bypassArguments(for: vendor) + ["--version"]
         } else if vendor == .codex {
             if legacyCodexSandbox { args += ["-c", "features.use_legacy_landlock=true"] }
             args += ["sandbox", "--", "/bin/true"]
@@ -220,7 +224,8 @@ public final class ContainerPaneService: @unchecked Sendable {
     /// Creates a stopped container and durably records its daemon-issued ID
     /// before Ghostty can attach. --cidfile also preserves an uncertain create.
     public func prepare(configuration: ContainerConfiguration, pane: WorkbenchPane, endpoint: String,
-                        protocolDirectory: String, shimDirectory: String, token: String, vendorArguments: [String], runtime: String) throws -> String {
+                        protocolDirectory: String, shimDirectory: String, token: String, vendorArguments: [String],
+                        vendorEnvironment: [String: String] = [:], runtime: String) throws -> String {
         try lock.withLock {
             try verifyDaemon(configuration)
             let actualImage = try checked(configuration, ["image", "inspect", "--format", "{{.Id}}", configuration.imageID])
@@ -234,7 +239,8 @@ public final class ContainerPaneService: @unchecked Sendable {
             let facts = ContainerLaunchFacts(paneID: pane.id, generation: pane.launchGeneration, vendor: pane.kind, folder: pane.cwd,
                 endpoint: endpoint, protocolDirectory: protocolDirectory, shimDirectory: shimDirectory, uid: getuid(), gid: getgid(),
                 volume: volume, owner: owner, runtime: runtime)
-            var argv = try ContainerLaunchProjection.createArguments(configuration: configuration, facts: facts, vendorArguments: vendorArguments)
+            var argv = try ContainerLaunchProjection.createArguments(configuration: configuration, facts: facts, vendorArguments: vendorArguments,
+                vendorEnvironment: vendorEnvironment)
             let record = ContainerPaneRecord(id: owner, paneID: pane.id, generation: pane.launchGeneration,
                 configuration: configuration, volume: volume, runtime: runtime, containerID: nil, removed: false, createdAt: Date())
             document.records.removeAll { $0.removed && sameHome($0, record) }
@@ -259,7 +265,8 @@ public final class ContainerPaneService: @unchecked Sendable {
                 "--label", "\(ContainerLaunchProjection.ownerLabel)=\(initializer.id)",
                 "--label", "\(ContainerLaunchProjection.runtimeLabel)=\(runtime)",
                 "--log-driver=none", "--network=none", "--user", "0:0", "--cap-drop=ALL", "--cap-add=CHOWN",
-                "--security-opt=no-new-privileges=true", "--mount", "type=volume,source=\(volume),target=\(ContainerLaunchProjection.home)",
+                "--security-opt=no-new-privileges=true",
+                "--mount", "type=volume,source=\(volume),target=\(ContainerLaunchProjection.home),volume-nocopy=true",
                 "--entrypoint", "/bin/chown", configuration.imageID, "\(getuid()):\(getgid())", ContainerLaunchProjection.home])
             guard ContainerLaunchProjection.isHex(initializerID, length: 64) else { throw ContainerPaneError.refused("The home initializer has no valid container receipt.") }
             initializer.containerID = initializerID

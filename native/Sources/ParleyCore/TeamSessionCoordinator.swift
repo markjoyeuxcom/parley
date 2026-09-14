@@ -181,7 +181,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                 throw TeamSessionError.invalid("That permission profile is no longer available.")
             }
             for (vendor, configuration) in containerConfigurations ?? [:] {
-                guard let kind = PaneKind(rawValue: vendor), [.claude, .codex].contains(kind), vendors.contains(kind),
+                guard let kind = PaneKind(rawValue: vendor), kind.isAgent, vendors.contains(kind),
                       configuration.gitAccess == nil || configuration.gitAccess?.folder == canonical else {
                     throw TeamSessionError.invalid("Container settings must name an allowed vendor and this exact approved folder.")
                 }

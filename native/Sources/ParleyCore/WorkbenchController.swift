@@ -243,7 +243,9 @@ public final class WorkbenchController: @unchecked Sendable {
             for index in document.panes.indices {
                 document.panes[index].inputAvailable = false
             }
-            if document.workspaces.isEmpty || document.panes.isEmpty {
+            // A workspace may be empty, so only a document with no workspaces is
+            // a fresh workbench; one with workspaces and no panes reloads as it was.
+            if document.workspaces.isEmpty {
                 guard createIfMissing else {
                     throw ParleyWorkbenchError.commandFailed(
                         "The requested workbench is not running. Start Parley before reconnecting."
@@ -255,7 +257,8 @@ public final class WorkbenchController: @unchecked Sendable {
                     launchFolder: cwd,
                     name: nil,
                     attachedFolders: [],
-                    newPaneFolder: nil
+                    newPaneFolder: nil,
+                    initialShell: true
                 )
             }
             normalizeSelectionLocked()
@@ -286,15 +289,16 @@ public final class WorkbenchController: @unchecked Sendable {
                 launchFolder: folder,
                 name: name,
                 attachedFolders: [folder],
-                newPaneFolder: folder
+                newPaneFolder: folder,
+                initialShell: true
             )
             try persistLocked()
             return workspace
         }
     }
 
-    /// Creates a collaboration container without turning its initial shell's
-    /// working directory into workspace identity or an attached folder.
+    /// Creates an empty collaboration container: no attached folder, no pane.
+    /// `launchFolder` is only validated, as the folder a first shell would use.
     @discardableResult
     public func createFolderlessWorkspace(
         name: String? = nil,
@@ -306,7 +310,8 @@ public final class WorkbenchController: @unchecked Sendable {
                 launchFolder: launchFolder,
                 name: name,
                 attachedFolders: [],
-                newPaneFolder: nil
+                newPaneFolder: nil,
+                initialShell: false
             )
             try persistLocked()
             return workspace
@@ -802,8 +807,7 @@ public final class WorkbenchController: @unchecked Sendable {
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
             }
-            guard document.panes.count > 1 else { throw ParleyWorkbenchError.cannotCloseLastPane }
-            let workspaceID = document.panes[index].workspaceID
+            _ = index
             // Terminating the surface reports its close synchronously, and that
             // report refreshes the app inside this call (the lock is recursive).
             // Nested lifecycle mutations are refused above; still remove by
@@ -814,9 +818,8 @@ public final class WorkbenchController: @unchecked Sendable {
             document.panes.removeAll { $0.id == paneID }
             document.activity[paneID] = nil
             try relayRuntime?.credentials.forget(paneID)
-            if !document.panes.contains(where: { $0.workspaceID == workspaceID }) {
-                document.workspaces.removeAll(where: { $0.workspaceID == workspaceID })
-            }
+            // The workspace stays, with its attachments, New Pane Folder and
+            // history; closing a workspace is its own explicit action.
             normalizeSelectionLocked()
             try persistLocked()
         }
@@ -969,7 +972,8 @@ public final class WorkbenchController: @unchecked Sendable {
                 launchFolder: layout.defaultFolder,
                 name: layout.name,
                 attachedFolders: replacement?.attachedFolders ?? [layout.defaultFolder],
-                newPaneFolder: layout.defaultFolder
+                newPaneFolder: layout.defaultFolder,
+                initialShell: false
             )
             document.panes.removeAll(where: { $0.workspaceID == workspace.workspaceID })
             for leaf in layout.root.leaves {
@@ -1055,9 +1059,15 @@ public final class WorkbenchController: @unchecked Sendable {
         if !configuration.bypassVendorPermissions {
             command += PermissionProfileAdapter.launchPlan(for: proposed.kind, profile: permissionProfile).arguments
         }
+        // Copilot takes its instructions directory from the environment. The
+        // protocol directory is mounted at the same path inside the container,
+        // so the host value is the container value; PARLEY_COMMAND is set by
+        // the projection itself and is not carried here.
+        let vendorEnvironment = AgentProtocol.environment(for: proposed.kind, protocolDirectory: protocolFolder, commandPath: shim)
+            .filter { ContainerLaunchProjection.vendorEnvironmentKeys.contains($0.key) }
         let id = try containerService.prepare(configuration: configuration, pane: proposed, endpoint: endpoint.path,
             protocolDirectory: protocolFolder.path, shimDirectory: shim.deletingLastPathComponent().path,
-            token: token, vendorArguments: command, runtime: runtime.runtimeMarker ?? "PRODUCTION")
+            token: token, vendorArguments: command, vendorEnvironment: vendorEnvironment, runtime: runtime.runtimeMarker ?? "PRODUCTION")
         try lock.withLock {
             guard !isShutDown, let current = document.panes.first(where: { $0.id == paneID }),
                   !current.isStarted, current.launchGeneration == snapshot.launchGeneration,
@@ -1461,11 +1471,16 @@ public final class WorkbenchController: @unchecked Sendable {
         guard source.kind.isAgent, target.kind.isAgent else { throw ParleyWorkbenchError.notAgentPane }
     }
 
+    /// `initialShell`: whether the gesture that creates this workspace asked
+    /// for a place to work (a fresh install, Open Folder) or only for a
+    /// container (New Workspace, which starts empty; a layout restore, which
+    /// adds its own leaves). A workspace may hold no panes.
     private func createWorkspaceLocked(
         launchFolder: String,
         name: String?,
         attachedFolders: [String],
-        newPaneFolder: String?
+        newPaneFolder: String?,
+        initialShell: Bool
     ) throws -> WorkbenchWorkspace {
         // Checked under the lock before any workspace or pane is touched, so a
         // reservation never leaves half-applied metadata behind.
@@ -1489,15 +1504,17 @@ public final class WorkbenchController: @unchecked Sendable {
             workspaceID: id
         )
         document.workspaces.append(workspace)
-        let pane = try makePane(
-            kind: .shell,
-            cwd: launchFolder,
-            workspace: workspace,
-            started: true,
-            permissionProfile: nil
-        )
-        document.panes.append(pane)
-        document.activity[pane.id] = Date()
+        if initialShell {
+            let pane = try makePane(
+                kind: .shell,
+                cwd: launchFolder,
+                workspace: workspace,
+                started: true,
+                permissionProfile: nil
+            )
+            document.panes.append(pane)
+            document.activity[pane.id] = Date()
+        }
         return workspace
     }
 

@@ -104,10 +104,37 @@ public enum ContainerLaunchProjection {
         }
     }
 
-    public static func createArguments(configuration: ContainerConfiguration, facts: ContainerLaunchFacts, vendorArguments: [String]) throws -> [String] {
+    /// The vendor's own documented skip-all flag. It reaches only a reviewed
+    /// container launch, invariant 3's one exception, and is never a host
+    /// argument; the guard in `createArguments` refuses every such flag when
+    /// it arrives through `vendorArguments` instead of the review.
+    public static func bypassArguments(for vendor: PaneKind) -> [String] {
+        switch vendor {
+        case .codex: ["--dangerously-bypass-approvals-and-sandbox"]
+        case .claude, .agy: ["--dangerously-skip-permissions"]
+        case .copilot: ["--allow-all"]
+        case .shell: []
+        }
+    }
+
+    /// Vendor environment a container launch may carry, by exact key. Copilot
+    /// reads its instructions directory from the environment rather than from
+    /// an argument; no other vendor input Parley sets travels that way. Any
+    /// other key is refused, so a mistaken caller is loud rather than silently
+    /// widening what the container sees.
+    public static let vendorEnvironmentKeys: Set<String> = ["COPILOT_CUSTOM_INSTRUCTIONS_DIRS"]
+
+    public static func createArguments(configuration: ContainerConfiguration, facts: ContainerLaunchFacts, vendorArguments: [String],
+                                       vendorEnvironment: [String: String] = [:]) throws -> [String] {
         try validate(configuration)
-        guard [.claude, .codex].contains(facts.vendor), facts.uid != 0, facts.generation >= 0 else {
-            throw ContainerPaneError.refused("Container panes currently support Claude Code and Codex as a non-root user.")
+        guard facts.vendor.isAgent, facts.uid != 0, facts.generation >= 0 else {
+            throw ContainerPaneError.refused("Container panes support Claude Code, Codex, Agy and Copilot as a non-root user.")
+        }
+        for (key, value) in vendorEnvironment {
+            guard vendorEnvironmentKeys.contains(key), !value.isEmpty, value.utf8.count <= 4096,
+                  !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+                throw ContainerPaneError.refused("Container launches carry only Parley's documented vendor environment.")
+            }
         }
         for value in [facts.folder, facts.endpoint, facts.protocolDirectory, facts.shimDirectory] { try path(value) }
         let transportRoot = URL(fileURLWithPath: facts.endpoint).deletingLastPathComponent().path
@@ -134,6 +161,7 @@ public enum ContainerLaunchProjection {
             let compact = argument.replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "").replacingOccurrences(of: " ", with: "")
             let previous = index > 0 ? vendorArguments[index - 1] : ""
             return argument.hasPrefix("--dangerously-") || argument.hasPrefix("--allow-dangerously-")
+                || argument.hasPrefix("--allow-all")
                 || ["--yolo", "danger-full-access", "bypassPermissions"].contains(argument)
                 || compact == "--sandbox=danger-full-access" || compact == "sandbox_mode=danger-full-access"
                 || compact == "--permission-mode=bypassPermissions" || compact == "--ask-for-approval=never"
@@ -157,18 +185,28 @@ public enum ContainerLaunchProjection {
             "--mount", "type=bind,source=\(facts.endpoint),target=\(facts.endpoint)",
             "--mount", "type=bind,source=\(facts.protocolDirectory),target=\(facts.protocolDirectory),readonly",
             "--mount", "type=bind,source=\(facts.shimDirectory),target=\(facts.shimDirectory),readonly",
-            "--mount", "type=volume,source=\(facts.volume),target=\(home)",
+            // nocopy: Docker populates an empty volume from the image's directory at
+            // the mount point, ownership included, on every container that mounts
+            // it while it is still empty. The home initializer chowns the volume
+            // root and leaves it empty, so without nocopy this pane's create copied
+            // the image's root-owned /home/parley back over that chown and the
+            // vendor could not write its own home (14 September 2026, first seen
+            // with an image built the way docs/container-images.md described).
+            "--mount", "type=volume,source=\(facts.volume),target=\(home),volume-nocopy=true",
             "--env", "HOME=\(home)", "--env", "PATH=\(facts.shimDirectory):/usr/local/bin:/usr/bin:/bin",
             "--env", "TERM=xterm-256color", "--env", "COLORTERM=truecolor",
             "--env", "PARLEY_RELAY_TOKEN", "--env", "PARLEY_PROTOCOL_VERSION=\(AgentProtocol.version)",
             "--env", "PARLEY_COMMAND=\(facts.shimDirectory)/parley", "--env", "PARLEY_EXECUTION_BOUNDARY=container"]
+        for key in vendorEnvironment.keys.sorted() {
+            args += ["--env", "\(key)=\(vendorEnvironment[key]!)"]
+        }
         if let access = configuration.gitAccess {
             args += ["--mount", "type=bind,source=\(access.commonDirectory),target=\(access.commonDirectory)"]
         }
         if facts.runtime == "DEV" { args += ["--env", "PARLEY_RUNTIME=DEV"] }
         args += ["--entrypoint", "/usr/local/bin/\(facts.vendor.rawValue)", configuration.imageID]
         if configuration.bypassVendorPermissions {
-            args += facts.vendor == .codex ? ["--dangerously-bypass-approvals-and-sandbox"] : ["--dangerously-skip-permissions"]
+            args += bypassArguments(for: facts.vendor)
         }
         if configuration.legacyCodexSandbox && facts.vendor == .codex { args += ["-c", "features.use_legacy_landlock=true"] }
         args += vendorArguments

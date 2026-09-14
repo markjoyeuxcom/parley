@@ -37,7 +37,7 @@ private struct PaneMenuFixture: View {
         }.frame(width: probe.tick.isMultiple(of: 2) ? 360 : 180, height: 80)
     }
     private var menu: some View {
-        PaneCreationMenu(offersActivePaneFolder: probe.tick.isMultiple(of: 2)) { kind, direction, folder in
+        PaneCreationMenu(offersActivePaneFolder: probe.tick.isMultiple(of: 2), defaultAgentKind: .copilot) { kind, direction, folder in
             probe.selections.append((kind, direction, folder))
         }
     }
@@ -103,11 +103,13 @@ func checkPaneMenuSurvivesUpdatesWhileTracking() throws {
             throw PaneMenuCheckFailure(message: "\(probe.changesWhileTracking) menu item mutations occurred during tracking")
         }
         guard let menu = probe.lastMenu else { throw PaneMenuCheckFailure(message: "no opened menu") }
+        // Shell and Agent, never one entry per vendor: the review's Vendor row
+        // is where the vendor is chosen, and Agent preselects the remembered one.
         let vendorItems = menu.items.filter { $0.submenu != nil }
-        guard vendorItems.map(\.title) == PaneKind.allCases.map(\.label) else {
-            throw PaneMenuCheckFailure(message: "the menu lost or reordered a pane kind")
+        guard vendorItems.map(\.title) == ["Shell", "Agent"] else {
+            throw PaneMenuCheckFailure(message: "the menu is not Shell and Agent: \(vendorItems.map(\.title))")
         }
-        for (kind, item) in zip(PaneKind.allCases, vendorItems) {
+        for (kind, item) in zip([PaneKind.shell, .copilot], vendorItems) {
             let submenu = item.submenu!
             let actions = submenu.items.enumerated().filter { $0.element.action != nil }
             guard actions.count == 6 else { throw PaneMenuCheckFailure(message: "a folder or split choice is missing") }
@@ -123,7 +125,7 @@ func checkPaneMenuSurvivesUpdatesWhileTracking() throws {
                       selected.0 == kind && selected.1 == expected.0 && selected.2 == expected.1
                   }) else { throw PaneMenuCheckFailure(message: "a menu selection routed to the wrong pane, split or folder") }
         }
-        guard probe.selections.count == 30 else {
+        guard probe.selections.count == 12 else {
             throw PaneMenuCheckFailure(message: "a menu action fired more than once")
         }
         // Closing releases the snapshot. The next opening must use the latest
@@ -145,7 +147,7 @@ func checkPaneMenuSurvivesUpdatesWhileTracking() throws {
         guard (button as? NSPopUpButton)?.title == "Pane" else {
             throw PaneMenuCheckFailure(message: "selecting a submenu changed the toolbar label")
         }
-        print("Pane menu: 0 mutations during 12 live refreshes; all 30 split actions routed correctly; next opening refreshed")
+        print("Pane menu: 0 mutations during 12 live refreshes; all 12 split actions routed correctly (Shell, and Agent to the preselected vendor); next opening refreshed")
     }
 }
 

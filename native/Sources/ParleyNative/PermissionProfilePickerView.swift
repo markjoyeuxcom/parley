@@ -14,6 +14,10 @@ struct PermissionProfilePickerView: View {
     @State private var containerConfiguration: ContainerConfiguration?
     @State private var approvals: PermissionApprovalHandling
     @State private var codexConfigurationFact: String?
+    /// The vendor this review will launch. A creation review lets the person
+    /// change it; every other action reviews an existing pane, whose vendor
+    /// cannot change.
+    @State private var kind: PaneKind
     private let existingContainer: ContainerConfiguration?
 
     init(model: AppModel, request: PanePermissionRequest) {
@@ -29,6 +33,7 @@ struct PermissionProfilePickerView: View {
         _runInContainer = State(initialValue: existingContainer != nil)
         _bypassVendorPermissions = State(initialValue: existingContainer?.bypassVendorPermissions ?? false)
         _containerConfiguration = State(initialValue: nil)
+        _kind = State(initialValue: request.kind)
         let selected = model.defaultPermissionProfileID(for: request)
         _selectedProfileID = State(initialValue: selected)
         let restoredRoots = request.existingSelection?.profileID == selected
@@ -49,11 +54,12 @@ struct PermissionProfilePickerView: View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
                 Text(request.isFolderAccessReview
-                    ? "Folder Access for \(request.kind.label)"
-                    : "Permissions for \(request.kind.label)")
+                    ? "Folder Access for \(kind.label)"
+                    : isCreation ? "New Agent Pane" : "Permissions for \(kind.label)")
                     .font(.title2.weight(.semibold))
                 Text(request.isFolderAccessReview
                     ? "Review the exact folders this pane receives at launch. Applying a change restarts the vendor session; its working folder does not change."
+                    : isCreation ? "Choose the vendor, then review the pane’s folders and launch permissions."
                     : "Review this pane’s folders and launch permissions.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -72,16 +78,8 @@ struct PermissionProfilePickerView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    if [.claude, .codex].contains(request.kind) {
-                        ContainerLaunchOptionsView(model: model, vendor: request.kind, folder: request.folder, enabled: $runInContainer,
-                            configuration: $containerConfiguration, existing: existingContainer, onBypassChange: { bypassVendorPermissions = $0 })
-                    }
-                    if !runInContainer {
-                        Text(HostAgentPermissions.disclosure).font(.caption).foregroundStyle(.secondary)
-                        if request.kind == .codex {
-                            Text("Starting checks Codex’s native tool sandbox and private-file rules first. Existing vendor configuration is kept.").font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
+                    if isCreation { vendorSection }
+                    runsSection
                     if !(runInContainer && bypassVendorPermissions) { profileChoice }
                     if let profile = selectedProfile {
                         if runInContainer && bypassVendorPermissions {
@@ -90,11 +88,11 @@ struct PermissionProfilePickerView: View {
                         } else {
                             capabilitySummary(profile)
                             approvalsSection
-                            enforcementSummary(profile)
                         }
                         rootScope(profile)
+                        carriedSection(profile)
+                        notCarriedSection(profile)
                     }
-                    hardBoundary
                 }
                 .padding(20)
             }
@@ -112,7 +110,7 @@ struct PermissionProfilePickerView: View {
                 if model.applyingPanePermissions { ProgressView().controlSize(.small) }
                 Button(request.actionLabel) {
                     Task { await model.applyPermissionProfile(
-                        to: request,
+                        to: effectiveRequest,
                         profileID: selectedProfileID,
                         approvedRoots: approvedRoots,
                         approvals: approvals,
@@ -160,7 +158,7 @@ struct PermissionProfilePickerView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(profile.defaultLifetime == .session ? "This choice lasts for this pane session." : "This profile becomes the default for new \(request.kind.label) panes.")
+                Text(profile.defaultLifetime == .session ? "This choice lasts for this pane session." : "This profile becomes the default for new \(kind.label) panes.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 HStack {
@@ -304,41 +302,234 @@ struct PermissionProfilePickerView: View {
         .textSelection(.enabled)
     }
 
-    @ViewBuilder
-    private func enforcementSummary(_ profile: PermissionProfileDefinition) -> some View {
+    private var isCreation: Bool {
+        if case .create = request.action { true } else { false }
+    }
+
+    /// The request with the vendor the person chose. Same id, so the model
+    /// still recognises it as the review it opened.
+    private var effectiveRequest: PanePermissionRequest {
+        var request = request
+        request.kind = kind
+        return request
+    }
+
+    /// The vendor, chosen here for a new pane. Changing it re-derives what
+    /// depends on the vendor: the remembered profile default, an approvals
+    /// choice Agy cannot honour, and a checked image, whose probe was for the
+    /// previous vendor.
+    private var vendorSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("VENDOR ENFORCEMENT")
+            Text("VENDOR")
                 .permissionSectionLabel()
-            if let effectiveProfile {
-                let plan = PermissionProfileAdapter.launchPlan(for: request.kind, profile: effectiveProfile)
-                HStack(spacing: 8) {
-                    Text(plan.enforcement.label.uppercased())
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(plan.enforcement == .guidanceOnly ? Color.orange : Color.accentColor)
-                    Text(plan.detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            Picker("Vendor", selection: $kind) {
+                ForEach(PaneKind.allCases.filter(\.isAgent), id: \.self) { vendor in
+                    Text(vendor.label).tag(vendor)
                 }
-                .fixedSize(horizontal: false, vertical: true)
-            } else {
-                Text("Choose existing approved folders before starting the pane.")
-                    .font(.caption)
-                    .foregroundStyle(.red)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .onChange(of: kind) { _, newKind in
+                selectedProfileID = model.defaultPermissionProfileID(for: effectiveRequest)
+                if newKind == .agy { approvals = .person }
+                containerConfiguration = nil
+                codexConfigurationFact = nil
             }
         }
     }
 
-    private var hardBoundary: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text("ALWAYS OUTSIDE THE PROFILE")
+    /// Where the pane's process runs. Every agent vendor has a container
+    /// form; a Shell pane has none, and would see the fact rather than a
+    /// control that does nothing.
+    private var runsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("RUNS")
                 .permissionSectionLabel()
-            Text(runInContainer
-                ? "Only the folders and relay endpoint shown in this review are mounted. The Docker socket, host vendor login and other Parley control files are not mounted. Container bypass does not authorize host command runs; those keep their separate native review."
-                : "Profiles do not authorize access to Parley control files, credentials or keychains, host permission bypass, privilege escalation, destructive host operations, Git pushes, deployments or infrastructure mutation. These are policy intentions, not an independent host sandbox. The vendor controls enforcement and approval.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if kind.isAgent {
+                Picker("Runs", selection: $runInContainer) {
+                    Text("On this machine").tag(false)
+                    Text("In a container (experimental)").tag(true)
+                }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
+                ContainerLaunchOptionsView(model: model, vendor: kind, folder: request.folder, enabled: $runInContainer,
+                    configuration: $containerConfiguration, existing: existingContainer, showsToggle: false,
+                    onBypassChange: { bypassVendorPermissions = $0 })
+            } else {
+                Text("On this machine")
+                    .font(.callout)
+                Text("Shell panes run on this Mac as your account.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+    }
+
+    /// One line of the carried or not-carried lists: what, who keeps it and
+    /// the fact behind it. A tag appears only where someone enforces the line.
+    private struct ReviewLine: Identifiable {
+        let title: String
+        var tag: String? = nil
+        var tagColor: Color = .accentColor
+        let detail: String
+        var id: String { title + detail }
+    }
+
+    private func reviewLines(_ lines: [ReviewLine]) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            ForEach(lines) { line in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        Text(line.title)
+                            .font(.callout.weight(.medium))
+                        if let tag = line.tag {
+                            Text(tag)
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(line.tagColor)
+                        }
+                    }
+                    Text(line.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .textSelection(.enabled)
+    }
+
+    private var launchPlan: PermissionProfileLaunchPlan? {
+        effectiveProfile.map { PermissionProfileAdapter.launchPlan(for: kind, profile: $0) }
+    }
+
+    private var displayFolder: String {
+        (WorkspaceFolderIdentity.normalized(request.folder) as NSString).abbreviatingWithTildeInPath
+    }
+
+    /// What this launch passes to the vendor, or to Docker, and who keeps each
+    /// rule. Every line is a fact of the launch plan or the reviewed container
+    /// configuration, never a prediction of what the vendor will do.
+    private func carriedSection(_ profile: PermissionProfileDefinition) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("WHAT IS CARRIED")
+                .permissionSectionLabel()
+            reviewLines(carriedLines(profile))
+        }
+    }
+
+    private func carriedLines(_ profile: PermissionProfileDefinition) -> [ReviewLine] {
+        let vendor = kind.label
+        let enforcedByVendor = "ENFORCED BY \(vendor.uppercased())"
+        var lines: [ReviewLine] = []
+        if runInContainer {
+            var mounted = "\(displayFolder) is mounted writable, with this pane's own relay endpoint; the protocol and shim files are read-only."
+            if containerConfiguration?.gitAccess != nil {
+                mounted += " The shared Git directory listed above is mounted writable too."
+            }
+            mounted += " Nothing else from this Mac is mounted."
+            lines.append(ReviewLine(title: "Folders", tag: "ENFORCED BY DOCKER", detail: mounted))
+        } else {
+            let others = profile.rootMode == .exactApprovedRoots
+                ? approvedRoots.filter { canonical($0) != canonical(request.folder) }
+                : []
+            let detail = others.isEmpty
+                ? "\(displayFolder) only. The pane starts here, and no other folder is passed."
+                : "\(displayFolder) and \(others.count == 1 ? "one other reviewed root" : "\(others.count) other reviewed roots"), each passed at launch."
+            lines.append(ReviewLine(title: "Folders", tag: enforcedByVendor, detail: detail))
+        }
+        if runInContainer && bypassVendorPermissions {
+            lines.append(ReviewLine(
+                title: "Bypass vendor permissions",
+                tag: "NOT ENFORCED", tagColor: .orange,
+                detail: kind == .codex
+                    ? "Codex receives --dangerously-bypass-approvals-and-sandbox after the image ID and skips its sandbox and approval prompts inside this container."
+                    : "Claude receives --dangerously-skip-permissions after the image ID and skips its permission checks inside this container."))
+            return lines
+        }
+        guard let effectiveProfile, let plan = launchPlan else { return lines }
+        var profileDetail = plan.mode
+        if let execution = plan.execution, execution.carried { profileDetail += " " + execution.text }
+        lines.append(ReviewLine(
+            title: "Profile: \(profile.name)",
+            tag: plan.enforcement == .guidanceOnly ? "GUIDANCE ONLY" : "\(plan.enforcement.label.uppercased()) BY \(vendor.uppercased())",
+            tagColor: plan.enforcement == .guidanceOnly ? .orange : .accentColor,
+            detail: profileDetail))
+        lines.append(ReviewLine(
+            title: approvals == .vendorReviewer ? "Approvals: \(vendor)'s reviewer" : "Approvals: you",
+            tag: enforcedByVendor,
+            detail: approvals == .vendorReviewer
+                ? (plan.reviewer ?? approvalsCaption)
+                : "\(vendor) asks you before it acts, as it normally would."))
+        if let network = plan.network, network.carried {
+            lines.append(ReviewLine(title: "Network", tag: enforcedByVendor, detail: network.text))
+        }
+        switch kind {
+        case .claude where !runInContainer && PermissionProfileAdapter.shellCommandRule(effectiveProfile) == .allow:
+            lines.append(ReviewLine(title: "Parley's command", tag: "ALLOWED WITHOUT A PROMPT",
+                detail: "This profile allows shell commands, so parley runs without a prompt. Every other command keeps Claude's prompt."))
+        case .copilot:
+            lines.append(ReviewLine(title: "Parley's command", tag: "ALLOWED WITHOUT A PROMPT",
+                detail: "Copilot permits shell(parley) without a tool confirmation. Every other tool keeps Copilot's confirmation."))
+        case .codex where !runInContainer:
+            lines.append(ReviewLine(title: "Codex sandbox check", tag: "CHECKED AT START",
+                detail: "Starting checks Codex's native tool sandbox and private-file rules first. Your existing Codex configuration is kept."))
+        default:
+            break
+        }
+        return lines
+    }
+
+    /// What this launch passes nowhere, so a reviewed intention is never read
+    /// as an operating-system boundary.
+    private func notCarriedSection(_ profile: PermissionProfileDefinition) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("WHAT IS NOT CARRIED")
+                .permissionSectionLabel()
+            reviewLines(notCarriedLines(profile))
+        }
+    }
+
+    private func notCarriedLines(_ profile: PermissionProfileDefinition) -> [ReviewLine] {
+        let vendor = kind.label
+        var lines: [ReviewLine] = []
+        if runInContainer {
+            if bypassVendorPermissions {
+                lines.append(ReviewLine(title: "Profile: \(profile.name)",
+                    detail: "Not applied inside this container. Turning bypass off restores the profile controls."))
+                lines.append(ReviewLine(title: "Approvals",
+                    detail: "\(vendor) asks no questions in this container, so the choice does not apply."))
+            } else {
+                lines.append(ReviewLine(title: "Operating-system enforcement",
+                    detail: "The profile's rules are \(vendor)'s to keep inside the container. Parley asks for them at launch and shows what it asked. Docker's boundary is the mounts and user in this review, not the profile."))
+                if let execution = launchPlan?.execution, !execution.carried {
+                    lines.append(ReviewLine(title: "Execution rules", detail: execution.text))
+                }
+                if let network = launchPlan?.network, !network.carried {
+                    lines.append(ReviewLine(title: "Network", detail: network.text))
+                }
+            }
+            lines.append(ReviewLine(title: "Host command runs",
+                detail: bypassVendorPermissions
+                    ? "Container bypass does not authorize host command runs. A request-run from this pane still opens a Shell on this Mac only after your separate approval."
+                    : "A request-run from this pane still opens a Shell on this Mac only after your separate approval; the container does not run it."))
+            lines.append(ReviewLine(title: "This Mac",
+                detail: "The Docker socket, your host vendor login and Parley's control files are not mounted. Parley cannot constrain what the Docker daemon itself does outside the container."))
+        } else {
+            lines.append(ReviewLine(title: "Operating-system enforcement",
+                detail: "These rules are \(vendor)'s to keep. Parley asks for them at launch and shows you what it asked; it adds no sandbox of its own, and the pane runs as your account with \(vendor)'s permissions."))
+            if let execution = launchPlan?.execution, !execution.carried {
+                lines.append(ReviewLine(title: "Execution rules", detail: execution.text))
+            }
+            if let network = launchPlan?.network, !network.carried {
+                lines.append(ReviewLine(title: "Network", detail: network.text))
+            }
+            lines.append(ReviewLine(title: "Always outside the profile",
+                detail: "Parley control files, credentials and keychains, host permission bypass, privilege escalation, destructive host operations, Git pushes, deployments and infrastructure mutation. A profile cannot pre-approve these; \(vendor) decides and asks."))
+            lines.append(ReviewLine(title: "Isolation from other panes",
+                detail: "An unrestricted process running as your account can read local records and other panes' credentials. Attribution is not isolation; a reviewed container gives stronger separation."))
+        }
+        return lines
     }
 
     private var selectedProfile: PermissionProfileDefinition? {
@@ -369,12 +560,12 @@ struct PermissionProfilePickerView: View {
             }
             .pickerStyle(.radioGroup)
             .labelsHidden()
-            .disabled(request.kind == .agy || (runInContainer && bypassVendorPermissions))
+            .disabled(kind == .agy || (runInContainer && bypassVendorPermissions))
             Text(approvalsCaption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if request.kind == .codex, !runInContainer {
+            if kind == .codex, !runInContainer {
                 Text(codexConfigurationFact ?? "Reading Codex's own configuration for this folder…")
                     .font(.caption)
                     .foregroundStyle(codexConfigurationFact?.contains("auto_review") == true ? Color.orange : Color.secondary)
@@ -390,7 +581,7 @@ struct PermissionProfilePickerView: View {
         if runInContainer && bypassVendorPermissions {
             return "Container bypass answers nothing: the vendor asks no questions in that container, so this choice does not apply."
         }
-        switch request.kind {
+        switch kind {
         case .claude:
             return "Vendor's reviewer means Claude's auto mode: its classifier approves routine actions and blocks irreversible, destructive or outward-aimed ones. Deny and ask rules from this profile still apply first. Not a bypass; Claude can still refuse or ask."
         case .codex:

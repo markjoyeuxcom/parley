@@ -416,6 +416,8 @@ struct ParleyNativeApp: App {
                     .disabled(model.diagnosticsExporting)
             }
             CommandMenu("Pane") {
+                Button("New Agent Pane…") { model.createAgent(direction: .horizontal) }
+                    .keyboardShortcut("n", modifiers: [.command, .option])
                 Button("New Claude Pane") { model.create(.claude, direction: .horizontal) }
                     .keyboardShortcut("1", modifiers: [.command, .shift])
                 Button("New Codex Pane") { model.create(.codex, direction: .horizontal) }

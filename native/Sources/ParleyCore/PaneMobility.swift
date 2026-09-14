@@ -7,7 +7,6 @@ public enum PaneMobilityAction: String, Equatable, Sendable {
 
 public enum PaneMobilityBlocker: Equatable, Sendable {
     case sameWorkspace
-    case lastSourcePane
     case activeHandoffs(Int)
     case roleConflict(String)
     case leadConflict
@@ -16,8 +15,6 @@ public enum PaneMobilityBlocker: Equatable, Sendable {
         switch self {
         case .sameWorkspace:
             "Choose a different workspace."
-        case .lastSourcePane:
-            "Moving the final pane would destroy its source workspace."
         case let .activeHandoffs(count):
             "This pane participates in \(count) active \(count == 1 ? "handoff" : "handoffs"). Finish or cancel them before moving it."
         case let .roleConflict(role):
@@ -66,10 +63,9 @@ public enum PaneMobilityPolicy {
             )
         }
 
+        // Moving the last pane out is allowed: the source stays as an empty
+        // workspace, which is a valid state.
         var blockers: [PaneMobilityBlocker] = []
-        if panes.filter({ $0.workspaceID == pane.workspaceID }).count <= 1 {
-            blockers.append(.lastSourcePane)
-        }
         if activeHandoffCount > 0 {
             blockers.append(.activeHandoffs(activeHandoffCount))
         }

@@ -14,11 +14,15 @@ struct ContainerLaunchOptionsView: View {
     @State private var bypass: Bool
     @State private var port: String
     private let onBypassChange: (Bool) -> Void
+    /// The team approval keeps the toggle per vendor; the pane review drives
+    /// `enabled` from its own Runs picker and hides it.
+    private let showsToggle: Bool
     @State private var checking = false
     @State private var message: String?
 
-    init(model: AppModel, vendor: PaneKind, folder: String, plannedCommonDirectory: String? = nil, enabled: Binding<Bool>, configuration: Binding<ContainerConfiguration?>, existing: ContainerConfiguration?, onBypassChange: @escaping (Bool) -> Void = { _ in }) {
+    init(model: AppModel, vendor: PaneKind, folder: String, plannedCommonDirectory: String? = nil, enabled: Binding<Bool>, configuration: Binding<ContainerConfiguration?>, existing: ContainerConfiguration?, showsToggle: Bool = true, onBypassChange: @escaping (Bool) -> Void = { _ in }) {
         self.model = model; self.vendor = vendor; self.folder = folder; self.plannedCommonDirectory = plannedCommonDirectory; _enabled = enabled; _configuration = configuration
+        self.showsToggle = showsToggle
         _image = State(initialValue: existing?.imageName ?? "")
         _legacy = State(initialValue: existing?.legacyCodexSandbox ?? false)
         _bypass = State(initialValue: existing?.bypassVendorPermissions ?? false)
@@ -37,7 +41,9 @@ struct ContainerLaunchOptionsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Toggle("Run in a container (experimental)", isOn: $enabled)
+            if showsToggle {
+                Toggle("Run in a container (experimental)", isOn: $enabled)
+            }
             if enabled {
                 TextField("Locally installed image", text: $image).textFieldStyle(.roundedBorder)
                     .onChange(of: image) { _, _ in configuration = nil; message = nil }
@@ -48,9 +54,7 @@ struct ContainerLaunchOptionsView: View {
                         configuration = nil; message = nil; onBypassChange(value)
                     }
                 if bypass {
-                    Text(vendor == .codex
-                        ? "Codex will skip its sandbox and approval prompts inside this container."
-                        : "Claude will skip its permission checks inside this container.")
+                    Text(bypassDescription)
                     Text("Docker supplies the execution boundary. The agent can change mounted project files and shared Git metadata, run commands, use the network and access its saved vendor login without the usual vendor permission prompts. The selected profile’s restrictions are not applied. Native approval is still required for requested host command runs.")
                         .foregroundStyle(.orange)
                 }
@@ -62,9 +66,7 @@ struct ContainerLaunchOptionsView: View {
                 }
                 TextField("Published port (optional)", text: $port).textFieldStyle(.roundedBorder)
                     .onChange(of: port) { _, _ in configuration = nil; message = nil }
-                Text(vendor == .codex
-                    ? "Codex’s browser sign-in returns to localhost:1455, which cannot reach a container unless that port is published. Enter 1455 to sign in through your Mac browser. Leave it empty to use Sign in with Device Code, which needs no port."
-                    : "Claude’s paste-code sign-in needs no port. Leave this empty unless the image runs something a browser on this Mac must reach.")
+                Text(signInGuidance)
                 if case .some(.some(let value)) = parsedPort {
                     Text("Port \(value) on this Mac will forward to port \(value) inside the container, on 127.0.0.1 only — nothing on your network can reach it. If another process on this Mac is already listening on \(value), Docker refuses to start the container.")
                         .foregroundStyle(.orange)
@@ -86,7 +88,7 @@ struct ContainerLaunchOptionsView: View {
                 }
                 if let message { Text(message).foregroundStyle(.orange).textSelection(.enabled) }
                 Text("The container is the execution boundary. The working folder and this pane’s relay endpoint are writable; any additional shared Git mount is listed above. Docker runs outside Parley’s control. No Docker socket or host login is mounted. Sign in inside the pane; a private named volume keeps this pane’s vendor login, configuration and saved conversations until you delete them in Status Center. Closing the main window keeps the container running; closing the pane or quitting stops it. Docker output logging is disabled.")
-                Text("Vendor sandbox availability varies by image. Claude’s own sandbox may be unavailable. Vendor prompts apply unless you selected bypass above. Checks do not prove login, instruction uptake or a vendor session. Linked worktrees require review of their shared Git directory; arbitrary additional folders are not mounted.")
+                Text("Vendor sandbox availability varies by image. Claude’s and Agy’s own sandboxes may be unavailable. Vendor prompts apply unless you selected bypass above. Checks do not prove login, instruction uptake or a vendor session. Linked worktrees require review of their shared Git directory; arbitrary additional folders are not mounted.")
             }
         }
         .font(.caption)
@@ -94,8 +96,31 @@ struct ContainerLaunchOptionsView: View {
         .fixedSize(horizontal: false, vertical: true)
         .onAppear { onBypassChange(bypass) }
         .onChange(of: enabled) { _, _ in configuration = nil; message = nil }
+        .onChange(of: vendor) { _, _ in configuration = nil; message = nil }
         .onChange(of: folder) { _, _ in configuration = nil; message = nil }
         .onChange(of: plannedCommonDirectory) { _, _ in configuration = nil; message = nil }
+    }
+
+    /// What the vendor's documented skip-all flag does inside the container.
+    private var bypassDescription: String {
+        switch vendor {
+        case .codex: "Codex will skip its sandbox and approval prompts inside this container."
+        case .agy: "Agy will approve every tool permission request inside this container without asking."
+        case .copilot: "Copilot will allow every tool, path and URL inside this container without confirmation."
+        case .claude, .shell: "Claude will skip its permission checks inside this container."
+        }
+    }
+
+    /// Whether the vendor's sign-in needs the published port. Only Codex's
+    /// browser flow calls back to a fixed localhost port; the others print a
+    /// code or an address, or detect a headless host and use a device code.
+    private var signInGuidance: String {
+        switch vendor {
+        case .codex: "Codex’s browser sign-in returns to localhost:1455, which cannot reach a container unless that port is published. Enter 1455 to sign in through your Mac browser. Leave it empty to use Sign in with Device Code, which needs no port."
+        case .copilot: "Copilot detects a container and uses its device-code sign-in, which needs no port. Leave this empty unless the image runs something a browser on this Mac must reach."
+        case .agy: "Agy prints a sign-in address to open in your Mac browser and asks for the code it gives you, which needs no port. Leave this empty unless the image runs something a browser on this Mac must reach."
+        case .claude, .shell: "Claude’s paste-code sign-in needs no port. Leave this empty unless the image runs something a browser on this Mac must reach."
+        }
     }
 
     private func check() {

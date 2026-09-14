@@ -129,7 +129,16 @@ App behavior belongs in Swift. Node scripts are build and release tooling only.
 Runtime files are under `~/Library/Application Support/Parley Native/` for
 Production and a separate Development directory.
 
-- A workspace is a named collaboration container.
+- A workspace is a named collaboration container. It may hold no panes
+  (Mark's decision on 14 September 2026): New Workspace creates none, closing
+  the last pane leaves the workspace with its attachments, New Pane Folder
+  and history, and moving the last pane out empties the source. The gestures
+  that ask for a place to work, a fresh install and Open Folder, still seed
+  one shell (`createWorkspaceLocked(initialShell:)`). Only the last workspace
+  cannot be closed, and only a saved document with no workspaces is a fresh
+  workbench; one with workspaces and no panes reloads as it was. The empty
+  state offers New Shell and New Agent…; `EmptyWorkspaceChecks` pins the
+  rules.
 - Each live pane is one retained Ghostty `AppTerminalView` with its own PTY and
   shell or vendor CLI process.
 - `WorkbenchController` persists workspace/pane metadata in
@@ -226,6 +235,23 @@ or login item. Development must never start Sparkle or receive the Production
 feed. Production automatic checking is opt-in, background installation is
 disabled and updater-initiated termination must pass through the ordinary
 pane-aware quit confirmation.
+
+Creating a pane: the toolbar's Pane menu offers **Shell** and **Agent**, each
+with the same six split-and-folder items (`PaneCreationMenu`), never one
+entry per vendor (Mark's decision on 14 September 2026, after the launch
+review became the one form for the whole launch). A shell opens at once. An
+agent opens the permission review, whose **Vendor** row, shown only for a
+creation review, is where the vendor is chosen; changing it re-derives the
+remembered profile default, resets an approvals choice Agy cannot honour and
+discards a checked image, whose probe was for the previous vendor. The
+Agent entry and Pane › New Agent Pane… (⌥⌘N) preselect
+`AppModel.lastAgentVendor`, the vendor of the last creation review that
+started a pane (a preference, Claude until then); the New Claude, Codex, Agy
+and Copilot Pane items (⇧⌘1, 2, 3 and 5) open the same review with their
+vendor preselected. `PanePermissionRequest.kind` is mutable for that reason
+and the request id is unchanged, so the model still recognises the review.
+Restart, resume and folder-access reviews have no Vendor row: a pane cannot
+change vendor.
 
 A workspace is durable identity independent of folders. It may have zero or
 more explicit folder attachments used for opening and search, plus an optional
@@ -448,7 +474,17 @@ exists for that, and only Codex can carry the rule, which every other
 vendor's plan says. The Codex review also reads the person's own
 `approvals_reviewer` through the same bounded config query and states it,
 since `auto_review` overrides whatever Approvals choice is made. Other vendors keep their existing native launch controls;
-never present a profile intention as OS enforcement.
+never present a profile intention as OS enforcement. The review sheet
+(`PermissionProfilePickerView`) opens with a **Runs** picker (On this machine
+or In a container, for every agent vendor; a Shell pane would see the fact,
+never a dead control) and ends with **What is
+carried** and **What is not carried**, replacing the earlier Vendor
+Enforcement, Always Outside the Profile and host-disclosure sections (14
+September 2026). Every carried line names who keeps it: the vendor, Docker
+for a container's mounts, or nobody for a container bypass. The lines are
+derived from `PermissionProfileLaunchPlan`, whose `mode`, `reviewer`,
+`execution` and `network` parts are the pieces its joined `detail` is built
+from; `detail` stays byte-identical because checks pin phrases in it.
 
 The Codex start/restart/resume review and host-team approval run a bounded
 preflight off the main actor. A transient `codex app-server --stdio` reads
@@ -891,9 +927,11 @@ multi-folder grants.
 ## Experimental container panes
 
 Container execution is independent of `AgentLaunchMode` (fresh/resume). The
-person selects it in the native permission review for Claude or Codex and
-checks a locally installed image. Parley never builds or pulls images. The
-image supplies `/usr/local/bin/claude` or `/usr/local/bin/codex`, POSIX sh,
+person selects it in the native permission review for any agent pane (Claude,
+Codex, Agy and Copilot since 14 September 2026; the first two shipped in
+v0.1.27 and the guards that excluded the others were scope, not a decision)
+and checks a locally installed image. Parley never builds or pulls images. The
+image supplies the pane's vendor at `/usr/local/bin/<vendor>`, POSIX sh,
 GNU stat/coreutils and `/bin/chown`; `docs/container-images.md` states the exact
 utility contract, the run-time shape an image must tolerate, worked Dockerfiles
 and the command to check an image against the same probe.
@@ -908,9 +946,29 @@ authorized by Mark on 9 September 2026 as the container-only exception to invari
 `ContainerConfiguration.bypassVendorPermissions` defaults to false when absent in
 older records and is part of exact configuration comparisons for preparation,
 activation and team grants. Only the native review chooses it; agents cannot
-supply it to team add. Codex receives `--dangerously-bypass-approvals-and-sandbox`,
-Claude receives `--dangerously-skip-permissions`, after the image ID in Docker's
-argv. Normal profile launch arguments are omitted in that mode and enforcement
+supply it to team add. `ContainerLaunchProjection.bypassArguments(for:)` is the
+one table: Codex receives `--dangerously-bypass-approvals-and-sandbox`, Claude
+and Agy receive `--dangerously-skip-permissions`, Copilot receives
+`--allow-all` (its documented tools-paths-URLs skip-all), after the image ID in
+Docker's argv; `--allow-all*` arriving through vendor arguments is refused like
+every other bypass flag. Copilot reads its instructions directory from the
+environment, so the projection carries `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`
+(the one key in `vendorEnvironmentKeys`; any other key is refused) as `--env`
+before the image, and the value is the host protocol path because that mount
+keeps its path inside the container; Agy's protocol directory travels as its
+ordinary `--add-dir` argument. The image probe's temporary home is a tmpfs
+with `exec,size=1g`: Copilot's launcher unpacks about 150 MB into
+`~/.cache/copilot` on first start and maps a native addon there, which
+Docker's default noexec 64 MB tmpfs refuses with "failed to map segment".
+The real pane's home is its volume, so that unpack persists there. Both home
+volume mounts, the initializer's and the pane's, carry `volume-nocopy=true`:
+Docker populates a still-empty volume from the image's directory at the mount
+point, ownership included, on every create, so an image that carries
+`/home/parley` (which `docs/container-images.md` tells people to create)
+handed root ownership back after the initializer's chown and the vendor
+could not write its home. Found on 14 September 2026 with the first image
+built from that page; the v0.1.27 spike image had no `/home/parley`, which is
+the only reason it worked. Normal profile launch arguments are omitted in that mode and enforcement
 is labelled guidance only; host launches retain vendor controls, with Codex
 using `HostAgentPermissions` and the other vendors using `PermissionProfileAdapter`.
 Bypass and legacy Landlock cannot be combined. The image probe checks utilities
@@ -1133,8 +1191,9 @@ through from role to mutable display name. Roles are lowercase bounded slugs,
 unique per workspace; vendor names and `lead` are reserved.
 
 Move preserves the exact retained Ghostty surface, pane id, process, vendor
-session, scrollback, credential and folder. Refuse moving the last source pane,
-any pane with an active handoff, or a role/lead collision; revalidate topology
+session, scrollback, credential and folder. Refuse moving any pane with an
+active handoff, or a role/lead collision (moving the last pane out leaves an
+empty source workspace); revalidate topology
 after confirmation. Team templates and configuration clone were removed in the
 September 2026 reduction; saved layouts remain.
 

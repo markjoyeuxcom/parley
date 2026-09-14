@@ -24,9 +24,21 @@ private func helpAuditContains(_ text: String, _ phrases: [String]) throws {
 
 @MainActor
 let helpAuditChecks: [(String, () throws -> Void)] = [
+    ("Help audit names the Shell and Agent pane menu and the review's Vendor row", {
+        let topic = try helpAuditTopic("workspaces")
+        try helpAuditContains(topic.searchableText, ["Shell and Agent", "Vendor row", "New Agent Pane", "Option-Command-N", "preselected",
+            "no attached folders and no panes", "may hold no panes", "leaves the workspace in place", "last workspace cannot be closed"])
+    }),
+    ("Help audit names the launch review's Runs picker and carried lists", {
+        let topic = try helpAuditTopic("cli-permissions")
+        try helpAuditContains(topic.searchableText, ["Runs", "On this machine", "In a container", "What is carried", "What is not carried", "who keeps it", "attribution is not isolation"])
+        let containers = try helpAuditTopic("container-panes")
+        try helpAuditRequire(!containers.searchableText.contains("select Run in a container"), "Help still describes the retired container toggle")
+        try helpAuditContains(containers.searchableText, ["In a container (experimental) under Runs"])
+    }),
     ("Help audit explains container ownership and retained vendor state", {
         let topic = try helpAuditTopic("container-panes")
-        try helpAuditContains(topic.searchableText, ["local Unix-socket", "recorded container ID", "never adopts", "Docker output logging is disabled", "Delete Saved Vendor State", "request-run", "legacy Landlock", "deprecated", "Sign in with Device Code", "callback port", "shared Git", "outside the container", "does not review those changes again", "Team approval", "Linux shim utilities", "Cleanup continues", "Bypass vendor permissions", "off by default", "Profile restrictions are not applied", "CONTAINER · BYPASS", "host command runs still require native approval"])
+        try helpAuditContains(topic.searchableText, ["local Unix-socket", "recorded container ID", "never adopts", "Docker output logging is disabled", "Delete Saved Vendor State", "request-run", "legacy Landlock", "deprecated", "Sign in with Device Code", "callback port", "shared Git", "outside the container", "does not review those changes again", "Team approval", "Linux shim utilities", "Cleanup continues", "Bypass vendor permissions", "off by default", "Profile restrictions are not applied", "CONTAINER · BYPASS", "host command runs still require native approval", "/usr/local/bin/agy", "/usr/local/bin/copilot", "--allow-all", "any agent pane"])
     }),
     ("Help audit distinguishes automatic updates from manual release downloads", {
         let topic = try helpAuditTopic("release-lifecycle")
