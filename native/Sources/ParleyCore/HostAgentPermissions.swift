@@ -31,6 +31,9 @@ public struct HostAgentPermissions: Sendable {
         add(protocolDirectory, "read")
         add(shimDirectory, "read")
         add(endpointDirectory, "write")
+        // Explicitly allow the shim's pre-connect stat of this exact socket,
+        // even when its parent transport directory is denied.
+        add(RelayTicketServer.socketURL(transportDirectory: transportDirectory), "read")
         filesystem = rules
         workspaceRoots = profile.approvedRoots.sorted()
         writable = profile.definition.rule(for: .projectWrite) == .allow

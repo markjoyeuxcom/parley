@@ -140,6 +140,9 @@ public final class WorkbenchController: @unchecked Sendable {
     /// The terminal type each pane's current generation launched with, so a
     /// later setting change never alters a retained process.
     private var terminalTypeLaunches: [String: (generation: Int, type: TerminalTypePreference)] = [:]
+    /// The profile actually carried by each host launch. Editing the store
+    /// changes future launches, never the running process or its ticket policy.
+    private var hostPermissionLaunches: [String: (generation: Int, profile: EffectivePermissionProfile?)] = [:]
     public let environment: [String: String]
 
     private let stateFile: URL
@@ -216,6 +219,34 @@ public final class WorkbenchController: @unchecked Sendable {
     /// that is already running keeps the value its generation launched with.
     public func setTerminalTypePreference(_ preference: TerminalTypePreference) {
         lock.withLock { terminalTypePreference = preference }
+    }
+
+    /// Network permission carried by this exact live Codex generation, or
+    /// unknown before its launch configuration has been made. Never consults
+    /// the editable profile store on behalf of an already-running process.
+    /// Ghostty requests the configuration before starting the generation's
+    /// process, so the unknown fact in that initial interval is intentional.
+    public func hostNetworkAllowed(for pane: WorkbenchPane) -> Bool? {
+        lock.withLock {
+            guard let current = document.panes.first(where: { $0.id == pane.id }),
+                  current.launchGeneration == pane.launchGeneration,
+                  current.kind == .codex, current.containerConfiguration == nil,
+                  current.isStarted, !current.isDead,
+                  let launch = hostPermissionLaunches[pane.id], launch.generation == current.launchGeneration,
+                  let profile = launch.profile else { return nil }
+            return profile.definition.rule(for: .networkAccess) == .allow
+        }
+    }
+
+    private func hostPermissionProfileForLaunchLocked(_ pane: WorkbenchPane) throws -> EffectivePermissionProfile? {
+        if let launch = hostPermissionLaunches[pane.id], launch.generation == pane.launchGeneration {
+            return launch.profile
+        }
+        let profile = try effectivePermissionProfile(for: pane.kind, cwd: pane.cwd, supplied: nil, selection: pane.permissionSelection)
+        let liveIDs = Set(document.panes.map(\.id))
+        hostPermissionLaunches = hostPermissionLaunches.filter { liveIDs.contains($0.key) }
+        hostPermissionLaunches[pane.id] = (pane.launchGeneration, profile)
+        return profile
     }
 
     /// Reads the preference once per launch generation and keeps that value
@@ -1284,12 +1315,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 } ?? .fresh
                 // Resolve the profile first: Claude's settings have to carry the
                 // execution rule, and that value is built with the command.
-                let resolved = try effectivePermissionProfile(
-                    for: pane.kind,
-                    cwd: pane.cwd,
-                    supplied: nil,
-                    selection: pane.permissionSelection
-                )
+                let resolved = try hostPermissionProfileForLaunchLocked(pane)
                 var command = AgentProtocol.command(
                     for: pane.kind,
                     protocolDirectory: protocolDirectory,

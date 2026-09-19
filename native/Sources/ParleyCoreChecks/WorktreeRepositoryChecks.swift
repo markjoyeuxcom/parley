@@ -93,7 +93,33 @@ func worktreeRegistryRowChecks() throws {
 
 @MainActor
 let worktreeRepositoryChecks: [(String, () throws -> Void)] = [
+    ("worktree discovery preserves literal line breaks from real Git", worktreeLineBreakPathChecks),
     ("worktree manager merges repositories from every source and keeps added folders that vanished", worktreeRepositoryCatalogChecks),
     ("worktree manager stores added folders canonically, once, privately", worktreeRepositoryStoreChecks),
     ("worktree board rows from Git's registry alone have no owner and are stale before any fact", worktreeRegistryRowChecks),
 ]
+
+func worktreeLineBreakPathChecks() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("parley-worktree-path-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let primary = root.appendingPathComponent("primary")
+    let linked = root.appendingPathComponent("linked\nworktree\rwith\ttab")
+    let environment = ["PATH": "/usr/bin:/bin", "HOME": root.path, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"]
+    let runner = ProcessCommandRunner(timeout: 5)
+    func git(_ arguments: [String]) throws {
+        let output = try runner.run(executable: URL(fileURLWithPath: "/usr/bin/git"), arguments: arguments, environment: environment)
+        try repoExpect(output.status == 0, "Git fixture failed: \(output.stderrText)")
+    }
+    try git(["init", "-q", "-b", "main", primary.path])
+    try git(["-C", primary.path, "-c", "user.name=Parley Check", "-c", "user.email=check@example.invalid", "commit", "-qm", "fixture", "--allow-empty"])
+    try git(["-C", primary.path, "worktree", "add", "-q", "-b", "linked", linked.path])
+    let resolver = GitWorktreeResolver(environment: environment)
+    let discovered = resolver.repository(in: linked.path)
+    let expected = GitWorktreeResolver.canonicalPath(linked.path)
+    try repoExpect(discovered?.currentWorktreePath == expected, "Git's top-level path lost a literal line break")
+    try repoExpect(discovered?.repository.worktrees.count == 2
+        && discovered?.repository.worktrees.last?.path == expected
+        && discovered?.repository.worktrees.last?.branch == "linked",
+        "Git's NUL-delimited worktree registration was split on a literal line break")
+}

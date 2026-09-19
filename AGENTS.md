@@ -464,8 +464,13 @@ pane has to be carried in both: v0.1.44 put the approvals choice in the plan
 only, so a host Codex pane never received auto review while the review said
 it had. Host bypass flags
 remain forbidden. `HostAgentPermissions` supplies Codex-native private-runtime
-denials with exact protocol/shim read access and own-endpoint write access;
-its built-in profile parent retains Codex's Git and configuration protections.
+denials with exact protocol/shim read access, own-endpoint write access and
+read access to the exact ticket socket (including its canonical alias). This
+explicitly permits the shim's pre-connect stat without granting access to the
+transport directory or sibling endpoints. It does not establish that the
+previous rules refused this read in a network-enabled Codex pane; that needs
+a real sandbox comparison with and without the socket rule.
+The built-in profile parent retains Codex's Git and configuration protections.
 Those rules cover sandboxed tools, not the CLI parent, integrations or approved
 unsandboxed commands. When the profile allows network access the table also
 carries `network={enabled=true}`, because Codex's built-in `:workspace` and
@@ -531,8 +536,11 @@ it, which `HostAgentPermissions` writes exactly for a network-allowing
 profile (Mark's Flexible + network Codex pane was peer-verified for that
 reason; with network off only an approved escalation could reach the
 socket, so a ticket is welcome, not demanded; the broker answers the
-network question from the profile store through `hostNetworkAllowed`, nil
-meaning unknown and therefore optional); unavailable for any container,
+network question from the controller's per-generation host launch snapshot
+through `hostNetworkAllowed`, nil meaning unknown and therefore optional).
+Editing or deleting a profile affects the next launch, never a running
+pane's ticket requirement; an old, stopped or not-yet-configured generation
+has no live network fact. Tickets are unavailable for any container,
 where the socket is not mounted, and whenever the socket is not listening;
 and optional for a Claude
 host pane whose own sandbox is switched on: `ClaudeHostConfiguration` reads
@@ -829,7 +837,9 @@ changed count, upstream) refresh with the worktree scan for trees a pane sits
 in or an active session is bound to, and for every record when the browser
 opens, under a generation guard that applies only over unchanged records;
 `registered` is a tri-state and a read failure stays unknown, never
-"absent".
+"absent". Worktree discovery preserves the NUL field boundaries from
+`git worktree list --porcelain -z`: line breaks inside a path or lock reason
+are literal field data and must never become record separators.
 
 **Finish…** on a row opens the on-demand inspection surface,
 with no timer or background disk-size scan. It groups optional review, pane

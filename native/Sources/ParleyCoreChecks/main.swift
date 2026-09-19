@@ -2553,6 +2553,15 @@ private func checkGitWorktreeDiscoveryParsing() throws {
 
     let newlineRecords = GitWorktreeResolver.parsePorcelain(text.replacingOccurrences(of: "\0", with: "\n"))
     try expect(newlineRecords == worktrees, "newline and NUL porcelain formats parsed differently")
+
+    let unusualPath = "/Users/example/linked\nworktree\rwith\ttabs\n\nbranch refs/heads/fake"
+    let reason = "keep\nworktree /not/a/record\r\n"
+    let unusual = ["worktree \(unusualPath)", "HEAD abcdef", "branch refs/heads/actual", "locked \(reason)", "", ""].joined(separator: "\0")
+    let preserved = GitWorktreeResolver.parsePorcelain(unusual)
+    try expect(preserved.count == 1 && preserved[0].path == unusualPath,
+        "NUL-delimited worktree paths were split on embedded line breaks")
+    try expect(preserved[0].branch == "actual" && preserved[0].lockReason == reason,
+        "embedded line breaks in NUL fields were interpreted as record metadata")
 }
 
 private func checkSharedWorktreeWriterCollisionProjection() throws {
@@ -10001,6 +10010,7 @@ let checks: [(String, () throws -> Void)] = [
     ("menu bar attention indicator summary", checkMenuBarAttentionInboxProjection),
     ("container client pane-scoped process boundary", checkAgentProcessBoundaryIsMandatoryAndPaneScoped),
     ("host launches retain vendor controls for fresh and resumed panes", checkHostLaunchesPreserveVendorControls),
+    ("host launch permissions survive profile edits until restart", checkHostLaunchPermissionSnapshot),
     ("native workspace layout tree", checkNativeWorkspaceLayoutTree),
     ("window and split geometry recovery", checkWindowAndSplitGeometryRecovery),
     ("pane attention is authoritative and aged", checkPaneAttentionProjectionIsAuthoritativeAndAged),
