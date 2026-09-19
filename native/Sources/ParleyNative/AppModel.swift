@@ -256,6 +256,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var releaseDownloading = false
     @Published private(set) var releaseLifecycleMessage: String?
     @Published private(set) var swiftPMCompatibilityEnabled = false
+    /// The terminal type panes advertise from their next start or restart.
+    @Published private(set) var terminalTypePreference = TerminalTypePreference.default
     /// The person's choice to approve agent command runs without a preview.
     /// Native memory only, reset when the app quits; never restored from disk.
     var automaticCommandRunApprovalEnabled: Bool { commandRunAuthorization.automaticApproval }
@@ -413,6 +415,7 @@ final class AppModel: ObservableObject {
     private static let permissionProfileKeyPrefix = "parley.permissionProfile"
     private static let collaborationDockVisibleKey = "parley.collaborationDockVisible"
     private static let swiftPMCompatibilityKey = "parley.swiftPMCompatibilityEnabled"
+    private static let terminalTypePreferenceKey = "parley.terminalTypePreference"
     private static let terminalFontPreferenceKey = "parley.terminalFontPreference"
     private static let terminalAppearanceImportKey = "parley.terminalAppearanceImport"
     private static let projectContextRefreshInterval: TimeInterval = 5
@@ -465,6 +468,10 @@ final class AppModel: ObservableObject {
             collaborationDockVisible = preferences.bool(forKey: Self.collaborationDockVisibleKey)
         }
         swiftPMCompatibilityEnabled = preferences.bool(forKey: Self.swiftPMCompatibilityKey)
+        if let stored = preferences.string(forKey: Self.terminalTypePreferenceKey),
+           let preference = TerminalTypePreference(rawValue: stored) {
+            terminalTypePreference = preference
+        }
         layoutStore = SavedWorkspaceLayoutStore(
             file: applicationDirectory.appendingPathComponent("workspace-layouts.json")
         )
@@ -568,7 +575,8 @@ final class AppModel: ObservableObject {
         do {
             let controller = try WorkbenchController(
                 applicationDirectory: runtime.applicationDirectory,
-                swiftPMCompatibilityEnabled: swiftPMCompatibilityEnabled
+                swiftPMCompatibilityEnabled: swiftPMCompatibilityEnabled,
+                terminalTypePreference: terminalTypePreference
             )
             try controller.bootstrap(
                 cwd: defaultFolder,
@@ -1280,6 +1288,18 @@ final class AppModel: ObservableObject {
         preferences.set(enabled, forKey: Self.swiftPMCompatibilityKey)
         swiftPMCompatibilityEnabled = enabled
         controller?.setSwiftPMCompatibilityEnabled(enabled)
+    }
+
+    /// Reaches a pane at its next start or restart; running panes keep the
+    /// value they launched with, and Parley never restarts one for this.
+    func setTerminalTypePreference(_ preference: TerminalTypePreference) {
+        if preference == .default {
+            preferences.removeObject(forKey: Self.terminalTypePreferenceKey)
+        } else {
+            preferences.set(preference.rawValue, forKey: Self.terminalTypePreferenceKey)
+        }
+        terminalTypePreference = preference
+        controller?.setTerminalTypePreference(preference)
     }
 
     /// Native choices last for this app session only; disk state cannot grant them.

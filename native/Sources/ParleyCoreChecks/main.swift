@@ -457,6 +457,7 @@ private func checkApplicationSettingsSectionsAreComplete() throws {
     try expect(
         ApplicationSettingsSection.allCases.map(\.rawValue) == [
             "general",
+            "terminal",
             "appearance",
             "notifications",
         ],
@@ -465,6 +466,7 @@ private func checkApplicationSettingsSectionsAreComplete() throws {
     try expect(
         ApplicationSettingsSection.allCases.map(\.title) == [
             "General",
+            "Terminal",
             "Appearance",
             "Notifications",
         ],
@@ -9742,6 +9744,78 @@ private func checkRealGhosttyAppResidentPaneLifecycle() throws {
     }
 }
 
+/// The launch word is what a real pane process sees. Ghostty sets `TERM`
+/// from its own option on top of the surface environment, so this proves
+/// the command-word route wins there and that a launch without the word
+/// still reads Ghostty's own type, with the bundled terminfo behind it.
+private func checkRealGhosttyLaunchHonoursTerminalTypeWord() throws {
+    try GhosttyLaunchPreflight.check()
+    try MainActor.assumeIsolated {
+        _ = NSApplication.shared
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let controller = TerminalController { builder in
+            builder.withBackgroundOpacity(1)
+        }
+
+        func pump(until condition: () -> Bool, timeout: TimeInterval = 5) -> Bool {
+            let deadline = Date().addingTimeInterval(timeout)
+            while Date() < deadline {
+                if condition() { return true }
+                RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+            }
+            return condition()
+        }
+
+        for preference in TerminalTypePreference.allCases {
+            let report = directory.appendingPathComponent("term-\(preference.rawValue)")
+            // The same shape the workbench renders: env, the optional
+            // assignment, then the executable. A fixed non-login zsh keeps
+            // the person's own shell configuration out of the check.
+            let words = ["/usr/bin/env"] + (preference.launchAssignment.map { [$0] } ?? []) + ["/bin/zsh", "-f"]
+            let terminal = AppTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 420))
+            terminal.configuration = TerminalSurfaceOptions(
+                backend: .exec,
+                workingDirectory: directory.path,
+                command: GhosttyLaunchCommand.render(words),
+                waitAfterCommand: true
+            )
+            terminal.controller = controller
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 640, height: 420),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentView = terminal
+            window.orderFront(nil)
+            defer {
+                terminal.controller = nil
+                window.close()
+            }
+            try expect(
+                terminal.paste(text: "/bin/echo \"$TERM\" > \(GhosttyLaunchCommand.render([report.path])); /usr/bin/tput colors >> \(GhosttyLaunchCommand.render([report.path])) 2>&1"),
+                "Ghostty refused the terminal type probe for \(preference.rawValue)"
+            )
+            try expect(terminal.sendKey(.enter), "Ghostty refused the probe Enter for \(preference.rawValue)")
+            var lines: [String] = []
+            try expect(
+                pump(until: {
+                    guard let text = try? String(contentsOf: report, encoding: .utf8) else { return false }
+                    lines = text.split(separator: "\n").map(String.init)
+                    return lines.count >= 2
+                }),
+                "the Ghostty shell did not report its terminal type for \(preference.rawValue)"
+            )
+            try expect(lines[0] == preference.termValue, "a launch for \(preference.rawValue) saw TERM=\(lines[0])")
+            // The type is usable where it runs: Ghostty's through the
+            // bundled TERMINFO it exports, the compatible one from the
+            // system database behind it.
+            try expect(lines[1] == "256", "\(preference.rawValue) is not a usable terminal type in the pane: \(lines[1])")
+        }
+    }
+}
+
 private func checkRealGhosttySixPaneInputIsolation() throws {
     try GhosttyLaunchPreflight.check()
     try MainActor.assumeIsolated {
@@ -9838,6 +9912,7 @@ let checks: [(String, () throws -> Void)] = [
     ("app-resident workbench relay and shutdown", checkAppResidentWorkbenchRelayAndShutdown),
     ("real Ghostty app-resident pane lifecycle", checkRealGhosttyAppResidentPaneLifecycle),
     ("real Ghostty six-pane input isolation", checkRealGhosttySixPaneInputIsolation),
+    ("real Ghostty launch honours the terminal type word", checkRealGhosttyLaunchHonoursTerminalTypeWord),
     ("runtime namespaces are explicit and disjoint", checkRuntimeNamespacesAreExplicitAndDisjoint),
     ("runtime termination choice survives dead agents", checkRuntimeTerminationChoiceSurvivesDeadAgents),
     ("useful copyable build information", checkBuildInformationIsUsefulAndCopyable),
@@ -10148,9 +10223,23 @@ if let image = argument(named: "--container-transport-spike") {
 }
 
 // `--only <substring>` runs the matching checks alone during local iteration.
+// `--skip <substring>[,<substring>…]` leaves the matching checks out and says
+// so, one SKIP line each plus the count in the summary. It exists for a
+// machine that cannot meet a check's prerequisite and must state that in its
+// pipeline, such as a throwaway CI VM with no Docker runtime; a skipped check
+// is never a passed one, and nothing skips without this explicit argument.
 let onlyFilter = argument(named: "--only")?.lowercased()
-let selectedChecks = (containerPaneChecks + checks + reviewRegressionChecks + approvalHandlingChecks + folderListChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + worktreeBoardChecks + worktreeRepositoryChecks + emptyWorkspaceChecks + relayTicketChecks + protocolDriftChecks + auxiliaryWindowChecks + helpAuditChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + askCorrelationChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
+let skipFilters = (argument(named: "--skip") ?? "").lowercased()
+    .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+let allChecks = (containerPaneChecks + checks + reviewRegressionChecks + approvalHandlingChecks + folderListChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + worktreeBoardChecks + worktreeRepositoryChecks + emptyWorkspaceChecks + relayTicketChecks + protocolDriftChecks + auxiliaryWindowChecks + helpAuditChecks + terminalTypeChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + askCorrelationChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
     onlyFilter.map { name.lowercased().contains($0) } ?? true
+}
+var skippedCount = 0
+let selectedChecks = allChecks.filter { name, _ in
+    guard let matched = skipFilters.first(where: { name.lowercased().contains($0) }) else { return true }
+    skippedCount += 1
+    print("SKIP \(name) (--skip \(matched))")
+    return false
 }
 var failureCount = 0
 for (name, check) in selectedChecks {
@@ -10167,4 +10256,8 @@ guard failureCount == 0 else {
     print("\(failureCount) native check(s) failed")
     exit(1)
 }
-print("All \(selectedChecks.count) native checks passed")
+if skippedCount > 0 {
+    print("All \(selectedChecks.count) native checks passed; \(skippedCount) skipped by --skip and not run")
+} else {
+    print("All \(selectedChecks.count) native checks passed")
+}

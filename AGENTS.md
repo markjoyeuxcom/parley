@@ -1154,6 +1154,41 @@ merely from being inside Parley. A host agent pane has no outer Parley sandbox
 since v0.1.30 and runs the whole suite; a check that still cannot run in the
 current pane must report that limit rather than silently skipping.
 
+## Terminal type for panes
+
+Ghostty advertises `TERM=xterm-ghostty` and points `TERMINFO` at the entry in
+Parley's bundle, so every program on this Mac finds it. A remote host reached
+over ssh has no such entry unless it was installed there: ncurses programs
+refuse to start (`cannot initialize terminal type`) and readline cannot look
+up which byte the delete key sends, so it stops deleting and moves the cursor
+(Mark's report on 19 September 2026). **Settings › Terminal › Terminal type**
+is `TerminalTypePreference`: **Ghostty** (`xterm-ghostty`, the default, which
+changes nothing) or **Compatible** (`xterm-256color`). The preference is
+persisted per runtime, pushed to `WorkbenchController.setTerminalTypePreference`,
+and read once per launch generation (`terminalTypeLaunches`, the SwiftPM
+snapshot pattern), so a change reaches a pane at its next start or restart
+and never alters a retained launch; `GhosttyPaneLaunch.terminalType` reports
+what the launched process sees.
+
+The value travels as one `TERM=xterm-256color` word for `/usr/bin/env` inside
+the launch command, after the `-u` unsets and before the executable, for
+shell and host agent panes alike. It is deliberately not put into the
+surface's `envVars`: Ghostty at the pinned ref applies its own `term` option
+after the surface environment (`Exec.zig` puts `TERM` from `cfg.term`, then
+the config `env` overrides last), so a value there would be a second copy
+whose precedence depends on upstream ordering, while the command is
+Parley's alone. Container panes are untouched; Docker already sets
+`TERM=xterm-256color` at create and the container launch reports that.
+`TerminalTypeChecks` pins all of this and reproduces the remote host locally
+(`tput -T xterm-ghostty` with Ghostty's terminfo out of reach fails while
+`xterm-256color` resolves from the system database). Settings and Help show
+Ghostty's own remedy for keeping `xterm-ghostty`,
+`infocmp -x xterm-ghostty | ssh <host> -- tic -x -`, with a Copy button;
+Parley never runs it. Ghostty's `ssh-env` and `ssh-terminfo` shell
+integration features would do this per ssh call, but the integration is
+detected from the command's first word and Parley launches every pane
+through `/usr/bin/env`, so it is not active in Parley panes today.
+
 ## Reviewed context boundary
 
 An agent-staged context part is a claim. Its path and bytes stay labelled
@@ -1397,6 +1432,20 @@ processes or depend on network access. The explicit manual
 local Codex config query and sandbox probes with disposable configuration and
 synthetic files. It starts no model or signed-in session. CI runs deterministic
 checks and the native build on macOS with complete Git history for the public scan.
+
+Since 19 September 2026 the GitLab jobs run on the self-hosted `macos`
+runner through the Tart custom executor: a throwaway macOS VM cloned from
+the digest-pinned image in `.gitlab-ci.yml`, with PATH holding only the
+system directories, so the job fetches the pinned nodejs.org build and
+names every toolchain path itself (the runbook is in Prax, "macOS CI/CD on
+Apple Silicon with Tart and GitLab Runner"). The VM has no Docker runtime,
+and the two container checks that need one refuse rather than skip, so both
+jobs pass `--skip "container bypass preflight,container follow-up image
+probe"` to `parley-native-checks`. `--skip` prints one `SKIP` line per check
+and counts them in the summary; a skipped check is never a passed one, and
+`npm test` itself skips nothing. `npm run test:checks` and
+`npm run test:scripts` are the two halves `npm test` is composed from, so a
+pipeline can pass that argument without restating the suite.
 
 The manual release jobs must pass the 25-round eight-pane soak, write the
 standalone JSON report, include it in SHA256SUMS and attach it to the release.

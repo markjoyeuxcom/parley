@@ -24,6 +24,13 @@ private func helpAuditContains(_ text: String, _ phrases: [String]) throws {
 
 @MainActor
 let helpAuditChecks: [(String, () throws -> Void)] = [
+    ("Help audit explains the terminal type choice and the remote-host symptom", {
+        let settings = try helpAuditTopic("settings")
+        try helpAuditContains(settings.searchableText, ["Settings > Terminal", "xterm-ghostty", "xterm-256color", "started or restarted afterwards",
+            "never restarts a pane", "Container panes always receive", TerminalTypePreference.remoteTerminfoCommand])
+        let troubleshooting = try helpAuditTopic("troubleshooting")
+        try helpAuditContains(troubleshooting.searchableText, ["cannot initialize terminal type", "delete key", "Choose Compatible"])
+    }),
     ("Help audit explains ticket attestation and the Unused worktree state", {
         let coordination = try helpAuditTopic("handoffs")
         try helpAuditContains(coordination.searchableText, ["peer-verified", "token-only", "ticket socket", "Codex is asked", "not mounted", "Copilot and Agy host panes must"])
