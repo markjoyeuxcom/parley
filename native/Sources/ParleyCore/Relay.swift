@@ -2116,8 +2116,8 @@ public final class RelayBroker: @unchecked Sendable {
         }
     }
 
-    /// Whether a pane's own permission profile allows network, from the
-    /// profile store; nil when the profile is unknown. Set by the core.
+    /// Whether this generation's launch profile allows network; nil before
+    /// launch or when unknown. Set by the core, never read from edited settings.
     public var hostNetworkAllowed: ((WorkbenchPane) -> Bool?)?
 
     /// The ticket policy of the pane a capability belongs to, or nil for a

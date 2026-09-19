@@ -93,6 +93,21 @@ func checkHostLaunchesPreserveVendorControls() throws {
                     && permissions.filesystem[endpoint.path] == "write" && permissions.filesystem[shim.path] == "read",
                     "native Codex permissions lost private paths or the exact endpoint")
                 try hostExpect(!permissions.launchArguments.contains("--sandbox"), "legacy sandbox flag overrides native Codex rules")
+                let ticketSocket = RelayTicketServer.socketURL(transportDirectory: transport)
+                try hostExpect(permissions.filesystem[ticketSocket.path] == "read",
+                    "the host rules omit explicit read access for the ticket socket")
+                // Cover the short socket path as well as the long-path fallback
+                // used by this fixture's temporary directory.
+                let shortTransport = URL(fileURLWithPath: "/tmp/parley-ticket-permission-check")
+                let shortPermissions = HostAgentPermissions(applicationDirectory: app, protocolDirectory: controller.protocolDirectory,
+                    shimDirectory: shim, transportDirectory: shortTransport,
+                    endpointDirectory: shortTransport.appendingPathComponent("own-endpoint"), profile: profile)
+                let shortSocket = RelayTicketServer.socketURL(transportDirectory: shortTransport)
+                try hostExpect(shortPermissions.filesystem[shortSocket.path] == "read"
+                    && shortPermissions.filesystem[shortSocket.resolvingSymlinksInPath().path] == "read"
+                    && shortPermissions.filesystem[shortTransport.path] == "deny"
+                    && shortPermissions.filesystem[shortTransport.appendingPathComponent("other-endpoint").path] == nil,
+                    "the socket exception lost a path alias or exposed sibling endpoints")
             } else { expected += PermissionProfileAdapter.launchPlan(for: kind, profile: profile).arguments }
             try hostExpect(launch.command == GhosttyLaunchCommand.render(["/usr/bin/env", "-u", "TMUX", "-u", "TMUX_PANE"] + expected),
                 "\(kind) \(mode) changed the vendor argv or retained a host wrapper")
@@ -103,4 +118,53 @@ func checkHostLaunchesPreserveVendorControls() throws {
             priorToken = token
         }
     }
+}
+
+func checkHostLaunchPermissionSnapshot() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("parley-host-snapshot-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: root) }
+    let app = root.appendingPathComponent("app")
+    let controller = try WorkbenchController(applicationDirectory: app, environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"])
+    try controller.bootstrap(cwd: root.path)
+    let credentials = try RelayCredentials(file: app.appendingPathComponent("tokens.json"))
+    controller.configureRelay(RelayRuntime(infoFile: app.appendingPathComponent("relay-url"), shimDirectory: app.appendingPathComponent("bin"),
+        transportDirectory: root.appendingPathComponent("transport"), credentials: credentials))
+    let store = PermissionProfileStore(file: app.appendingPathComponent("permission-profiles.json"))
+    let original = PermissionProfileDefinition.builtIns.first { $0.id == "flexible" }!.clone(id: "custom-snapshot", name: "Snapshot")
+    let edited = PermissionProfileDefinition.builtIns.first { $0.id == "flexible-network" }!.clone(id: original.id, name: original.name)
+    try store.saveCustom(original)
+    let profile = try PermissionProfileResolver.resolve(definition: original, paneFolder: root.path)
+    let pane = try controller.createPane(kind: .codex, cwd: root.path, permissionProfile: profile)
+    let token = try credentials.token(for: pane.id)
+    let broker = RelayBroker(credentials: credentials, panes: { try controller.listPanes() }, paste: { _, _ in }, submit: { _, _ in })
+    broker.hostNetworkAllowed = { controller.hostNetworkAllowed(for: $0) }
+    try hostExpect(controller.hostNetworkAllowed(for: pane) == nil, "an unconfigured launch invented its network permission")
+    let first = try controller.launchConfiguration(for: pane.id)
+    try hostExpect(controller.hostNetworkAllowed(for: pane) == false
+        && broker.ticketPolicy(token: token, socketListening: true)?.requirement == .optional,
+        "a launch without network requires a ticket")
+    try store.saveCustom(edited)
+    try hostExpect(try controller.launchConfiguration(for: pane.id) == first,
+        "editing a stored profile changed the permissions reported for an existing launch")
+    try hostExpect(controller.hostNetworkAllowed(for: pane) == false
+        && broker.ticketPolicy(token: token, socketListening: true)?.requirement == .optional,
+        "a profile edit changed the running pane's ticket requirement")
+    try controller.restartPane(pane.id)
+    let current = try controller.listPanes().first { $0.id == pane.id }!
+    try hostExpect(controller.hostNetworkAllowed(for: pane) == nil && controller.hostNetworkAllowed(for: current) == nil,
+        "a restarted generation reused the old launch's network fact")
+    let restarted = try controller.launchConfiguration(for: pane.id)
+    try hostExpect(restarted.generation != first.generation && restarted.command.contains("network={enabled=true}"),
+        "the next launch did not pick up the edited network permission")
+    let newToken = try credentials.token(for: pane.id)
+    try hostExpect(controller.hostNetworkAllowed(for: current) == true
+        && broker.ticketPolicy(token: newToken, socketListening: true)?.requirement == .required,
+        "the networked replacement did not require a ticket")
+    try store.deleteCustom(id: original.id)
+    try hostExpect(try controller.launchConfiguration(for: pane.id) == restarted,
+        "deleting a stored profile invalidated an existing launch")
+    try hostExpect(broker.ticketPolicy(token: newToken, socketListening: true)?.requirement == .required,
+        "deleting a profile relaxed the running pane's ticket requirement")
+    try controller.stopPaneProcess(pane.id)
+    try hostExpect(controller.hostNetworkAllowed(for: current) == nil, "a stopped pane retained a live network fact")
 }

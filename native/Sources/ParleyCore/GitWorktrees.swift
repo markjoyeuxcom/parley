@@ -205,8 +205,12 @@ public struct GitWorktreeResolver: Sendable {
             )
         }
 
-        let normalized = text.replacingOccurrences(of: "\0", with: "\n")
-        for line in normalized.components(separatedBy: .newlines) {
+        // In -z output a field can contain literal line breaks, including
+        // text that looks like another record. Only NUL is a delimiter.
+        let fields = text.contains("\0")
+            ? text.components(separatedBy: "\0")
+            : text.components(separatedBy: .newlines)
+        for line in fields {
             if line.isEmpty {
                 if let record = finish(draft) { records.append(record) }
                 draft = nil

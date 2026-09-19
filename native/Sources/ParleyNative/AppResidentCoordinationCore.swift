@@ -118,11 +118,7 @@ final class AppResidentCoordinationCore {
             infoFile: infoFile,
             controlToken: controlToken
         )
-        broker.hostNetworkAllowed = { pane in
-            guard let profileID = pane.permissionSelection?.profileID,
-                  let profile = (try? permissionProfiles())?.first(where: { $0.id == profileID }) else { return nil }
-            return profile.rule(for: .networkAccess) == .allow
-        }
+        broker.hostNetworkAllowed = { [controller] pane in controller.hostNetworkAllowed(for: pane) }
         ticketServer = RelayTicketServer(
             socketFile: RelayTicketServer.socketURL(transportDirectory: transportDirectory),
             credentials: credentials,

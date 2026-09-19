@@ -75,8 +75,8 @@ public struct RelayTicketPolicy: Equatable, Sendable {
         }
     }
 
-    /// `networkAllowed` answers for the pane's own permission profile; the
-    /// broker supplies it from the profile store, and nil means unknown.
+    /// `networkAllowed` answers for the pane's exact launch generation; the
+    /// broker supplies its launch snapshot, and nil means unknown.
     public static func policy(for pane: WorkbenchPane, socketListening: Bool, networkAllowed: Bool? = nil) -> RelayTicketPolicy {
         let claudeSandbox = pane.kind == .claude && pane.containerConfiguration == nil
             ? ClaudeHostConfiguration.sandbox(folder: pane.cwd) : nil
