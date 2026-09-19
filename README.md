@@ -88,6 +88,21 @@ terminal. The Terminal Appearance panel in Settings reports both imported and
 ignored setting counts before **Apply**. The sanitized snapshot is stored in the active Production or
 Development preference namespace, and Parley overrides continue to win.
 
+### Terminal type for remote hosts
+
+Ghostty advertises `TERM=xterm-ghostty` and ships that terminfo entry, so
+programs on this Mac find it. A remote host reached over ssh has no such entry
+unless it was installed there: ncurses programs refuse to start with
+`cannot initialize terminal type`, and the delete key stops deleting because
+the host cannot look up which byte it sends. **Settings → Terminal → Terminal
+type** offers **Ghostty** (`xterm-ghostty`, the default) and **Compatible**
+(`xterm-256color`, which every host knows). The choice applies to shell and
+agent panes started or restarted afterwards; a running pane keeps the value it
+launched with, and container panes always receive `xterm-256color` from
+Docker. To keep Ghostty's terminal type on a remote host instead, install its
+terminfo there once with `infocmp -x xterm-ghostty | ssh <host> -- tic -x -`;
+Settings shows the command with a Copy button and never runs it.
+
 ## Cross-vendor collaboration
 
 Each agent pane receives one durable random credential for its real sender

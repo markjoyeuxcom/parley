@@ -573,9 +573,21 @@ public enum ParleyHelpGuide {
         ParleyHelpTopic(
             id: "settings",
             title: "Settings and appearance",
-            summary: "Adjust terminal appearance and agent lifecycle, and understand which window choices are kept.",
+            summary: "Adjust the terminal type, terminal appearance and agent lifecycle, and understand which window choices are kept.",
             symbol: "gearshape",
             sections: [
+                ParleyHelpSection(
+                    id: "settings-terminal-type",
+                    title: "Terminal type for remote hosts",
+                    paragraphs: [
+                        TerminalTypePreference.explanation,
+                        "Open Settings > Terminal and choose Ghostty (xterm-ghostty) or Compatible (xterm-256color). The choice takes effect at once for shell and agent panes started or restarted afterwards; a running pane keeps the value it launched with, and Parley never restarts a pane for this. Container panes always receive xterm-256color from Docker, so the choice does not apply to them.",
+                        "Compatible advertises a terminal type every host knows, at the cost of Ghostty-only terminfo capabilities such as styled underlines and synchronized output in programs that look them up by name. Ghostty keeps the full local feature set; to use it on a remote host, install Ghostty's terminfo there once with the command below, which Parley shows in Settings > Terminal with a Copy button and never runs for you.",
+                    ],
+                    commands: [
+                        ParleyHelpCommand(TerminalTypePreference.remoteTerminfoCommand, "Run from any pane on this Mac, replacing <host> with the ssh destination. It compiles Ghostty's terminfo entry into that host's user database."),
+                    ]
+                ),
                 ParleyHelpSection(
                     id: "settings-appearance",
                     title: "Terminal fonts and Ghostty appearance",
@@ -590,6 +602,7 @@ public enum ParleyHelpGuide {
                     id: "settings-other",
                     title: "Other Settings sections",
                     items: [
+                        "Terminal > Terminal type chooses whether new panes advertise xterm-ghostty or xterm-256color. See Terminal type for remote hosts above.",
                         "General > Agent command runs controls automatic approval and clean Shell pane removal. See Requested command runs for the exact lifetimes and exceptions.",
                         "General > Swift package builds enables the optional compatibility wrapper for newly started agent panes. See CLI permissions and Troubleshooting before retrying a nested-sandbox error.",
                         "General > Software updates controls the opt-in Production stable update checks and the separate manual Stable/Beta release channel. See Compatibility, updates and feedback.",
@@ -1079,6 +1092,7 @@ public enum ParleyHelpGuide {
                     items: [
                         "Run Tools → Environment Check. It verifies the embedded terminal, the agent CLIs, Parley's local files and protocol readiness without spending quota.",
                         "If a CLI works in Terminal but not Parley, its install directory may be absent from the GUI login PATH. Environment Check reports the resolved path.",
+                        "If a remote host over ssh reports ncurses: cannot initialize terminal type ($TERM=\"xterm-ghostty\"), or its delete key stops deleting and moves the cursor instead, the host lacks Ghostty's terminfo. Open Settings > Terminal and choose Compatible, then restart the pane, or install Ghostty's terminfo on that host once. See Settings and appearance > Terminal type for remote hosts.",
                         "After a shared protocol upgrade, restart existing agent panes once so they receive the current instructions.",
                         "If the coordination core is unavailable, use the recovery action shown by Parley instead of launching a second app instance.",
                     ]

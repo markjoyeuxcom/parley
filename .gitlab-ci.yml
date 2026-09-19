@@ -2,16 +2,26 @@
 #
 # Every check needs macOS: the native app is Swift with an embedded Ghostty,
 # and the deterministic suite runs the AppKit/SwiftUI checks in process.
-# GitLab.com's shared macOS runners are available only on paid tiers, so this
-# job targets a runner tagged `macos`. Register one on a Mac with the tools
-# the repository expects (Xcode command line tools, mise with Node) using the
-# shell executor, for example:
+# GitLab.com's shared macOS runners are available only on paid tiers, so every
+# job targets the self-hosted group runner tagged `macos`: an Apple Silicon Mac
+# running gitlab-runner with the Tart custom executor (gitlab-tart-executor).
+# Each job gets a throwaway macOS VM cloned from its `image:` and destroyed
+# afterwards, so nothing survives between jobs and every job installs what it
+# needs itself. Three facts of that runner shape this file:
 #
-#   gitlab-runner register --url https://gitlab.com --executor shell --tag-list macos
-#
-# To use GitLab's own macOS runners on a paid group instead, replace the tag
-# with the SaaS runner tag (for example `saas-macos-medium-m1`) and add an
-# `image:` line with the macOS image GitLab lists for it.
+# - A job must name an `image:`. Without one the executor's prepare stage
+#   fails with "CUSTOM_ENV_CI_JOB_ID is missing and no --default-image was
+#   set", which is its wording for a missing job image. The image is pinned
+#   by digest so a build is never made on an image that moved under it;
+#   bump with `tart pull ghcr.io/cirruslabs/macos-tahoe-base:latest && tart list`.
+# - The job's shell is neither a login nor an interactive shell, so PATH holds
+#   only the system directories: Homebrew and its Node are not on it. Every
+#   toolchain path below is named explicitly.
+# - The VM has the Xcode command line tools, Homebrew, git and curl, and no
+#   Docker runtime. The two checks that need a local Docker daemon are left
+#   out with an explicit `--skip`, which prints one SKIP line per check and
+#   counts them in the summary; they are not passed, and they still run on a
+#   Mac with Docker (`npm test` skips nothing).
 
 stages:
   - verify
@@ -27,50 +37,73 @@ variables:
   # The public repository scan walks the complete reachable history.
   GIT_DEPTH: 0
   GIT_STRATEGY: fetch
+  # What ghcr.io/cirruslabs/macos-tahoe-base:latest resolved to on
+  # 19 September 2026; the runner allows ghcr.io/cirruslabs/macos-* only.
+  MACOS_IMAGE: ghcr.io/cirruslabs/macos-tahoe-base@sha256:1b093499716409d29e8b5336844528e1cae375db97d2ad8e5aeff78cf0da201e
+  # Node is build tooling here, never shipped, but the image's Homebrew Node
+  # is off PATH and unpinned, so the official nodejs.org build is fetched and
+  # checked instead. Bump both together (SHASUMS256.txt for the version).
+  NODE_VERSION: "24.21.0"
+  NODE_SHA256: "6239d4cf92d864487ec8cd3615038f7b67e7f58b77b21cd2f09ea9fbd68065fe"
+  # The two deterministic checks that need a Docker daemon the VM cannot run.
+  DOCKER_ONLY_CHECKS: "container bypass preflight,container follow-up image probe"
+  HOMEBREW_NO_AUTO_UPDATE: "1"
+  HOMEBREW_NO_INSTALL_CLEANUP: "1"
+
+default:
+  image: $MACOS_IMAGE
+  tags:
+    - macos
+
+.macos-toolchain:
+  before_script:
+    - |
+      node_dir="node-v$NODE_VERSION-darwin-arm64"
+      curl --fail --location --silent --show-error --output "$HOME/$node_dir.tar.xz" "https://nodejs.org/dist/v$NODE_VERSION/$node_dir.tar.xz"
+      echo "$NODE_SHA256  $HOME/$node_dir.tar.xz" | shasum -a 256 -c -
+      tar -xJf "$HOME/$node_dir.tar.xz" -C "$HOME"
+    - export PATH="$HOME/node-v$NODE_VERSION-darwin-arm64/bin:/opt/homebrew/bin:$PATH"
+    - node --version
+    - swift --version | head -1
+    - xcode-select -p
 
 test-and-build:
   stage: verify
-  tags:
-    - macos
+  extends: .macos-toolchain
   interruptible: true
-  before_script:
-    # A shell-executor runner inherits the login user's mise setup; make sure
-    # the pinned Node is on PATH without depending on the runner's shell rc.
-    - export PATH="$HOME/.local/bin:$PATH"
-    - if command -v mise >/dev/null 2>&1; then eval "$(mise activate bash --shims)"; fi
-    - node --version
-    - swift --version | head -1
   script:
-    - npm test
+    - npm run test:checks -- --skip "$DOCKER_ONLY_CHECKS"
+    - npm run test:scripts
+    - npm run scan:public
+    - npm run scan:platform
     - npm run build
 
 # Cuts an unnotarized test beta from an existing version tag and publishes it
 # as a release of this GitLab project, with every file stored in the project's
 # generic package registry as package `parley`, version `<tag>`. It does what
-# the retired GitHub Actions workflow did, on the macOS runner. The job signs
-# in with its own CI job token through glab's CI auto-login, so the runner's
-# shell user needs no GitLab login and no personal token is stored anywhere;
-# `glab` must be installed on the runner. A release that already exists for
-# the tag fails the job instead of being overwritten.
+# the retired GitHub Actions workflow did, in the macOS VM. The job signs in
+# with its own CI job token through glab's CI auto-login, so no GitLab login
+# or personal token exists anywhere on the runner; `glab` is installed into
+# the throwaway VM by the job. A release that already exists for the tag
+# fails the job instead of being overwritten.
 release-beta:
   stage: release
-  tags:
-    - macos
+  extends: .macos-toolchain
   when: manual
   rules:
     - if: $CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/
-  before_script:
-    - export PATH="$HOME/.local/bin:$PATH"
-    - if command -v mise >/dev/null 2>&1; then eval "$(mise activate bash --shims)"; fi
-    - node --version
-    - glab --version
   script:
-    - npm test
+    - brew install glab
+    - glab --version
+    - npm run test:checks -- --skip "$DOCKER_ONLY_CHECKS"
+    - npm run test:scripts
+    - npm run scan:public
+    - npm run scan:platform
     - mkdir -p dist
     - npm run test:soak -- --rounds 25 --output dist/Parley-Ghostty-soak.json
     # PARLEY_RELEASE_TAG is deliberately not a job variable: the release CLI
-    # reads it from the environment, and `npm test` asserts the CLI has no
-    # preset tag. It is passed to the release step only.
+    # reads it from the environment, and the script tests assert the CLI has
+    # no preset tag. It is passed to the release step only.
     - PARLEY_RELEASE_TAG="$CI_COMMIT_TAG" npm run release:mac:beta
     - npm run verify:launch:mac
     - |

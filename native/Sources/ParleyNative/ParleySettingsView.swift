@@ -1,3 +1,4 @@
+import AppKit
 import ParleyCore
 import SwiftUI
 
@@ -24,6 +25,15 @@ struct ParleySettingsView: View {
                         )
                     }
                     .tag(ApplicationSettingsSection.general)
+
+                TerminalSettingsView(model: model)
+                    .tabItem {
+                        Label(
+                            ApplicationSettingsSection.terminal.title,
+                            systemImage: ApplicationSettingsSection.terminal.systemImage
+                        )
+                    }
+                    .tag(ApplicationSettingsSection.terminal)
 
                 ScrollView {
                     TerminalFontSettingsView(model: model, dismissAfterApply: false, showsTitle: false)
@@ -150,6 +160,68 @@ private struct GeneralSettingsView: View {
                 .accessibilityLabel("Manual release channel")
 
                 Text(model.releaseChannel.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.horizontal, 12)
+    }
+}
+
+/// The terminal type panes advertise. A choice takes effect at once for
+/// panes started or restarted afterwards; nothing running is touched.
+private struct TerminalSettingsView: View {
+    @ObservedObject var model: AppModel
+    @State private var copiedRemoteCommand = false
+
+    var body: some View {
+        Form {
+            Section("Terminal type") {
+                Picker(
+                    "Terminal type",
+                    selection: Binding(
+                        get: { model.terminalTypePreference },
+                        set: { model.setTerminalTypePreference($0) }
+                    )
+                ) {
+                    ForEach(TerminalTypePreference.allCases) { preference in
+                        Text("\(preference.label) — \(preference.termValue)").tag(preference)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
+                .help("Which TERM value new shell and agent panes advertise to the programs they run")
+                .accessibilityLabel("Terminal type")
+                Text(model.terminalTypePreference.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(TerminalTypePreference.explanation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(TerminalTypePreference.scope)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Remote hosts") {
+                Text("To keep the Ghostty terminal type and still use a remote host, install Ghostty's terminfo there once from any pane on this Mac. Parley never runs this for you; replace <host> with the ssh destination.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(alignment: .firstTextBaseline) {
+                    Text(TerminalTypePreference.remoteTerminfoCommand)
+                        .font(.body.monospaced())
+                        .textSelection(.enabled)
+                    Spacer()
+                    Button(copiedRemoteCommand ? "Copied" : "Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(TerminalTypePreference.remoteTerminfoCommand, forType: .string)
+                        copiedRemoteCommand = true
+                    }
+                    .help("Copy the terminfo install command to the clipboard")
+                    .accessibilityLabel("Copy the remote terminfo command")
+                }
+                Text("The delete key moving the cursor the wrong way on a remote host has the same cause: the host cannot look up which byte the key sends. Choosing Compatible, or keeping Ghostty and installing its terminfo on that host, resolves it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

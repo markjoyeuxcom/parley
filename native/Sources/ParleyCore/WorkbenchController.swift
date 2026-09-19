@@ -6,19 +6,24 @@ public struct GhosttyPaneLaunch: Equatable, Sendable {
     public let workingDirectory: String
     public let environment: [String: String]
     public let command: String
+    /// The terminal type the launched process sees: the preference read for
+    /// this generation, or Docker's fixed value for a container pane.
+    public let terminalType: TerminalTypePreference
 
     public init(
         paneID: String,
         generation: Int,
         workingDirectory: String,
         environment: [String: String],
-        command: String
+        command: String,
+        terminalType: TerminalTypePreference = .default
     ) {
         self.paneID = paneID
         self.generation = generation
         self.workingDirectory = workingDirectory
         self.environment = environment
         self.command = command
+        self.terminalType = terminalType
     }
 }
 
@@ -131,6 +136,10 @@ public final class WorkbenchController: @unchecked Sendable {
     private let swiftPMDirectory: URL
     private var swiftPMCompatibilityEnabled: Bool
     private var swiftPMLaunches: [String: (generation: Int, enabled: Bool)] = [:]
+    private var terminalTypePreference: TerminalTypePreference
+    /// The terminal type each pane's current generation launched with, so a
+    /// later setting change never alters a retained process.
+    private var terminalTypeLaunches: [String: (generation: Int, type: TerminalTypePreference)] = [:]
     public let environment: [String: String]
 
     private let stateFile: URL
@@ -164,6 +173,7 @@ public final class WorkbenchController: @unchecked Sendable {
         applicationDirectory: URL? = nil,
         environment: [String: String]? = nil,
         swiftPMCompatibilityEnabled: Bool = false,
+        terminalTypePreference: TerminalTypePreference = .default,
         fileManager: FileManager = .default,
         titlePersistenceInterval: TimeInterval = 1,
         containerService: ContainerPaneService? = nil
@@ -176,6 +186,7 @@ public final class WorkbenchController: @unchecked Sendable {
         self.containerService = try containerService ?? ContainerPaneService(directory: directory, environment: self.environment)
         self.fileManager = fileManager
         self.swiftPMCompatibilityEnabled = swiftPMCompatibilityEnabled
+        self.terminalTypePreference = terminalTypePreference
         stateFile = directory.appendingPathComponent("workbench-state.json")
         permissionProfileStore = PermissionProfileStore(
             file: directory.appendingPathComponent("permission-profiles.json"),
@@ -199,6 +210,24 @@ public final class WorkbenchController: @unchecked Sendable {
     /// A native preference affects future launches, never a retained process.
     public func setSwiftPMCompatibilityEnabled(_ enabled: Bool) {
         lock.withLock { swiftPMCompatibilityEnabled = enabled }
+    }
+
+    /// The terminal type for panes started or restarted from now on. A pane
+    /// that is already running keeps the value its generation launched with.
+    public func setTerminalTypePreference(_ preference: TerminalTypePreference) {
+        lock.withLock { terminalTypePreference = preference }
+    }
+
+    /// Reads the preference once per launch generation and keeps that value
+    /// for every later configuration read of the same generation.
+    private func terminalTypeForLaunchLocked(_ pane: WorkbenchPane) -> TerminalTypePreference {
+        if let recorded = terminalTypeLaunches[pane.id], recorded.generation == pane.launchGeneration {
+            return recorded.type
+        }
+        let liveIDs = Set(document.panes.map(\.id))
+        terminalTypeLaunches = terminalTypeLaunches.filter { liveIDs.contains($0.key) }
+        terminalTypeLaunches[pane.id] = (pane.launchGeneration, terminalTypePreference)
+        return terminalTypePreference
     }
 
     public func configureRelay(_ runtime: RelayRuntime) {
@@ -1181,6 +1210,10 @@ public final class WorkbenchController: @unchecked Sendable {
                 "PARLEY_APP_PID": String(ProcessInfo.processInfo.processIdentifier),
             ]
             var argv: [String]
+            // Ghostty sets TERM from its own option after the surface
+            // environment, so the terminal type is a word of the command,
+            // read once for this generation.
+            let terminalType = terminalTypeForLaunchLocked(pane)
             if pane.kind == .shell {
                 // Ghostty overlays envVars on its process environment. Remove
                 // inherited authority before the login shell starts.
@@ -1190,6 +1223,7 @@ public final class WorkbenchController: @unchecked Sendable {
                     .subtracting(metadataKeys)
                 argv = ["/usr/bin/env"] + inheritedKeys.sorted().flatMap { ["-u", $0] }
                 if let marker = relayRuntime?.runtimeMarker { argv += ["PARLEY_RUNTIME=\(marker)"] }
+                if let assignment = terminalType.launchAssignment { argv.append(assignment) }
                 launchEnvironment["PATH"] = environment["PATH"] ?? "/usr/bin:/bin"
                 if let approved = approvedShellLaunches.removeValue(forKey: pane.id), approved.generation == pane.launchGeneration {
                     argv += approved.argv
@@ -1217,8 +1251,10 @@ public final class WorkbenchController: @unchecked Sendable {
                     let command = boundary.arguments + ["/usr/bin/env"] + stripped.sorted().flatMap { ["-u", $0] } + [container.dockerExecutable] + (try ContainerLaunchProjection.attachArguments(configuration: container, containerID: receipt.id))
                     launchEnvironment["PATH"] = environment["PATH"] ?? "/usr/bin:/bin"
                     launchEnvironment["HOME"] = NSHomeDirectory()
+                    // Docker sets the container's TERM at create; the host
+                    // client's own value is not what the vendor sees.
                     return GhosttyPaneLaunch(paneID: pane.id, generation: pane.launchGeneration, workingDirectory: pane.cwd,
-                        environment: launchEnvironment, command: GhosttyLaunchCommand.render(command))
+                        environment: launchEnvironment, command: GhosttyLaunchCommand.render(command), terminalType: .compatible)
                 }
                 launchEnvironment["PARLEY_RELAY_TOKEN"] = token
                 launchEnvironment["PARLEY_PROTOCOL_VERSION"] = AgentProtocol.version
@@ -1242,6 +1278,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 let endpoint = try RelayFileTransport.prepareEndpoint(
                     runtimeDirectory: relayRuntime.transportDirectory, paneToken: token, fileManager: fileManager)
                 argv = ["/usr/bin/env", "-u", "TMUX", "-u", "TMUX_PANE"]
+                if let assignment = terminalType.launchAssignment { argv.append(assignment) }
                 let launchMode = agentLaunchRequests[pane.id].flatMap {
                     $0.generation == pane.launchGeneration ? $0.mode : nil
                 } ?? .fresh
@@ -1276,7 +1313,8 @@ public final class WorkbenchController: @unchecked Sendable {
                 generation: pane.launchGeneration,
                 workingDirectory: pane.cwd,
                 environment: launchEnvironment,
-                command: GhosttyLaunchCommand.render(argv)
+                command: GhosttyLaunchCommand.render(argv),
+                terminalType: terminalType
             )
         }
     }

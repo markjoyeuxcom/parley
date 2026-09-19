@@ -52,16 +52,45 @@ test('macOS release packaging creates the shared artifact directory on a clean c
   assert.doesNotMatch(source, /vscode|vsix|companion/i, 'the VS Code companion was retired in the September 2026 reduction')
 })
 
+// The pipeline runs `npm test` as its four parts so the checks half can carry
+// `--skip` for the two checks that need a Docker daemon the CI VM cannot run.
+// The skip list is pinned by name here: widening it is a visible decision.
+const dockerOnlyChecks = 'container bypass preflight,container follow-up image probe'
+
+function assertRunsDeterministicChecks(job, label) {
+  assert.match(job, /-\s*npm run test:checks -- --skip "\$DOCKER_ONLY_CHECKS"/, `${label} must run the native checks with the declared Docker-only skip`)
+  assert.match(job, /-\s*npm run test:scripts/, `${label} must run the script tests`)
+  assert.match(job, /-\s*npm run scan:public/, `${label} must run the public repository scan`)
+  assert.match(job, /-\s*npm run scan:platform/, `${label} must run the platform dependency scan`)
+  assert.doesNotMatch(job, /--skip (?!"\$DOCKER_ONLY_CHECKS")/, `${label} may skip only the declared Docker-only checks`)
+}
+
+test('npm test is composed of the halves the pipeline runs', () => {
+  const scripts = JSON.parse(readFileSync(join(repositoryRoot, 'package.json'), 'utf8')).scripts
+  assert.equal(scripts.test, 'npm run test:checks && npm run test:scripts && npm run scan:public && npm run scan:platform')
+  assert.match(scripts['test:checks'], /parley-native-checks$/, 'test:checks must end with the checks product so a --skip argument reaches it')
+  assert.doesNotMatch(scripts['test:checks'], /--skip/, 'npm test itself skips nothing')
+  assert.match(scripts['test:scripts'], /^node --test /)
+})
+
 test('GitLab CI is the deterministic macOS gate for merge requests and main', () => {
   // The repository moved to gitlab.com/markjoyeuxcom/apps/parley on
   // 2026-09-07. GitLab.com's hosted macOS runners are a paid-tier feature,
-  // so the pipeline targets a runner tagged `macos` registered on a Mac.
+  // so the pipeline targets the self-hosted runner tagged `macos`, which since
+  // 2026-09-19 runs every job in a throwaway Tart VM: each job needs an
+  // `image:`, pinned by digest, and names its own toolchain paths.
   const pipeline = join(repositoryRoot, '.gitlab-ci.yml')
   assert.equal(existsSync(pipeline), true, '.gitlab-ci.yml is missing')
   const source = readFileSync(pipeline, 'utf8')
   assert.match(source, /tags:\s*\n\s*-\s*macos/, 'the job must target a macOS runner')
-  assert.match(source, /-\s*npm test/, 'the job must run the deterministic checks')
-  assert.match(source, /-\s*npm run build/, 'the job must build the native application')
+  assert.match(source, /MACOS_IMAGE:\s*ghcr\.io\/cirruslabs\/macos-[a-z]+-base@sha256:[0-9a-f]{64}/, 'the Tart image must be pinned by digest')
+  assert.match(source, /default:\s*\n\s*image:\s*\$MACOS_IMAGE/, 'every job must name the pinned image or the Tart executor refuses to prepare it')
+  assert.match(source, /NODE_SHA256:\s*"[0-9a-f]{64}"/, 'the nodejs.org build must be checksummed')
+  assert.match(source, /shasum -a 256 -c -/, 'the Node download must be verified before it is unpacked')
+  assert.match(source, new RegExp(`DOCKER_ONLY_CHECKS:\\s*"${dockerOnlyChecks}"`), 'only the two Docker-only checks may be skipped in the VM')
+  const verify = source.slice(source.indexOf('test-and-build:'), source.indexOf('release-beta:'))
+  assertRunsDeterministicChecks(verify, 'the verify job')
+  assert.match(verify, /-\s*npm run build/, 'the job must build the native application')
   assert.match(source, /GIT_DEPTH:\s*0/, 'the public scan needs the complete reachable history')
   assert.match(source, /merge_request_event/, 'merge requests must be verified')
   assert.match(source, /CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH/, 'pushes to main must be verified')
@@ -78,7 +107,8 @@ test('the GitLab release job is manual, tag-only, and publishes a GitLab release
   assert.ok(job.length > 0, 'the release-beta job is missing')
   assert.match(job, /when:\s*manual/, 'a release must be started by a person')
   assert.match(job, /CI_COMMIT_TAG =~/, 'a release must come from a version tag')
-  assert.match(job, /npm test/, 'a release must pass the deterministic checks')
+  assertRunsDeterministicChecks(job, 'the release job')
+  assert.match(job, /-\s*brew install glab/, 'the throwaway VM has no glab; the job installs it')
   assert.match(job, /test:soak -- --rounds 25/, 'a release must pass the 25-round Ghostty soak')
   assert.match(job, /release:mac:beta/, 'a test beta must use the unnotarized release path')
   assert.match(job, /verify:launch:mac/, 'a release must prove the packaged app reaches its event loop')

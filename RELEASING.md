@@ -70,9 +70,15 @@ copy of the code, the Homebrew tap and the update feed that shipped notarized
 builds still check, until those move as well.
 
 The test-beta release is the manual `release-beta` job of the GitLab
-pipeline on the macOS runner. It signs in with its own CI job token through
-glab's CI auto-login, so the runner's shell user needs no GitLab login and no
-personal token is stored anywhere; `glab` must be installed on the runner.
+pipeline on the macOS runner. Since 19 September 2026 that runner is an
+Apple Silicon Mac running gitlab-runner with the Tart custom executor: every
+job gets a throwaway macOS VM cloned from the digest-pinned image named in
+`.gitlab-ci.yml`, installs the pinned Node build and `glab` itself, and is
+destroyed afterwards. The job signs in with its own CI job token through
+glab's CI auto-login, so no GitLab login or personal token exists anywhere
+on the runner. The VM has no Docker runtime, so both jobs leave the two
+Docker-only deterministic checks out with an explicit `--skip` that prints
+each skipped name; a local `npm test` on a Mac with Docker still runs them.
 To cut one:
 
 1. Bump `version` in `package.json` and add `.github/release-notes/vX.Y.Z.md`

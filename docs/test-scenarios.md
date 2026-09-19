@@ -296,6 +296,23 @@ question, or the refusal is a bare error.
 - Settings → Terminal Appearance: import from Ghostty config; only font, size,
   theme and palette come across.
 - Set an explicit font family and size; confirm it wins over the import.
+- Settings → Terminal → Terminal type. In a Shell pane, `echo $TERM` reads
+  `xterm-ghostty`. Choose **Compatible**: the running pane still reads
+  `xterm-ghostty` (nothing restarts). Open a new Shell pane: it reads
+  `xterm-256color`, and `htop` or `vim` run normally there.
+- With Compatible chosen, `ssh` from that new pane to a Linux host that has
+  never had Ghostty's terminfo installed. `htop` starts, and the delete key
+  deletes the character to the left. Before this setting the host printed
+  `ncurses: cannot initialize terminal type ($TERM="xterm-ghostty")` and
+  delete moved the cursor.
+- Choose **Ghostty** again and restart the pane; `echo $TERM` reads
+  `xterm-ghostty`. Copy the command in the Remote hosts section, run it once
+  against the same host, and ssh there again: `htop` now starts with the
+  Ghostty type too.
+
+**Fail:** a running pane's `TERM` changes without a restart; an agent pane
+started after the choice reads the old value; the Copy button copies anything
+other than the command shown.
 
 ---
 
@@ -415,6 +432,8 @@ question, or the refusal is a bare error.
 
 - Settings → General → Swift package builds: opt in, confirm it applies to a
   newly started pane only.
+- Settings → Terminal → Terminal type: the choice survives quitting and
+  relaunching Parley, and Development and Production keep separate choices.
 - Production: check for updates manually. Confirm no background install and
   that quitting goes through the pane-aware confirmation.
 - Development: confirm Sparkle never runs and **DEV** is visible everywhere.

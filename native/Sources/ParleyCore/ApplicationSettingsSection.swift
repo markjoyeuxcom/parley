@@ -2,6 +2,7 @@ import Foundation
 
 public enum ApplicationSettingsSection: String, CaseIterable, Identifiable, Sendable {
     case general
+    case terminal
     case appearance
     case notifications
 
@@ -11,6 +12,8 @@ public enum ApplicationSettingsSection: String, CaseIterable, Identifiable, Send
         switch self {
         case .general:
             "General"
+        case .terminal:
+            "Terminal"
         case .appearance:
             "Appearance"
         case .notifications:
@@ -22,6 +25,8 @@ public enum ApplicationSettingsSection: String, CaseIterable, Identifiable, Send
         switch self {
         case .general:
             "gearshape"
+        case .terminal:
+            "terminal"
         case .appearance:
             "textformat"
         case .notifications:
