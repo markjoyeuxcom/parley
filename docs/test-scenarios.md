@@ -455,3 +455,58 @@ useful information than one marked pass without being run.
 If nothing fails, the honest position is not "it is finished" — it is that the
 app does what it claims for the paths above. Notarization, automatic updates and
 packaged-app UI automation remain open regardless of how this pass goes.
+
+## Voice acceptance — packaged app, real microphone and speakers
+
+Record the app commit/build, runtime, macOS version, hardware, language and
+whether Apple's local model was already installed. These checks are manual;
+`--only voice` covers synthetic state and transport behavior, not microphone
+consent or audible output. Run on supported macOS 26 hardware for en-GB and
+en-US and on macOS 14/15 where local recognition is available. Unsupported
+configurations must refuse clearly. Never interpret an unavailable model as a
+successful dictation test.
+
+1. **Setup and denial.** In Settings > Voice, select a language and check
+   support. A missing macOS 26 model offers an explicit download; cancel the
+   request, check the Apple-managed download state, retry and verify the
+   installed status. Disconnect the network after setup.
+   Start dictation, deny microphone consent and confirm no capture or delivery.
+   Grant it in macOS Privacy & Security and retry. Test Speech Recognition
+   denial too on the older backend. Use a dedicated test app identity or
+   explicitly reset only its consent; do not reset system-wide permissions.
+2. **Hold and consent race.** Hold Dictate or Control-Shift-Space. Release
+   while preparation/consent is pending, then grant permission: no late
+   recording may begin. Start again, dictate a short sentence, release and
+   confirm the microphone indicator ends. Repeat with mouse drag/release,
+   keyboard release, release of a modifier before Space, window close/app
+   deactivation and the 60-second limit. Test device disconnection and consent
+   revocation during recording: show an error, stop capture, retain any partial
+   transcript, and allow retry after recovery.
+3. **Edit and target.** Correct the transcript by keyboard. No keystroke may
+   reach the terminal behind it. Dictate again and confirm edits are retained.
+   Switch the active pane: the named destination must remain unchanged. Paste
+   must not press Enter; Send must. Discard before either must deliver nothing.
+   Close, move, restart or change the reviewed folder of the bound pane before
+   sending; refuse until explicit reselection. Exercise Copilot without its
+   native folder-trust confirmation; Voice must not bypass it.
+4. **Handoffs.** Create both an Ask draft and a Delegate draft. Check source
+   and target pane/vendor/workspace, edit the text and cancel once with no
+   handoff. Send deliberately, confirm normal history/correlation and a
+   returned result. Restart either participant while the composer is open and
+   verify refusal. Never use a live paid vendor as an ordinary automated test.
+5. **Playback.** Confirm read-aloud starts disabled. Opt in, select a short
+   real terminal passage and choose Voice > Read Selection. Listen for the
+   selected words only. Read an explicitly returned Ask and Delegate result.
+   Queue three items, refuse a fourth, remove a waiting item and stop/clear
+   during speech. Hide the main workbench window and confirm these controls,
+   the enable/settings link and playback errors remain visible beside Read
+   Result in Status Center. Start capture during playback and playback during capture;
+   both conflicts must refuse. The microphone must never pick up the output.
+6. **Accessibility and retention.** With full keyboard access and VoiceOver,
+   activate Dictate to start/stop and reach the transcript, Copy, Discard,
+   destination, Paste/Send and playback controls. Control-Option-Space must
+   retain its VoiceOver function. Quit and relaunch: there must be no retained
+   voice draft or speech queue. Inspect only the app's ordinary history for
+   explicitly sent handoffs; no audio recording files should have been added.
+
+Record failures and untested configurations explicitly before a release.

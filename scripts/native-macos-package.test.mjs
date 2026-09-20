@@ -9,6 +9,7 @@ import {
   GHOSTTY_RESOURCE_BUNDLE,
   MINIMUM_SYSTEM_VERSION,
   codesignArguments,
+  renderApplicationEntitlements,
   copyGhosttyResourceBundle,
   patchGhosttyRuntimeResourcesSource,
   requiredBundlePaths,
@@ -73,6 +74,16 @@ test('Info.plist describes the native foreground application', () => {
   assert.match(plist, /<key>NSMessage<\/key>\s*<string>openInParley<\/string>/)
   assert.match(plist, /<key>NSSendTypes<\/key>\s*<array>\s*<string>NSFilenamesPboardType<\/string>/)
   assert.doesNotMatch(plist, /parleycontext|context-import/, 'the .parleycontext document type went with the VS Code companion')
+})
+
+test('voice capture declares microphone and local speech consent in the app bundle', () => {
+  const plist = renderInfoPlist({ version: '1.0.0', build: '1' })
+  assert.match(plist, /<key>NSMicrophoneUsageDescription<\/key>\s*<string>[^<]*dictat[^<]*<\/string>/i)
+  assert.match(plist, /<key>NSSpeechRecognitionUsageDescription<\/key>\s*<string>[^<]*device[^<]*<\/string>/i)
+  assert.match(renderApplicationEntitlements(), /<key>com\.apple\.security\.device\.audio-input<\/key><true\/>/)
+  assert.doesNotMatch(renderApplicationEntitlements(), /app-sandbox|automation\.apple-events|disable-library-validation/)
+  assert.deepEqual(codesignArguments('/tmp/Parley.app', 'Developer ID', { entitlementsFile: '/tmp/voice.plist' }).slice(-3),
+    ['--entitlements', '/tmp/voice.plist', '/tmp/Parley.app'])
 })
 
 test('production Info.plist enables only a signed opt-in Sparkle update channel', () => {

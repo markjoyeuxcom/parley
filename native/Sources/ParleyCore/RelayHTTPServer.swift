@@ -427,6 +427,14 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 }
                 let consultationID = String(path.dropFirst("/ui/answer/".count))
                 write(broker.answerFromUI(consultationID: consultationID, text: text), to: client)
+            case "/ui/voice-handoff":
+                guard controlAuthorized(request, client: client) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client); return
+                }
+                guard let handoff = try? JSONDecoder().decode(VoiceHandoffRequest.self, from: request.body) else {
+                    write(RelayTextResponse(status: 400, text: "invalid reviewed voice handoff"), to: client); return
+                }
+                write(broker.handleVoiceHandoffFromUI(handoff), to: client)
             case "/ui/ask":
                 guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)

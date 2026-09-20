@@ -3,6 +3,7 @@ import Foundation
 public enum ApplicationSettingsSection: String, CaseIterable, Identifiable, Sendable {
     case general
     case terminal
+    case voice
     case appearance
     case notifications
 
@@ -14,6 +15,8 @@ public enum ApplicationSettingsSection: String, CaseIterable, Identifiable, Send
             "General"
         case .terminal:
             "Terminal"
+        case .voice:
+            "Voice"
         case .appearance:
             "Appearance"
         case .notifications:
@@ -27,6 +30,8 @@ public enum ApplicationSettingsSection: String, CaseIterable, Identifiable, Send
             "gearshape"
         case .terminal:
             "terminal"
+        case .voice:
+            "mic"
         case .appearance:
             "textformat"
         case .notifications:

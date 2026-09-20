@@ -32,6 +32,7 @@ public struct GhosttyPaneLaunch: Equatable, Sendable {
 /// process; no terminal multiplexer or second PTY owner sits underneath it.
 public struct PaneTerminalTransport: @unchecked Sendable {
     public let paste: (_ paneID: String, _ text: String, _ submit: Bool) throws -> Void
+    public let voicePaste: ((_ paneID: String, _ text: String, _ submit: Bool, _ reviewed: [VoiceDestination]) throws -> Void)?
     public let interrupt: (_ paneID: String) throws -> Void
     public let captureSelectedText: (_ paneID: String) throws -> String
     public let terminate: (_ paneID: String) -> Void
@@ -39,12 +40,14 @@ public struct PaneTerminalTransport: @unchecked Sendable {
 
     public init(
         paste: @escaping (_ paneID: String, _ text: String, _ submit: Bool) throws -> Void,
+        voicePaste: ((_ paneID: String, _ text: String, _ submit: Bool, _ reviewed: [VoiceDestination]) throws -> Void)? = nil,
         interrupt: @escaping (_ paneID: String) throws -> Void,
         captureSelectedText: @escaping (_ paneID: String) throws -> String,
         terminate: @escaping (_ paneID: String) -> Void,
         terminateAll: @escaping () -> Void
     ) {
         self.paste = paste
+        self.voicePaste = voicePaste
         self.interrupt = interrupt
         self.captureSelectedText = captureSelectedText
         self.terminate = terminate
@@ -986,6 +989,13 @@ public final class WorkbenchController: @unchecked Sendable {
         try pastePrepared(text, into: paneID, submit: submit)
     }
 
+    public func pasteVoice(_ text: String, destination: VoiceDestination, source: VoiceDestination? = nil, submit: Bool) throws {
+        let reviewed = [destination] + (source.map { [$0] } ?? [])
+        let live = try listPanes()
+        for snapshot in reviewed { _ = try snapshot.resolve(in: live) }
+        try pastePrepared(text, into: destination.paneID, submit: submit, reviewed: reviewed)
+    }
+
     public func pasteExplicitContext(_ text: String, into paneID: String, submit: Bool) throws {
         try pastePrepared(text, into: paneID, submit: submit)
     }
@@ -1529,7 +1539,7 @@ public final class WorkbenchController: @unchecked Sendable {
         }
     }
 
-    private func pastePrepared(_ text: String, into paneID: String, submit: Bool) throws {
+    private func pastePrepared(_ text: String, into paneID: String, submit: Bool, reviewed: [VoiceDestination]? = nil) throws {
         try lock.withLock {
             guard deliveringPaneIDs.insert(paneID).inserted else {
                 throw ParleyWorkbenchError.commandFailed("A delivery to this pane is already in progress. Wait for it to finish before sending again.")
@@ -1540,7 +1550,14 @@ public final class WorkbenchController: @unchecked Sendable {
         guard let terminalTransport else {
             throw ParleyWorkbenchError.unsafeRelayTarget(pane.displayName)
         }
-        try terminalTransport.paste(paneID, text, submit)
+        if let reviewed {
+            guard let voicePaste = terminalTransport.voicePaste else {
+                throw VoiceError.unavailable("Reviewed voice delivery is unavailable.")
+            }
+            try voicePaste(paneID, text, submit, reviewed)
+        } else {
+            try terminalTransport.paste(paneID, text, submit)
+        }
         lock.withLock { document.activity[paneID] = Date() }
     }
 

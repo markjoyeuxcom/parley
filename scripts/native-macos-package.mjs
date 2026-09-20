@@ -161,6 +161,10 @@ ${sparkleConfiguration}  <key>LSApplicationCategoryType</key>
   </dict>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Parley uses the microphone when you dictate text for review before sending to a selected pane.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Parley transcribes dictation on this device. Your audio is not sent to a speech service.</string>
   <key>NSServices</key>
   <array>
     <dict>
@@ -286,7 +290,11 @@ function swiftReleaseBinPath() {
   return bin
 }
 
-export function codesignArguments(path, identity, { preserveEntitlements = false } = {}) {
+export function renderApplicationEntitlements() {
+  return '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict><key>com.apple.security.device.audio-input</key><true/></dict></plist>\n'
+}
+
+export function codesignArguments(path, identity, { preserveEntitlements = false, entitlementsFile } = {}) {
   const args = ['--force', '--sign', identity]
   // Ad-hoc signatures do not carry a Team ID. Enabling hardened-runtime
   // library validation on that host makes dyld reject the likewise ad-hoc
@@ -294,6 +302,7 @@ export function codesignArguments(path, identity, { preserveEntitlements = false
   // explicitly unnotarized; production Developer ID builds remain hardened.
   if (identity !== '-') args.push('--options', 'runtime', '--timestamp')
   if (preserveEntitlements) args.push('--preserve-metadata=entitlements')
+  if (entitlementsFile) args.push('--entitlements', entitlementsFile)
   args.push(path)
   return args
 }
@@ -516,8 +525,10 @@ export function packageNativeMacOS({ distributionReadme } = {}) {
   run('xattr', ['-cr', bundle])
   const identity = process.env.PARLEY_CODESIGN_IDENTITY || '-'
   signSparkleFramework(join(frameworks, SPARKLE_FRAMEWORK), identity)
-  sign(appExecutable, identity)
-  sign(bundle, identity)
+  const entitlementsFile = join(stagingRoot, 'application-entitlements.plist')
+  writeFileSync(entitlementsFile, renderApplicationEntitlements(), { mode: 0o600 })
+  sign(appExecutable, identity, { entitlementsFile })
+  sign(bundle, identity, { entitlementsFile })
   run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', bundle])
 
   replacePath(bundle, finalBundle)

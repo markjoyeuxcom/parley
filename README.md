@@ -198,6 +198,39 @@ for the current application session, shows both vendors in the route, and still
 requires Command-Return or the visible Send Ask button before submission. It
 never captures scrollback or sends merely because the shortcut was pressed.
 
+**Voice input:** select a running agent pane and hold **Dictate** or
+Control–Shift–Space in the main window. Release to edit the transcript, then
+choose **Paste** (no Enter), **Send**, or **Handoff Draft → Ask/Delegate**.
+The draft shows its pane, vendor and workspace; changing the selected pane
+does not redirect it. A closed, moved, restarted or changed destination must
+be explicitly selected again. Keyboard or VoiceOver activation of Dictate
+toggles recording; Stop Recording and Discard are also available.
+
+**Settings → Voice** offers English (United Kingdom) and English (United
+States). Recognition is local only. On supported macOS 26 Macs, explicitly
+download Apple's speech model there first. On macOS 14–15 and other Macs,
+dictation requires the system to report local recognition support. Missing
+assets or denied consent produce a recoverable message; there is no cloud
+fallback. Microphone consent requires a packaged application. If consent
+interrupts a hold, start a new recording after granting it. Recordings stop
+after 60 seconds and transcripts are limited to 8,000 characters.
+
+Raw audio is never saved by Parley. Voice drafts and the playback queue stay
+in memory until discarded, delivered or the app quits; preferences store only
+language and the read-aloud opt-in. Explicit Ask/Delegate sends use the normal
+handoff history and retention policy. Pasted or sent text becomes input to the
+vendor CLI and follows that vendor's normal conversation handling.
+
+Read-aloud is off by default. Enable it in Voice settings, then use **Voice →
+Read Selection** for an actual terminal selection or **Read Result** on a
+returned Ask/Delegate in Status Center. It uses macOS speech synthesis, queues
+at most three items of 8,000 characters each, and offers Remove and **Stop and
+Clear Queue**. Recording and playback cannot overlap. Nothing is spoken
+automatically, and spoken words never approve tools or execute voice commands.
+Status Center also shows the speech queue, stop control, errors and Voice
+Settings link beside Read Result, so they remain available with the main
+workbench window hidden.
+
 When that composer targets a pane with a supported authenticated vendor hook
 report, a compact **TARGET SIGNAL** strip names the exact pane and vendor hook,
 reported state, official event and live age. It is labelled **ADVISORY ONLY**:

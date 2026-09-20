@@ -298,7 +298,8 @@ final class GhosttyPaneRegistry {
         return selectionText(from: view)
     }
 
-    func paste(_ text: String, into paneID: String, submit: Bool) throws {
+    func paste(_ text: String, into paneID: String, submit: Bool, validate: () throws -> Void = {}) throws {
+        try validate()
         guard let entry = entries[paneID], entry.view.controller != nil,
               let pane = try workbench?.listPanes().first(where: { $0.id == paneID }) else {
             throw ParleyWorkbenchError.unsafeRelayTarget(paneID)
@@ -309,12 +310,14 @@ final class GhosttyPaneRegistry {
         _ = entry.view.acquireProgrammaticFocus()
         settleTerminalInput(for: timing.afterFocus)
         try requireLiveTarget(paneID, entry)
+        try validate()
         guard entry.view.paste(text: text) else {
             throw ParleyWorkbenchError.unsafeRelayTarget(paneID)
         }
         if submit {
             settleTerminalInput(for: timing.afterPaste)
             try requireLiveTarget(paneID, entry)
+            try validate()
             guard entry.view.sendKey(.enter) else {
                 throw ParleyWorkbenchError.unsafeRelayTarget(paneID)
             }
