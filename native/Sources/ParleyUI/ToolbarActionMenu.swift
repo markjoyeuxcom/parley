@@ -14,6 +14,7 @@ public indirect enum ToolbarMenuItem {
 public struct ToolbarActionMenu: NSViewRepresentable {
     public let title: String
     public let systemImage: String
+    public let iconOnly: Bool
     public let isEnabled: Bool
     public let accessibilityLabel: String
     public let accessibilityValue: String
@@ -26,7 +27,7 @@ public struct ToolbarActionMenu: NSViewRepresentable {
     public let itemsOnOpen: (() -> [ToolbarMenuItem])?
 
     public init(
-        title: String, systemImage: String, isEnabled: Bool = true,
+        title: String, systemImage: String, iconOnly: Bool = false, isEnabled: Bool = true,
         accessibilityLabel: String, accessibilityValue: String = "",
         help: String = "", accessibilityHint: String = "", items: [ToolbarMenuItem],
         itemsOnOpen: (() -> [ToolbarMenuItem])? = nil
@@ -34,6 +35,7 @@ public struct ToolbarActionMenu: NSViewRepresentable {
         self.itemsOnOpen = itemsOnOpen
         self.title = title
         self.systemImage = systemImage
+        self.iconOnly = iconOnly
         self.isEnabled = isEnabled
         self.accessibilityLabel = accessibilityLabel
         self.accessibilityValue = accessibilityValue
@@ -71,7 +73,7 @@ public struct ToolbarActionMenu: NSViewRepresentable {
     }
 
     public func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSPopUpButton, context: Context) -> CGSize? {
-        nsView.cell?.cellSize
+        iconOnly ? CGSize(width: 20, height: 20) : nsView.cell?.cellSize
     }
 
     @MainActor
@@ -79,6 +81,7 @@ public struct ToolbarActionMenu: NSViewRepresentable {
         fileprivate var configuration: ToolbarActionMenu
         fileprivate weak var button: NSPopUpButton?
         private var isTracking = false
+        private var opening: NativeActionMenuSnapshot?
 
         fileprivate init(configuration: ToolbarActionMenu) { self.configuration = configuration }
 
@@ -86,14 +89,17 @@ public struct ToolbarActionMenu: NSViewRepresentable {
             // Even changing the count, image or enabled state of the button can
             // disturb tracking. Apply all chrome changes only while closed.
             guard !isTracking, let button else { return }
-            button.menu?.item(at: 0)?.title = configuration.title
+            button.menu?.item(at: 0)?.title = configuration.iconOnly ? "" : configuration.title
             button.menu?.item(at: 0)?.image = NSImage(systemSymbolName: configuration.systemImage, accessibilityDescription: nil)
+            button.imagePosition = configuration.iconOnly ? .imageOnly : .imageLeading
+            (button.cell as? NSPopUpButtonCell)?.arrowPosition = configuration.iconOnly ? .noArrow : .arrowAtCenter
             button.isEnabled = configuration.isEnabled
             button.setAccessibilityLabel(configuration.accessibilityLabel)
             button.setAccessibilityValue(configuration.accessibilityValue)
             button.setAccessibilityHelp(configuration.accessibilityHint)
             button.toolTip = configuration.help
-            button.sizeToFit()
+            if configuration.iconOnly { button.setFrameSize(NSSize(width: 20, height: 20)) }
+            else { button.sizeToFit() }
             button.invalidateIntrinsicContentSize()
         }
 
@@ -101,9 +107,11 @@ public struct ToolbarActionMenu: NSViewRepresentable {
             guard !isTracking else { return }
             let snapshot = configuration
             menu.removeAllItems()
-            let label = menu.addItem(withTitle: snapshot.title, action: nil, keyEquivalent: "")
+            let label = menu.addItem(withTitle: snapshot.iconOnly ? "" : snapshot.title, action: nil, keyEquivalent: "")
             label.image = NSImage(systemSymbolName: snapshot.systemImage, accessibilityDescription: nil)
-            append(snapshot.itemsOnOpen?() ?? snapshot.items, to: menu)
+            let opening = NativeActionMenuSnapshot(items: snapshot.itemsOnOpen?() ?? snapshot.items)
+            self.opening = opening
+            opening.append(to: menu)
         }
 
         public func menuWillOpen(_ menu: NSMenu) { isTracking = true }
@@ -115,45 +123,57 @@ public struct ToolbarActionMenu: NSViewRepresentable {
             DispatchQueue.main.async { [weak self] in self?.updateControl() }
         }
 
-        private func append(_ items: [ToolbarMenuItem], to menu: NSMenu) {
-            menu.autoenablesItems = false
-            for item in items {
-                switch item {
-                case let .action(title, image, enabled, help, destructive, perform):
-                    let row = NSMenuItem(title: title, action: #selector(choose(_:)), keyEquivalent: "")
-                    row.target = self
-                    row.representedObject = ToolbarMenuSelection(perform)
-                    row.isEnabled = enabled
-                    row.toolTip = help
-                    if let image { row.image = NSImage(systemSymbolName: image, accessibilityDescription: nil) }
-                    if destructive {
-                        row.attributedTitle = NSAttributedString(string: title, attributes: [.foregroundColor: NSColor.systemRed])
-                    }
-                    menu.addItem(row)
-                case let .submenu(title, image, enabled, children):
-                    let row = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-                    row.isEnabled = enabled
-                    if let image { row.image = NSImage(systemSymbolName: image, accessibilityDescription: nil) }
-                    let submenu = NSMenu(title: title)
-                    append(children, to: submenu)
-                    row.submenu = submenu
-                    menu.addItem(row)
-                case let .heading(title):
-                    menu.addItem(NSMenuItem.sectionHeader(title: title))
-                case let .message(title):
-                    let row = NSMenuItem(title: title, action: nil, keyEquivalent: "")
-                    row.isEnabled = false
-                    menu.addItem(row)
-                case .separator:
-                    menu.addItem(.separator())
+    }
+}
+
+/// Owns the weak NSMenuItem targets for one immutable opening. The presenter
+/// retains it until AppKit has closed the menu and dispatched its selection.
+@MainActor
+final class NativeActionMenuSnapshot: NSObject {
+    private let items: [ToolbarMenuItem]
+
+    init(items: [ToolbarMenuItem]) { self.items = items }
+
+    func append(to menu: NSMenu) { append(items, to: menu) }
+
+    private func append(_ items: [ToolbarMenuItem], to menu: NSMenu) {
+        menu.autoenablesItems = false
+        for item in items {
+            switch item {
+            case let .action(title, image, enabled, help, destructive, perform):
+                let row = NSMenuItem(title: title, action: #selector(choose(_:)), keyEquivalent: "")
+                row.target = self
+                row.representedObject = ToolbarMenuSelection(perform)
+                row.isEnabled = enabled
+                row.toolTip = help
+                if let image { row.image = NSImage(systemSymbolName: image, accessibilityDescription: nil) }
+                if destructive {
+                    row.attributedTitle = NSAttributedString(string: title, attributes: [.foregroundColor: NSColor.systemRed])
                 }
+                menu.addItem(row)
+            case let .submenu(title, image, enabled, children):
+                let row = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                row.isEnabled = enabled
+                if let image { row.image = NSImage(systemSymbolName: image, accessibilityDescription: nil) }
+                let submenu = NSMenu(title: title)
+                append(children, to: submenu)
+                row.submenu = submenu
+                menu.addItem(row)
+            case let .heading(title):
+                menu.addItem(NSMenuItem.sectionHeader(title: title))
+            case let .message(title):
+                let row = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                row.isEnabled = false
+                menu.addItem(row)
+            case .separator:
+                menu.addItem(.separator())
             }
         }
+    }
 
-        @objc private func choose(_ item: NSMenuItem) {
-            guard item.isEnabled else { return }
-            (item.representedObject as? ToolbarMenuSelection)?.perform()
-        }
+    @objc private func choose(_ item: NSMenuItem) {
+        guard item.isEnabled else { return }
+        (item.representedObject as? ToolbarMenuSelection)?.perform()
     }
 }
 

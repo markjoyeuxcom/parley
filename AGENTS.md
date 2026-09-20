@@ -253,6 +253,16 @@ and the request id is unchanged, so the model still recognises the review.
 Restart, resume and folder-access reviews have no Vendor row: a pane cannot
 change vendor.
 
+The pane header's ellipsis uses `PaneActionsMenu`, backed by the same
+`ToolbarActionMenu` AppKit snapshot as the toolbar menus. Each opening keeps
+its item tree and captured workspace destinations until it closes; terminal
+callbacks can still publish model changes while a menu tracks, even with the
+periodic timer paused. A live SwiftUI menu rebuilt its items during those
+updates and disrupted Move to Workspace. The sidebar right-click and
+Control-click menu uses `PaneContextMenu` with the same native item builder
+and shared action definition. Ordinary input passes through its transparent
+overlay; moving still revalidates the pane and destination by id.
+
 A workspace is durable identity independent of folders. It may have zero or
 more explicit folder attachments used for opening and search, plus an optional
 independently mutable New Pane Folder. Existing panes retain their live folders;
