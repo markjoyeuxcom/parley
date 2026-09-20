@@ -216,6 +216,7 @@ public enum ParleyHelpGuide {
                     title: "Move a pane",
                     paragraphs: [
                         "Right-click a pane and choose Move to Workspace to transfer the exact retained Ghostty surface to another workspace. Every action is confirmed first and refused when it would break routing or lose work.",
+                        "The Pane actions button in each pane header provides the same actions, including Move to Workspace, for VoiceOver and keyboard access. The sidebar's right-click menu is a pointer shortcut.",
                     ],
                     items: [
                         "Move preserves the pane id, running process and vendor session, scrollback, terminal state and pane-local folder. The destination workspace's automation policy applies after the move.",

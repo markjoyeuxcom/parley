@@ -187,8 +187,8 @@ struct ContentView: View {
                             }
                             .listRowBackground(pane.isActive ? Color.accentColor.opacity(0.14) : Color.clear)
                             .listRowInsets(EdgeInsets(top: 1, leading: 5, bottom: 1, trailing: 5))
-                            .contextMenu {
-                                paneContextMenu(pane)
+                            .overlay {
+                                PaneContextMenu(items: paneMenuItems(pane))
                             }
                         }
                     }
@@ -609,66 +609,60 @@ struct ContentView: View {
             .disabled(model.workspaces.count == 1)
     }
 
-    @ViewBuilder
-    private func paneContextMenu(_ pane: WorkbenchPane) -> some View {
-        Button("Rename…") { model.rename(pane) }
+    private func paneMenuItems(_ pane: WorkbenchPane) -> [ToolbarMenuItem] {
+        var items: [ToolbarMenuItem] = [.action("Rename…") { model.rename(pane) }]
         if pane.kind.isAgent {
             if pane.isWorkspaceLead {
-                Button("Remove as Workspace Lead") {
+                items.append(.action("Remove as Workspace Lead") {
                     if let workspace = model.workspaces.first(where: { $0.workspaceID == pane.workspaceID }) {
                         model.clearWorkspaceLead(workspace)
                     }
-                }
+                })
             } else {
-                Button("Make Workspace Lead") { model.setWorkspaceLead(pane) }
+                items.append(.action("Make Workspace Lead") { model.setWorkspaceLead(pane) })
             }
-            Divider()
-            Button(pane.role == nil ? "Set Routing Role…" : "Change Routing Role…") {
+            items.append(.separator)
+            items.append(.action(pane.role == nil ? "Set Routing Role…" : "Change Routing Role…") {
                 model.setRole(pane)
-            }
+            })
             if pane.role != nil {
-                Button("Clear Routing Role") { model.clearRole(pane) }
+                items.append(.action("Clear Routing Role") { model.clearRole(pane) })
             }
-            Divider()
-            Button("Browser & Tool Capability…") {
-                model.showPaneToolCapabilitySummary(pane)
-            }
+            items.append(.separator)
+            items.append(.action("Browser & Tool Capability…") { model.showPaneToolCapabilitySummary(pane) })
             if pane.isStarted {
-                Button("Folder Access…") {
-                    model.showFolderAccess(pane)
-                }
+                items.append(.action("Folder Access…") { model.showFolderAccess(pane) })
             }
         }
-        Divider()
+        items.append(.separator)
         if pane.kind.isAgent {
             if !pane.isStarted {
-                Button("Start Fresh Session") { model.start(pane) }
+                items.append(.action("Start Fresh Session") { model.start(pane) })
             }
             if let plan = VendorResumeAdapter.plan(for: pane.kind) {
-                Button(plan.menuLabel) { model.resume(pane) }
+                items.append(.action(plan.menuLabel) { model.resume(pane) })
             }
             if pane.isStarted {
                 if pane.kind == .copilot && !pane.isDead {
-                    Button("Confirm Copilot Folder Trust…") { model.confirmCopilotFolderTrust(pane) }
+                    items.append(.action("Confirm Copilot Folder Trust…") { model.confirmCopilotFolderTrust(pane) })
                 }
-                Button("Restart Fresh Session…") { model.restart(pane) }
+                items.append(.action("Restart Fresh Session…") { model.restart(pane) })
             }
         } else {
-            Button("Restart…") { model.restart(pane) }
+            items.append(.action("Restart…") { model.restart(pane) })
         }
-        let mobilityDestinations = model.mobilityDestinations(for: pane)
-        if !mobilityDestinations.isEmpty {
-            Divider()
-            Menu("Move to Workspace") {
-                ForEach(mobilityDestinations) { workspace in
-                    Button(workspace.name) { model.movePane(pane, to: workspace) }
-                }
-            }
+        let destinations = model.mobilityDestinations(for: pane)
+        if !destinations.isEmpty {
+            items.append(.separator)
+            items.append(.submenu("Move to Workspace", items: destinations.map { workspace in
+                .action(workspace.name) { model.movePane(pane, to: workspace) }
+            }))
         }
-        Divider()
-        Button("Terminal Appearance…") { model.showTerminalFontSettings() }
-        Divider()
-        Button("Close Pane…", role: .destructive) { model.close(pane) }
+        items.append(.separator)
+        items.append(.action("Terminal Appearance…") { model.showTerminalFontSettings() })
+        items.append(.separator)
+        items.append(.action("Close Pane…", isDestructive: true) { model.close(pane) })
+        return items
     }
 
     private func favouriteFolderRow(_ folder: String) -> some View {
@@ -1792,21 +1786,15 @@ struct ContentView: View {
                 }
                 ChromeChip(WorkbenchChromeProjection.processLabel(pane), color: ChromeColor.paneProcess(pane))
             }
-            Menu {
-                Button(model.focusCanvasPaneID == pane.id ? "Unzoom" : "Zoom Pane") {
-                    model.toggleFocusCanvas(paneID: pane.id)
-                }
-                Divider()
-                paneContextMenu(pane)
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 9, weight: .semibold))
-                    .frame(width: 16, height: 20)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .accessibilityLabel("Pane actions for \(pane.displayName)")
+            PaneActionsMenu(
+                accessibilityLabel: "Pane actions for \(pane.displayName)",
+                items: [
+                    .action(model.focusCanvasPaneID == pane.id ? "Unzoom" : "Zoom Pane") {
+                        model.toggleFocusCanvas(paneID: pane.id)
+                    },
+                    .separator,
+                ] + paneMenuItems(pane)
+            )
         }
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
