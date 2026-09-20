@@ -476,6 +476,7 @@ public final class RelayBroker: @unchecked Sendable {
     private let panes: Panes
     private let paste: Paste
     private let submit: Submit
+    private let voiceSubmit: ((VoiceHandoffRequest, String) throws -> Void)?
     private let contextSubmit: Submit
     private let selectedText: SelectedText?
     private let vendorSignal: VendorSignal
@@ -538,6 +539,7 @@ public final class RelayBroker: @unchecked Sendable {
         panes: @escaping Panes,
         paste: @escaping Paste,
         submit: @escaping Submit,
+        voiceSubmit: ((VoiceHandoffRequest, String) throws -> Void)? = nil,
         contextSubmit: Submit? = nil,
         selectedText: SelectedText? = nil,
         vendorSignal: VendorSignal? = nil,
@@ -556,6 +558,7 @@ public final class RelayBroker: @unchecked Sendable {
         self.panes = panes
         self.paste = paste
         self.submit = submit
+        self.voiceSubmit = voiceSubmit
         self.contextSubmit = contextSubmit ?? submit
         self.selectedText = selectedText
         self.vendorSignal = vendorSignal ?? { _, _, _ in }
@@ -1646,7 +1649,8 @@ public final class RelayBroker: @unchecked Sendable {
         idempotencyKey suppliedIdempotencyKey: String? = nil,
         inReplyToHandoffID: String? = nil,
         humanInitiated: Bool = false,
-        preserveFormatting: Bool = false
+        preserveFormatting: Bool = false,
+        reviewedVoice: VoiceHandoffRequest? = nil
     ) -> RelayResponse {
         let sender: WorkbenchPane
         let target: WorkbenchPane
@@ -1654,6 +1658,10 @@ public final class RelayBroker: @unchecked Sendable {
         let targetCredential: String
         do {
             (sender, target) = try route(token: token, requestedTarget: requestedTarget)
+            if let reviewedVoice {
+                _ = try reviewedVoice.source.resolve(in: [sender])
+                _ = try reviewedVoice.target.resolve(in: [target])
+            }
             if !humanInitiated {
                 try authorize(.delegate, for: sender)
             }
@@ -1777,7 +1785,11 @@ public final class RelayBroker: @unchecked Sendable {
         consultationCondition.unlock()
 
         do {
-            try submit(target.id, delegationPrompt(for: handoff))
+            if let reviewedVoice {
+                try submitVoice(reviewedVoice, text: delegationPrompt(for: handoff))
+            } else {
+                try submit(target.id, delegationPrompt(for: handoff))
+            }
             consultationCondition.lock()
             if delegationRecords[handoff.id] != nil {
                 transitionHandoffLocked(handoff.id, to: .delivered)
@@ -2541,7 +2553,8 @@ public final class RelayBroker: @unchecked Sendable {
         inReplyToHandoffID: String? = nil,
         relationship: RelayHandoffRelationship? = nil,
         onSubmitted: (() -> Void)? = nil,
-        onAccepted: ((String) -> Void)? = nil
+        onAccepted: ((String) -> Void)? = nil,
+        reviewedVoice: VoiceHandoffRequest? = nil
     ) -> RelayTextResponse {
         let recordedOrigin = transitionOrigin ?? (humanInitiated ? .human : nil)
         let sender: WorkbenchPane
@@ -2550,6 +2563,10 @@ public final class RelayBroker: @unchecked Sendable {
         let targetCredential: String
         do {
             (sender, target) = try route(token: token, requestedTarget: requestedTarget)
+            if let reviewedVoice {
+                _ = try reviewedVoice.source.resolve(in: [sender])
+                _ = try reviewedVoice.target.resolve(in: [target])
+            }
             if !humanInitiated {
                 try authorize(.ask, for: sender)
             }
@@ -2656,7 +2673,11 @@ public final class RelayBroker: @unchecked Sendable {
 
         do {
             let writer = preserveFormatting ? contextSubmit : submit
-            try writer(target.id, consultationPrompt(for: consultation))
+            if let reviewedVoice {
+                try submitVoice(reviewedVoice, text: consultationPrompt(for: consultation))
+            } else {
+                try writer(target.id, consultationPrompt(for: consultation))
+            }
             consultationCondition.lock()
             if let active = consultationRecords[handoff.id], active.completion == nil {
                 transitionHandoffLocked(handoff.id, to: .delivered, origin: recordedOrigin)
@@ -2983,6 +3004,32 @@ public final class RelayBroker: @unchecked Sendable {
             preserveFormatting: preserveFormatting,
             transitionOrigin: origin
         )
+    }
+
+    /// Native-control-only entry to the existing Ask/Delegate paths. Snapshots
+    /// are checked against the panes resolved for this actual handoff.
+    public func handleVoiceHandoffFromUI(_ request: VoiceHandoffRequest) -> RelayTextResponse {
+        do {
+            let live = try panes()
+            _ = try request.source.resolve(in: live)
+            _ = try request.target.resolve(in: live)
+            let token = try credentials.token(for: request.source.paneID)
+            switch request.kind {
+            case .ask:
+                return handleAsk(token: token, target: request.target.paneID, text: request.text,
+                    idempotencyKey: request.idempotencyKey, humanInitiated: true, preserveFormatting: false,
+                    reviewedVoice: request)
+            case .delegate:
+                let response = handleDelegate(token: token, target: request.target.paneID, text: request.text,
+                    idempotencyKey: request.idempotencyKey, humanInitiated: true, reviewedVoice: request)
+                return RelayTextResponse(status: response.status, text: String(decoding: try JSONEncoder().encode(response.body), as: UTF8.self))
+            }
+        } catch { return RelayTextResponse(status: 409, text: error.localizedDescription) }
+    }
+
+    private func submitVoice(_ request: VoiceHandoffRequest, text: String) throws {
+        guard let voiceSubmit else { throw VoiceError.unavailable("Reviewed voice delivery is unavailable.") }
+        try voiceSubmit(request, text)
     }
 
     /// Returns the exact durable reviewed drafts. Merely reading this list—or

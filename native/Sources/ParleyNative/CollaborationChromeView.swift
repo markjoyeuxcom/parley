@@ -24,15 +24,15 @@ struct HandoffComposerView: View {
                         .font(ChromeFont.secondaryMedium)
                         .foregroundStyle(Color.accentColor)
                         .accessibilityAddTraits(.isHeader)
-                    Text("\(draft.sourceName) · \(draft.sourceKind.label)")
+                    Text(draft.voiceSource?.label ?? "\(draft.sourceName) · \(draft.sourceKind.label)")
                         .font(ChromeFont.secondaryMedium)
                     Image(systemName: "arrow.right")
                         .font(.system(size: 9))
                         .foregroundStyle(.secondary)
                         .accessibilityHidden(true)
-                    Text("\(draft.targetName) · \(draft.targetKind.label)")
+                    Text(draft.voiceTarget?.label ?? "\(draft.targetName) · \(draft.targetKind.label)")
                         .font(ChromeFont.secondaryMedium)
-                    ChromeChip(draft.relationship?.label ?? "Ask", color: .secondary)
+                    ChromeChip(draft.actionLabel, color: .secondary)
                     Spacer()
                     Button {
                         model.cancelHandoffComposer()
@@ -131,8 +131,8 @@ struct HandoffComposerView: View {
                         .disabled(model.submittingHandoffComposer)
                     Button(
                         model.submittingHandoffComposer
-                            ? "Waiting on \(draft.relationship?.label ?? "Ask")..."
-                            : "Send \(draft.relationship?.label ?? "Ask")"
+                            ? "Waiting on \(draft.actionLabel)..."
+                            : "Send \(draft.actionLabel)"
                     ) { model.submitHandoffComposer() }
                         .buttonStyle(.borderedProminent)
                         .disabled(

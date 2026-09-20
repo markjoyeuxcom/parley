@@ -431,6 +431,63 @@ folder-trust prompt. Copilot handoffs remain blocked until the person confirms
 **Confirm Copilot Folder Trust** in its pane menu for that launch. Hooks cannot
 grant this confirmation.
 
+## Voice input and spoken handoffs
+
+Voice is person-operated native input/output around the existing CLI panes.
+`VoiceSession`, `VoiceDestination` and `VoicePlaybackQueue` in ParleyCore are
+Foundation-only policy. `VoiceRecognition` and `VoiceController` in
+ParleyNative own Apple Speech/AVFoundation, microphone lifetime, cancellation
+and speech synthesis; do not move audio dependencies into the Core baseline.
+
+The initial languages are en-GB and en-US. macOS 26 uses SpeechAnalyzer and
+SpeechTranscriber on supported hardware, with an explicit AssetInventory
+download in Settings > Voice. Older/unsupported hardware uses
+SFSpeechRecognizer only after supportsOnDeviceRecognition is true and with
+requiresOnDeviceRecognition set; there is no cloud fallback. Models are
+Apple-managed local assets, not Parley audio recordings. Info.plist must carry
+microphone and speech consent descriptions, and the signed executable/bundle
+must carry com.apple.security.device.audio-input. The unbundled developer
+executable refuses recording before attempting consent.
+
+Hold Dictate or Control-Shift-Space in the main window; mouse release, shortcut
+release, loss of window/app focus, cancellation or 60 seconds ends recording.
+Control-Option-Space is reserved for VoiceOver. Keyboard/accessible button
+activation toggles recording. Preparation cancellation invalidates the session
+before any late consent callback can start capture. Buffers are bounded and
+copied before the audio tap returns; engine work and conversion run off the
+main actor. Finalization has a five-second UI deadline and preserves a partial
+transcript on failure. A new recording waits for the previous owner to stop.
+
+The editable draft is bound to pane id, generation, vendor, workspace and
+reviewed launch folder. Selection changes never redirect it; Use Active Pane
+is explicit reselection. Paste and Send use the ordinary controller checks
+(including Copilot folder trust) and Ghostty input path, carrying snapshots
+through to validation on the main actor before paste and before Enter, after
+each run-loop settle. Both participants of a voice Ask/Delegate are checked
+there too. A potentially partial delivery is copy/discard only, never an
+automatic retry. `VoiceHandoffRequest` is native-control-only and enters the
+existing broker correlation, idempotency and history paths. It creates no
+agent command and does not change AgentProtocol wording or version.
+
+The transcript editor owns keyboard focus while open. Do not let
+repairNativeTerminalFocus steal its input. Voice drafts, copied audio buffers
+and the speech queue are memory-only; Parley writes no raw audio files.
+Discard and quit clear the draft, and an explicit delivery clears it after
+success. Ask/Delegate content follows existing journal retention and vendor
+input follows the CLI's own handling. Only language and opt-in read-aloud
+preferences persist, in the current Production/Development preference domain.
+
+AVSpeechSynthesizer reads only an explicit real selection or returned
+Ask/Delegate result. Read-aloud is off by default, holds three items of at
+most 8,000 characters, and has stop/clear and queued-item removal. Capture and
+playback exclude each other, including microphone cleanup. No terminal
+scraping, completion inference, always-listening mode, spoken permission
+approval or navigation commands belong to this implementation. Ordinary tests
+use pure session/queue state, synthetic broker routes and a native accessible
+button; bundled microphone consent/revocation and audible output remain
+explicit manual acceptance in docs/test-scenarios.md, never inferred from a
+green build or a missing-asset probe.
+
 ## Process and capability boundary
 
 Spawn fixed executables with argument arrays. Agent-authored content must never

@@ -35,6 +35,10 @@ struct ParleySettingsView: View {
                     }
                     .tag(ApplicationSettingsSection.terminal)
 
+                VoiceSettingsView(voice: model.voice)
+                    .tabItem { Label(ApplicationSettingsSection.voice.title, systemImage: ApplicationSettingsSection.voice.systemImage) }
+                    .tag(ApplicationSettingsSection.voice)
+
                 ScrollView {
                     TerminalFontSettingsView(model: model, dismissAfterApply: false, showsTitle: false)
                         .frame(maxWidth: .infinity)

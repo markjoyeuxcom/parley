@@ -299,6 +299,13 @@ public struct RelayCoreClient: Sendable {
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
     }
 
+    public func voiceHandoffFromUI(_ handoff: VoiceHandoffRequest) throws -> RelayTextResponse {
+        let response = try request(method: "POST", path: "/ui/voice-handoff",
+            headers: ["X-Parley-Control": controlToken, "Content-Type": "application/json"],
+            body: try JSONEncoder().encode(handoff), receiveTimeout: RelayCoreTransportLimits.trackedResponseTimeout)
+        return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
+    }
+
     public func askFromUI(
         sourcePaneID: String,
         targetPaneID: String,

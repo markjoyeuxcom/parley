@@ -78,6 +78,9 @@ final class AppResidentCoordinationCore {
             panes: { try controller.listPanes() },
             paste: { paneID, text in try controller.paste(text, into: paneID, submit: false) },
             submit: { paneID, text in try controller.paste(text, into: paneID, submit: true) },
+            voiceSubmit: { request, text in
+                try controller.pasteVoice(text, destination: request.target, source: request.source, submit: true)
+            },
             contextSubmit: { paneID, text in
                 try controller.pasteExplicitContext(text, into: paneID, submit: true)
             },

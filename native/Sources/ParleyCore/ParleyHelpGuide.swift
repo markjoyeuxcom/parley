@@ -69,6 +69,28 @@ public struct ParleyHelpTopic: Identifiable, Equatable, Sendable {
 public enum ParleyHelpGuide {
     public static let topics: [ParleyHelpTopic] = [
         ParleyHelpTopic(
+            id: "voice",
+            title: "Voice input and read-aloud",
+            summary: "Dictate an editable draft for a named pane or handoff, and explicitly read selected text or returned results.",
+            symbol: "mic",
+            sections: [
+                ParleyHelpSection(id: "voice-dictation", title: "Dictate, review, then deliver", paragraphs: [
+                    "Select a running agent pane and hold Dictate or Control-Shift-Space in the main window. Release to review. Keyboard or VoiceOver activation of the button toggles recording; Stop Recording and Discard are also available. Recording stops when the main window loses focus and after 60 seconds.",
+                    "The editable transcript shows the pane, vendor and workspace. Paste inserts text without Enter; Send pastes then presses Enter. Neither is automatic. Changing the selected pane never redirects a draft: use Use Active Pane explicitly. A closed, moved, restarted or changed pane is refused. If delivery is interrupted, inspect the destination before copying or discarding the draft.",
+                    "Handoff Draft > Ask or Delegate opens an explicit destination picker and the ordinary editable composer. Sending uses the existing correlated handoff and history. Voice never approves a vendor permission prompt, and Copilot still needs its folder-trust confirmation.",
+                ]),
+                ParleyHelpSection(id: "voice-setup", title: "Language, consent and local models", paragraphs: [
+                    "Settings > Voice offers English (United Kingdom) and English (United States). On supported macOS 26 Macs, use Download Speech Model before recording. The model download needs a network connection; recognition stays local. On older or unsupported Macs, Voice requires macOS to report local dictation support. There is no cloud fallback.",
+                    "The packaged Parley app asks for microphone access when recording starts. The older speech backend also asks for Speech Recognition consent. A released or interrupted hold cannot start recording after consent returns; start another recording once permission is granted. Manage access in System Settings > Privacy & Security. Missing assets, unavailable input and denial leave a message you can recover from.",
+                    "Parley saves no raw audio. Transcripts are limited to 8,000 characters and held in memory until delivered, discarded or the app quits. Dictate again to add to the reviewed text. Explicit handoffs use ordinary history retention; text sent to a vendor follows that CLI's handling. Only language and read-aloud preferences persist separately for Production and Development.",
+                ]),
+                ParleyHelpSection(id: "voice-playback", title: "Read only what you select", paragraphs: [
+                    "Read-aloud is off by default. Enable it in Settings > Voice, then choose Voice > Read Selection for a real terminal selection or Read Result on a returned Ask/Delegate in Status Center. Nothing is read automatically, and Parley never narrates live terminal output.",
+                    "The queue holds three items of up to 8,000 characters each. Remove a queued item or use Stop and Clear Queue in the voice panel, Voice menu or settings. Stop playback before recording; capture and playback cannot overlap. Spoken text never triggers navigation, permissions or commands.",
+                ]),
+            ]
+        ),
+        ParleyHelpTopic(
             id: "start",
             title: "Start here",
             summary: "Use several subscription CLIs in one native workbench and move work between vendors without copy and paste.",

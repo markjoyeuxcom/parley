@@ -17,6 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var terminationPending = false
     var terminalFocusRepairHandler: ((NSEvent) -> Void)?
     var applicationShortcutHandler: ((WorkbenchKeyboardShortcut) -> Void)?
+    var voiceKeyHandler: ((NSEvent) -> Bool)?
+    var voiceStopHandler: (() -> Void)?
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminationPending else { return .terminateLater }
@@ -36,8 +38,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // WindowGroup is visible and behaves like a normal macOS application.
         NSApp.setActivationPolicy(.regular)
         NSApp.servicesProvider = self
-        keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+        keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .flagsChanged]) {
             [weak self] event in
+            if self?.voiceKeyHandler?(event) == true { return nil }
+            guard event.type == .keyDown else { return event }
             if let shortcut = self?.workbenchShortcut(for: event),
                let handler = self?.applicationShortcutHandler {
                 handler(shortcut)
@@ -76,6 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard sender.title == "Parley" || sender.identifier?.rawValue == "main" else { return true }
+        voiceStopHandler?()
         sender.orderOut(nil)
         return false
     }
@@ -90,6 +95,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.keyDownMonitor = nil
         }
     }
+
+    func applicationDidResignActive(_ notification: Notification) { voiceStopHandler?() }
+    func windowDidResignKey(_ notification: Notification) { voiceStopHandler?() }
 
     fileprivate func bindExternalRequestHandler(
         _ handler: @escaping (ExternalApplicationRequest) -> Void
@@ -277,6 +285,8 @@ struct ParleyNativeApp: App {
             ContentView(model: model)
                 .onAppear {
                     appDelegate.terminationHandler = { await model.resolveTermination() }
+                    appDelegate.voiceKeyHandler = { model.handleVoiceKey($0) }
+                    appDelegate.voiceStopHandler = { model.endVoiceHold() }
                     appDelegate.terminalFocusRepairHandler = { event in
                         model.repairNativeTerminalFocus(for: event)
                     }
@@ -314,6 +324,15 @@ struct ParleyNativeApp: App {
             CommandGroup(replacing: .help) {
                 Button("Parley Help") { openWindow(id: "help") }
                     .keyboardShortcut("?", modifiers: [.command])
+            }
+            CommandMenu("Voice") {
+                Button("Start / Stop Dictation") { model.toggleVoiceRecording() }
+                Button("Discard Voice Draft") { model.voice.discard() }
+                Divider()
+                Button("Read Selection") { model.readVoiceSelection() }
+                Button("Stop Read-aloud and Clear Queue") { model.voice.stopSpeaking() }
+                Divider()
+                Button("Voice Settings…") { model.showSettings(.voice) }
             }
             CommandGroup(after: .appSettings) {
                 Button("Prepare to Uninstall…") { model.prepareToUninstall() }

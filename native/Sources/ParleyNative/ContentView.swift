@@ -27,6 +27,7 @@ struct ContentView: View {
                     Divider()
                 }
                 toolbar
+                VoiceDraftView(model: model, voice: model.voice)
                 CommandRunNotice(model: model)
                 TeamSessionNotice(model: model)
                 Divider()
@@ -921,6 +922,7 @@ struct ContentView: View {
             newPaneMenu
             askMenu
             reviewMenu
+            VoiceToolbarControl(model: model, voice: model.voice)
             contextPackMenu
             recipeMenu
             if model.canReturn {
@@ -971,6 +973,7 @@ struct ContentView: View {
             newPaneMenu
             askMenu
             compactActionsMenu
+            VoiceToolbarControl(model: model, voice: model.voice)
             WindowDragArea()
                 .frame(minWidth: 6, maxWidth: .infinity)
                 .frame(height: 42)

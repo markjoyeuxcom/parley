@@ -143,6 +143,10 @@ struct HandoffComposerDraft: Identifiable, Equatable {
     let relationship: RelayHandoffRelationship?
     var text: String
     var includesTerminalSelection: Bool
+    var voiceSource: VoiceDestination?
+    var voiceTarget: VoiceDestination?
+    var voiceKind: VoiceHandoffRequest.Kind?
+    var actionLabel: String { voiceKind?.rawValue.capitalized ?? relationship?.label ?? "Ask" }
 
     init(
         sourcePaneID: String,
@@ -191,7 +195,7 @@ struct PaletteCommand: Identifiable, Sendable {
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var panes: [WorkbenchPane] = [] {
-        didSet { attentionInputGeneration &+= 1 }
+        didSet { attentionInputGeneration &+= 1; voiceController?.reconcile(panes: panes) }
     }
     @Published private(set) var workspaces: [WorkbenchWorkspace] = []
     @Published private(set) var commandRuns: [ReviewedCommandRun] = []
@@ -321,6 +325,12 @@ final class AppModel: ObservableObject {
 
     let runtime: ParleyRuntime
     let ghosttyRegistry = GhosttyPaneRegistry()
+    private var voiceController: VoiceController?
+    var voice: VoiceController {
+        if let voiceController { return voiceController }
+        let value = VoiceController(preferences: preferences); voiceController = value; return value
+    }
+    private var voiceShortcutHeld = false
     lazy var terminalHandle = TerminalHandle(
         selectedText: { [weak self] in self?.ghosttyRegistry.selectedText() },
         focus: { [weak self] in _ = self?.ghosttyRegistry.focusSelected() },
@@ -846,7 +856,7 @@ final class AppModel: ObservableObject {
         // view as first responder (a SwiftUI TextEditor or a TextField's field
         // editor), the box looked dead because each key handed focus straight
         // back to the pane behind it.
-        guard handoffComposerDraft == nil, !(window.firstResponder is NSTextView) else { return }
+        guard handoffComposerDraft == nil, !voice.session.isPresented, !(window.firstResponder is NSTextView) else { return }
         _ = ghosttyRegistry.repairFocusIfNeeded(
             in: window,
             modifierFlags: event.modifierFlags
@@ -861,6 +871,17 @@ final class AppModel: ObservableObject {
                         throw ParleyWorkbenchError.commandFailed("Parley is shutting down.")
                     }
                     try self.ghosttyRegistry.paste(text, into: paneID, submit: submit)
+                }
+            },
+            voicePaste: { [weak self] paneID, text, submit, reviewed in
+                try Self.onMainActorSync {
+                    guard let self, let controller = self.controller else {
+                        throw ParleyWorkbenchError.commandFailed("Parley is shutting down.")
+                    }
+                    try self.ghosttyRegistry.paste(text, into: paneID, submit: submit) {
+                        let live = try controller.listPanes()
+                        for snapshot in reviewed { _ = try snapshot.resolve(in: live) }
+                    }
                 }
             },
             interrupt: { [weak self] paneID in
@@ -966,6 +987,8 @@ final class AppModel: ObservableObject {
     /// Full application termination is the deliberate lifetime boundary for
     /// every retained Ghostty exec surface.
     func resolveTermination() async -> Bool {
+        // End capture before the quit dialog; cancelling quit keeps the draft.
+        voice.stopRecording(); voice.stopSpeaking()
         guard !applyingPanePermissions else {
             NSAlert(error: RelayUIError.message("Wait for the reviewed pane launch to finish before quitting.")).runModal()
             return false
@@ -4965,6 +4988,126 @@ final class AppModel: ObservableObject {
         preferences.set(collaborationDockVisible, forKey: Self.collaborationDockVisibleKey)
     }
 
+    var voiceDestinationPane: WorkbenchPane? {
+        if let destination = voice.session.destination { return try? destination.resolve(in: panes) }
+        guard let activePane, isReviewReadyAgent(activePane) else { return nil }
+        return activePane
+    }
+
+    func beginVoiceRecording() {
+        guard let pane = voiceDestinationPane else {
+            voice.error = "Choose a running agent pane, or select a new destination for this draft."; return
+        }
+        voice.begin(pane: pane)
+    }
+
+    func toggleVoiceRecording() {
+        if voice.session.captureActive { voice.stopRecording() } else { beginVoiceRecording() }
+    }
+
+    func handleVoiceKey(_ event: NSEvent) -> Bool {
+        if voiceShortcutHeld, event.type == .keyUp, event.keyCode == 49 {
+            voiceShortcutHeld = false; voice.stopRecording(); return true
+        }
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if voiceShortcutHeld, event.type == .flagsChanged, !modifiers.contains([.control, .shift]) {
+            voiceShortcutHeld = false; voice.stopRecording(); return false
+        }
+        guard event.type == .keyDown, event.keyCode == 49,
+              modifiers.contains([.control, .shift]), !modifiers.contains(.command), !modifiers.contains(.option),
+              let window = event.window, window.identifier?.rawValue == "main" || window.title == "Parley",
+              window.attachedSheet == nil else { return false }
+        if !event.isARepeat, !voiceShortcutHeld { voiceShortcutHeld = true; beginVoiceRecording() }
+        return true
+    }
+
+    func endVoiceHold() { voiceShortcutHeld = false; voice.stopRecording() }
+
+    func useActiveVoiceDestination() {
+        do {
+            guard let activePane, isReviewReadyAgent(activePane) else { throw VoiceError.unavailable("Select a running agent pane first.") }
+            try voice.session.retarget(VoiceDestination(pane: activePane)); voice.error = nil
+        } catch { voice.error = error.localizedDescription }
+    }
+
+    func deliverVoice(submit: Bool) {
+        var attempted = false
+        do {
+            guard let controller else { throw VoiceError.unavailable("The workbench is unavailable.") }
+            let reviewed = try voice.session.prepareDelivery(panes: controller.listPanes())
+            attempted = true
+            try controller.pasteVoice(reviewed.text, destination: reviewed.destination, submit: submit)
+            voice.discard()
+        } catch {
+            voice.session.deliveryFailed(attempted
+                ? "Delivery was interrupted. Inspect the destination before sending anything again. You can copy or discard this draft. \(error.localizedDescription)"
+                : error.localizedDescription, mayHaveDelivered: attempted)
+        }
+    }
+
+    func composeVoiceHandoff(_ kind: VoiceHandoffRequest.Kind) {
+        do {
+            guard handoffComposerDraft == nil else { throw VoiceError.unavailable("Finish or cancel the open handoff draft first.") }
+            let reviewed = try voice.session.reviewedText(panes: panes)
+            let candidates = panes.filter { $0.id != reviewed.destination.paneID && isReviewReadyAgent($0) }
+            guard !candidates.isEmpty else { throw VoiceError.unavailable("Open another agent pane to receive the \(kind.rawValue.capitalized).") }
+            let voiceID = voice.session.id
+            requestPaneChoice(title: "Choose \(kind.rawValue.capitalized) Destination",
+                message: "From \(reviewed.destination.label). The transcript remains editable before you send.",
+                actionLabel: "Create Draft", candidates: candidates, selection: .single(preferredPaneID: nil)) { [weak self] selection in
+                guard let self, let selected = selection.first, self.voice.session.id == voiceID else { return }
+                do {
+                    let source = try reviewed.destination.resolve(in: self.panes)
+                    let targetSnapshot = VoiceDestination(pane: selected)
+                    let target = try targetSnapshot.resolve(in: self.panes)
+                    guard self.handoffComposerDraft == nil else { throw VoiceError.unavailable("Another handoff draft is already open.") }
+                    var draft = HandoffComposerDraft(sourcePaneID: source.id, sourceName: source.displayName, sourceKind: source.kind,
+                        targetPaneID: target.id, targetName: target.displayName, targetKind: target.kind,
+                        text: reviewed.text, includesTerminalSelection: false)
+                    draft.voiceSource = reviewed.destination; draft.voiceTarget = targetSnapshot; draft.voiceKind = kind
+                    self.handoffComposerDraft = draft; self.voice.discard()
+                } catch { self.voice.error = error.localizedDescription }
+            }
+        } catch { voice.error = error.localizedDescription }
+    }
+
+    private func submitVoiceHandoff(_ draft: HandoffComposerDraft) {
+        do {
+            guard let source = draft.voiceSource, let target = draft.voiceTarget, let kind = draft.voiceKind,
+                  let relayClient else { throw VoiceError.unavailable("The reviewed voice handoff is incomplete.") }
+            _ = try source.resolve(in: panes); _ = try target.resolve(in: panes)
+            let request = VoiceHandoffRequest(source: source, target: target, text: draft.text, kind: kind, idempotencyKey: draft.id.uuidString.lowercased())
+            submittingHandoffComposer = true
+            Task { [weak self] in
+                defer { self?.submittingHandoffComposer = false }
+                do {
+                    let response = try await Task.detached(priority: .userInitiated) { try relayClient.voiceHandoffFromUI(request) }.value
+                    guard response.status == 200 else { throw VoiceError.unavailable(response.text) }
+                    guard let self else { return }
+                    if self.handoffComposerDraft?.id == draft.id { self.handoffComposerDraft = nil }
+                    try? self.refresh()
+                    if kind == .ask { self.revealCompletedUIAsk(idempotencyKey: request.idempotencyKey) }
+                    else { self.statusCenterOpenRequestID = UUID() }
+                } catch {
+                    self?.refreshStatusCenterQuietly()
+                    NSAlert(error: error).runModal()
+                }
+            }
+        } catch { NSAlert(error: error).runModal() }
+    }
+
+    func readVoiceSelection() {
+        guard let text = terminalHandle.selectedText else { voice.error = "Select terminal text before choosing Read Selection."; return }
+        voice.read(text, label: "Selection from \(activePane?.displayName ?? "pane")")
+    }
+
+    func readVoiceResult(_ handoff: RelayHandoff) {
+        guard (handoff.kind == .ask || handoff.kind == .delegate), handoff.hasReturnedResult,
+              let current = (statusHandoffs + handoffs).first(where: { $0.id == handoff.id && $0.resultText == handoff.resultText }),
+              let text = current.resultText else { voice.error = "The returned result is no longer available."; return }
+        voice.read(text, label: "Returned \(handoff.kind.rawValue.capitalized) · \(handoff.targetName)")
+    }
+
     func ask(_ target: WorkbenchPane) {
         guard let source = activePane,
               askTargets.contains(where: { $0.id == target.id }) else { return }
@@ -5159,6 +5302,7 @@ final class AppModel: ObservableObject {
 
     func submitHandoffComposer() {
         guard !submittingHandoffComposer, let draft = handoffComposerDraft else { return }
+        if draft.voiceKind != nil { submitVoiceHandoff(draft); return }
         let isLinkedReview = draft.inReplyToHandoffID != nil && draft.relationship != nil
         let edited = isLinkedReview
             ? ContextPackText.normalize(draft.text)
