@@ -109,12 +109,13 @@ enum VoiceRecognitionEvent: Sendable { case started, transcript(String), finishe
             throw VoiceError.unavailable("On this Mac, manage local dictation languages in macOS Keyboard settings.")
         }
         let module = SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
-        guard try await AssetInventory.reserve(locale: locale) else {
-            throw VoiceError.unavailable("Apple could not reserve this speech language. Check the installed languages in macOS settings.")
-        }
+        // The installation request reserves needed locales automatically.
+        // reserve(locale:) returning false means already reserved, not failure.
+        try Task.checkCancellation()
         if let request = try await AssetInventory.assetInstallationRequest(supporting: [module]) {
             try Task.checkCancellation()
             await progress(request.progress)
+            try Task.checkCancellation()
             try await request.downloadAndInstall()
         }
     }

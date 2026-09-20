@@ -142,11 +142,15 @@ struct VoiceSettingsView: View {
                     if #available(macOS 26, *) {
                         Button(voice.installingModel ? "Downloading…" : "Download Speech Model") { voice.installModel() }
                             .disabled(voice.installingModel || voice.session.captureActive)
-                        if voice.installingModel { Button("Cancel Download") { voice.cancelModelInstallation() } }
+                        if voice.installingModel { Button("Cancel Request") { voice.cancelModelInstallation() } }
                     }
                 }
                 Text("On macOS 26, Apple manages downloadable local models. Downloading requires a network connection; recognition stays on this Mac. On macOS 14–15, Voice uses local dictation only when the system reports it available. There is no cloud recognition fallback.")
                     .font(.caption).foregroundStyle(.secondary)
+                if voice.installingModel {
+                    Text("Cancel Request asks macOS to cancel this request. Check Speech Support afterwards for the state of Apple's shared download.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Text("Microphone access is requested when you start recording. Older macOS versions also request Speech Recognition consent. Change access in System Settings > Privacy & Security.")
                     .font(.caption).foregroundStyle(.secondary)
             }
@@ -160,5 +164,35 @@ struct VoiceSettingsView: View {
         }
         .formStyle(.grouped)
         .onAppear { voice.checkSupport() }
+    }
+}
+
+/// Status Center can be the only visible window. Keep speech controls and
+/// recovery beside the result instead of relying on the main workbench.
+struct VoiceResultControls: View {
+    @ObservedObject var voice: VoiceController
+    var read: () -> Void
+    var settings: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Button("Read Result", action: read)
+                    .disabled(!voice.readAloudEnabled || voice.session.captureActive || voice.stoppingCapture)
+                    .help("Queue this exact returned result for read-aloud")
+                Button("Voice Settings…", action: settings)
+            }
+            if !voice.readAloudEnabled {
+                Text("Enable read-aloud in Voice settings to hear this result.").font(.caption).foregroundStyle(.secondary)
+            } else if voice.session.captureActive || voice.stoppingCapture {
+                Text("Stop recording before reading a result aloud.").font(.caption).foregroundStyle(.secondary)
+            }
+            if voice.playbackActive { VoicePlaybackView(voice: voice) }
+            if let error = voice.error {
+                HStack {
+                    Text(error).font(.caption).foregroundStyle(.orange)
+                    Button("Dismiss") { voice.error = nil }
+                }
+            }
+        }
     }
 }

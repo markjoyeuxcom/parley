@@ -467,8 +467,9 @@ configurations must refuse clearly. Never interpret an unavailable model as a
 successful dictation test.
 
 1. **Setup and denial.** In Settings > Voice, select a language and check
-   support. A missing macOS 26 model offers an explicit download; cancel it,
-   retry and verify the installed status. Disconnect the network after setup.
+   support. A missing macOS 26 model offers an explicit download; cancel the
+   request, check the Apple-managed download state, retry and verify the
+   installed status. Disconnect the network after setup.
    Start dictation, deny microphone consent and confirm no capture or delivery.
    Grant it in macOS Privacy & Security and retry. Test Speech Recognition
    denial too on the older backend. Use a dedicated test app identity or
@@ -497,7 +498,9 @@ successful dictation test.
    real terminal passage and choose Voice > Read Selection. Listen for the
    selected words only. Read an explicitly returned Ask and Delegate result.
    Queue three items, refuse a fourth, remove a waiting item and stop/clear
-   during speech. Start capture during playback and playback during capture;
+   during speech. Hide the main workbench window and confirm these controls,
+   the enable/settings link and playback errors remain visible beside Read
+   Result in Status Center. Start capture during playback and playback during capture;
    both conflicts must refuse. The microphone must never pick up the output.
 6. **Accessibility and retention.** With full keyboard access and VoiceOver,
    activate Dictate to start/stop and reach the transcript, Copy, Discard,

@@ -1317,8 +1317,8 @@ struct StatusCenterView: View {
                     if let result = handoff.resultText, !result.isEmpty {
                         inspectorSection(handoff.kind == .commandRun ? "CAPTURED COMMAND RESULT" : "RETURNED RESULT", result)
                         if (handoff.kind == .ask || handoff.kind == .delegate) && handoff.hasReturnedResult {
-                            Button("Read Result") { model.readVoiceResult(handoff) }
-                                .help("Queue this exact returned result; enable read-aloud in Voice settings first")
+                            VoiceResultControls(voice: model.voice,
+                                read: { model.readVoiceResult(handoff) }, settings: { model.showSettings(.voice) })
                         }
                     }
                     if let review = model.returnedFileReview(for: handoff) {

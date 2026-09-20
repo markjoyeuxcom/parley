@@ -856,7 +856,10 @@ final class AppModel: ObservableObject {
         // view as first responder (a SwiftUI TextEditor or a TextField's field
         // editor), the box looked dead because each key handed focus straight
         // back to the pane behind it.
-        guard handoffComposerDraft == nil, !voice.session.isPresented, !(window.firstResponder is NSTextView) else { return }
+        // A focused native control (including Dictate) owns its keyboard
+        // activation too, even before a transcript has opened.
+        guard handoffComposerDraft == nil, !voice.session.isPresented,
+              !(window.firstResponder is NSTextView), !(window.firstResponder is NSControl) else { return }
         _ = ghosttyRegistry.repairFocusIfNeeded(
             in: window,
             modifierFlags: event.modifierFlags

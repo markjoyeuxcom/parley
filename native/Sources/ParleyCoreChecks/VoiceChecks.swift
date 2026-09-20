@@ -60,11 +60,11 @@ private func voicePane(_ id: String = "voice-pane") -> WorkbenchPane {
     ("voice recording button supports accessible start stop and disabled state", {
         var activations = 0
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 160, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; defer { window.close() }
+        window.isReleasedWhenClosed = false; defer { MainActor.assumeIsolated { window.close() } }
         let host = NSHostingView(rootView: HoldToTalkButton(enabled: true, recording: false,
             begin: {}, end: {}, toggle: { activations += 1 }))
         window.contentView = host; window.orderFront(nil)
-        func button(_ view: NSView) -> VoiceHoldButton? {
+        @MainActor func button(_ view: NSView) -> VoiceHoldButton? {
             if let result = view as? VoiceHoldButton { return result }
             return view.subviews.lazy.compactMap(button).first
         }

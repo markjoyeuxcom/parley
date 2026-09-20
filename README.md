@@ -227,6 +227,9 @@ returned Ask/Delegate in Status Center. It uses macOS speech synthesis, queues
 at most three items of 8,000 characters each, and offers Remove and **Stop and
 Clear Queue**. Recording and playback cannot overlap. Nothing is spoken
 automatically, and spoken words never approve tools or execute voice commands.
+Status Center also shows the speech queue, stop control, errors and Voice
+Settings link beside Read Result, so they remain available with the main
+workbench window hidden.
 
 When that composer targets a pane with a supported authenticated vendor hook
 report, a compact **TARGET SIGNAL** strip names the exact pane and vendor hook,
