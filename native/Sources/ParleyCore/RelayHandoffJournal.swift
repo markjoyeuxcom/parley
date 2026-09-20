@@ -103,9 +103,13 @@ public final class RelayHandoffJournal: @unchecked Sendable {
             byID[handoff.id] = handoff
             _ = pruneLocked()
             do {
+                let repaired = uncertainTail
                 try repairUncertainTailLocked()
-                try appendLocked(handoff)
-                eventCount += 1
+                // Repair already writes this latest in-memory projection.
+                if !repaired {
+                    try appendLocked(handoff)
+                    eventCount += 1
+                }
                 if eventCount > maximumHandoffs * 8 {
                     try compactLocked()
                 }

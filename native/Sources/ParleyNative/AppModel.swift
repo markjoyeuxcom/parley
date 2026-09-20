@@ -1695,7 +1695,7 @@ final class AppModel: ObservableObject {
         let repository = worktreeScan.repositories.first { $0.worktrees.contains(where: { $0.path == record.path }) }
             ?? worktreeRepositories.first { $0.worktrees.contains(where: { $0.path == record.path }) }
                 .map { GitWorktreeRepository(primaryPath: $0.primaryPath, worktrees: $0.worktrees) }
-        guard let repository else {
+        guard let repository, repository.worktrees.contains(where: \.isPrimary) else {
             NSAlert(error: ReviewedCommandRunError.invalid("Parley could not find the repository's primary checkout for this worktree. Open the Worktrees window on that repository, then try again.")).runModal()
             return
         }
@@ -1720,6 +1720,7 @@ final class AppModel: ObservableObject {
             guard !branch.isEmpty, branch != "HEAD", branch != "(detached)" else {
                 throw ReviewedCommandRunError.invalid("This worktree is on a detached HEAD, so there is no branch to merge. Check out or create a branch in it first.")
             }
+            try WorktreeNaming.validateBranch(branch)
             guard let workspace = activeWorkspace ?? workspaces.first else {
                 throw ReviewedCommandRunError.invalid("Open a workspace first; the run's Shell pane needs one.")
             }
@@ -1736,6 +1737,10 @@ final class AppModel: ObservableObject {
     }
 
     func integrateWorktreeFromManager(_ tree: GitWorktreeRecord, in entry: WorktreeRepositoryEntry) {
+        guard entry.worktrees.contains(where: \.isPrimary) else {
+            NSAlert(error: ReviewedCommandRunError.invalid("This bare repository has no primary checkout to merge into. Integrate from an explicitly chosen checkout in your terminal.")).runModal()
+            return
+        }
         proposeWorktreeIntegration(branch: tree.branch ?? "", treePath: tree.path, primaryPath: entry.primaryPath)
     }
 
@@ -1748,8 +1753,10 @@ final class AppModel: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let record = try await self.ensureWorktreeRecord(for: tree, in: entry)
-                let preview = try await self.previewWorktreeMerge(record, target: primary.head)
+                guard let service = self.managedWorktreeService else { throw RelayUIError.message("The workbench is unavailable.") }
+                let preview = try await Task.detached(priority: .userInitiated) {
+                    try service.mergePreview(path: tree.path, repositoryFolder: entry.primaryPath, targetRef: primary.head)
+                }.value
                 let row = self.worktreeManagerRow(for: tree)
                 let alert = NSAlert()
                 alert.messageText = preview.headline(branch: branch, into: primary.shortIdentity)
@@ -5617,7 +5624,10 @@ final class AppModel: ObservableObject {
             alert.addButton(withTitle: isWaitingAsk ? "Decline Ask" : "Discard Draft")
             alert.addButton(withTitle: "Keep Reviewing")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
-            let response = try relayClient.rejectContextReview(reviewID)
+            guard let revision = draft.reviewUpdatedAt else { throw RelayUIError.message("Reload this context review before changing it.") }
+            let response = try isWaitingAsk
+                ? relayClient.rejectContextReview(reviewID, expectedUpdatedAt: revision)
+                : relayClient.discardContextDraft(reviewID: reviewID, expectedUpdatedAt: revision)
             guard (200..<300).contains(response.status) else {
                 throw RelayUIError.message(response.text)
             }
@@ -7399,7 +7409,7 @@ final class AppModel: ObservableObject {
                 return .leaf(SavedLayoutLeaf(
                     kind: pane.kind,
                     name: pane.displayName,
-                    folder: pane.cwd,
+                    folder: pane.launchWorkingDirectory,
                     role: pane.role,
                     isWorkspaceLead: pane.isWorkspaceLead,
                     permissionSelection: pane.permissionSelection
@@ -7416,8 +7426,8 @@ final class AppModel: ObservableObject {
         return SavedWorkspaceLayout(
             name: workspace.name,
             defaultFolder: workspace.newPaneFolder
-                ?? workspacePanes.first(where: \.isActive)?.cwd
-                ?? workspacePanes.first?.cwd
+                ?? workspacePanes.first(where: \.isActive)?.launchWorkingDirectory
+                ?? workspacePanes.first?.launchWorkingDirectory
                 ?? fallbackFolder,
             root: try saved(native),
             automationPolicy: workspace.automationPolicy

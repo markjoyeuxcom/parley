@@ -23,6 +23,94 @@ private func repoReviewPane(_ id: String, kind: PaneKind = .codex) -> WorkbenchP
 }
 
 @MainActor let repositoryReviewChecks: [(String, () throws -> Void)] = [
+    ("low review host launch clears inherited runtime and preserves its own", {
+        let root = try repoReviewRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let bin = root.appendingPathComponent("tools")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let vendor = bin.appendingPathComponent("claude")
+        try Data("#!/bin/sh\nprintf '%s' \"${PARLEY_RUNTIME-unset}\"\n".utf8).write(to: vendor)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: vendor.path)
+        for marker: String? in [nil, "DEV"] {
+            let app = root.appendingPathComponent(marker ?? "production")
+            var environment = ["PATH": bin.path + ":/usr/bin:/bin", "SHELL": "/bin/zsh", "PARLEY_RUNTIME": "DEV"]
+            let controller = try WorkbenchController(applicationDirectory: app, environment: environment)
+            try controller.bootstrap(cwd: root.path)
+            controller.configureRelay(RelayRuntime(infoFile: app.appendingPathComponent("info"), shimDirectory: app.appendingPathComponent("bin"),
+                transportDirectory: app.appendingPathComponent("transport"), credentials: try RelayCredentials(file: app.appendingPathComponent("tokens")), runtimeMarker: marker))
+            let pane = try controller.createPane(kind: .claude, cwd: root.path)
+            let launch = try controller.launchConfiguration(for: pane.id)
+            environment.merge(launch.environment) { _, value in value }
+            let result = try ProcessCommandRunner(timeout: 5).run(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", launch.command], environment: environment)
+            try repoReviewExpect(result.status == 0 && result.stdoutText == (marker ?? "unset"), "launch used an inherited or missing runtime: \(result.stdoutText)")
+        }
+    }),
+    ("low review socket creation is private before chmod and restores umask", {
+        let root = try repoReviewRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let original = umask(0o022); defer { umask(original) }
+        try LocalSocketCreation.withOwnerOnlyPermissions {
+            let path = root.appendingPathComponent("probe").path
+            let descriptor = open(path, O_CREAT | O_EXCL | O_WRONLY, 0o666)
+            try repoReviewExpect(descriptor >= 0, "fixture creation failed")
+            defer { close(descriptor) }
+            var metadata = stat()
+            try repoReviewExpect(fstat(descriptor, &metadata) == 0 && metadata.st_mode & 0o777 == 0o600, "creation exposed permissions before chmod")
+        }
+        let restored = umask(0o022)
+        try repoReviewExpect(restored == 0o022, "socket creation changed the caller's umask")
+    }),
+    ("low review repaired journal writes each snapshot once", {
+        let root = try repoReviewRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let credentials = try RelayCredentials(file: root.appendingPathComponent("tokens.json"))
+        let source = repoReviewPane("source"), target = repoReviewPane("target", kind: .claude)
+        let broker = RelayBroker(credentials: credentials, panes: { [source, target] }, paste: { _, _ in }, submit: { _, _ in })
+        _ = broker.handle(token: try credentials.token(for: source.id), target: target.id, text: "fixture")
+        let handoff = broker.handoffs().first!
+        let failure = LowReviewSyncFailure()
+        let file = root.appendingPathComponent("journal")
+        let journal = try RelayHandoffJournal(file: file, io: .init(
+            write: { Darwin.write($0, $1, $2) },
+            fsync: { failure.consume() ? -1 : Darwin.fsync($0) },
+            truncate: { _, _ in -1 }))
+        journal.record(handoff)
+        try repoReviewExpect(journal.hasUncertainTail, "fixture did not leave an uncertain tail")
+        journal.record(handoff)
+        let lines = try Data(contentsOf: file).split(separator: 10)
+        try repoReviewExpect(!journal.hasUncertainTail && journal.lastError == nil && lines.count == 1, "repair appended its snapshot twice")
+    }),
+    ("low review worker owner identity includes the kernel start time", {
+        let pid = getpid(), stamp = ApprovedCommandWorker.processStartTime(getpid())!
+        let command = try ReviewedCommand(argv: ["/usr/bin/true"], folder: "/tmp", sourceFolder: "/tmp")
+        func ticket(_ start: UInt64?) -> ApprovedCommandTicket {
+            ApprovedCommandTicket(resultKey: Data(repeating: 1, count: 32), runID: UUID().uuidString, command: command,
+                sourceFolder: "/tmp", shellExecutable: "/bin/sh", ownerPID: pid, expiresAt: .distantFuture,
+                exitInsteadOfShellWhenClean: false, ownerStartTime: start)
+        }
+        try repoReviewExpect(ApprovedCommandWorker.ownerIsCurrent(ticket(stamp)), "live owner rejected")
+        try repoReviewExpect(!ApprovedCommandWorker.ownerIsCurrent(ticket(stamp + 1)), "recycled PID accepted")
+        try repoReviewExpect(!ApprovedCommandWorker.ownerIsCurrent(ticket(nil)), "legacy ticket guessed the owner identity")
+    }),
+    ("low review rejects unapproved Docker executable paths", {
+        let configuration = ContainerConfiguration(dockerExecutable: "/bin/sh", daemonEndpoint: "unix:///tmp/docker.sock",
+            daemonID: "fixture", imageID: "sha256:" + String(repeating: "a", count: 64), imageName: "fixture", legacyCodexSandbox: false)
+        try repoReviewRefuses { try ContainerLaunchProjection.validate(configuration) }
+    }),
+    ("low review bare repositories never become primary checkouts", {
+        let listing = "worktree /tmp/bare.git\0bare\0\0worktree /tmp/linked\0HEAD abc\0branch refs/heads/main\0\0"
+        try repoReviewExpect(!RegisteredWorktree.parse(Data(listing.utf8)).contains(where: \.isPrimary), "bare directory was treated as a primary checkout")
+        try repoReviewExpect(!GitWorktreeResolver.parsePorcelain(listing).contains(where: \.isPrimary), "discovery relabelled a bare directory as a checkout")
+    }),
+    ("low review plain context drafts cannot be rejected as waiting Asks", {
+        let root = try repoReviewRoot(); defer { try? FileManager.default.removeItem(at: root) }
+        let credentials = try RelayCredentials(file: root.appendingPathComponent("tokens.json"))
+        let source = repoReviewPane("source", kind: .claude)
+        let token = try credentials.token(for: source.id)
+        let broker = RelayBroker(credentials: credentials, panes: { [source] }, paste: { _, _ in }, submit: { _, _ in },
+            contextReviewStore: try AgentContextReviewStore(file: root.appendingPathComponent("reviews.json")))
+        let staged = broker.handleContextDraft(token: token, name: "fixture", path: "note.txt", text: "original")
+        let draft = try JSONDecoder().decode(AgentContextReviewSummary.self, from: Data(staged.text.utf8))
+        let revision = broker.contextReviews().first { $0.id == draft.id }!.updatedAt
+        try repoReviewExpect(broker.rejectContextReview(reviewID: draft.id, expectedUpdatedAt: revision).status == 409, "reject accepted a plain draft")
+    }),
     ("repository review OSC folders cannot widen command team or context authority", {
         let root = try repoReviewRoot(); defer { try? FileManager.default.removeItem(at: root) }
         let folder = root.appendingPathComponent("reviewed"), outside = root.appendingPathComponent("outside")
@@ -134,13 +222,15 @@ private func repoReviewPane(_ id: String, kind: PaneKind = .codex) -> WorkbenchP
             try FileManager.default.createDirectory(at: settings.deletingLastPathComponent(), withIntermediateDirectories: true)
             try Data("{\"sandbox\":{\"enabled\":\(enabled)}}".utf8).write(to: settings)
         }
-        let environment = ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"]
+        let environment = ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh", "PARLEY_RUNTIME": "DEV"]
         let controller = try WorkbenchController(applicationDirectory: app, environment: environment)
         try controller.bootstrap(cwd: folder.path)
         let credentials = try RelayCredentials(file: app.appendingPathComponent("tokens.json"))
         let runtime = RelayRuntime(infoFile: app.appendingPathComponent("info"), shimDirectory: app.appendingPathComponent("bin"), transportDirectory: root.appendingPathComponent("transport"), credentials: credentials)
         controller.configureRelay(runtime)
         let pane = try controller.createPane(kind: .claude, cwd: folder.path)
+        let launch = try controller.launchConfiguration(for: pane.id)
+        try repoReviewExpect(launch.command.contains("'-u' 'PARLEY_RUNTIME'"), "host launch inherited the other runtime marker")
         try controller.terminalDidChangeWorkingDirectory(paneID: pane.id, path: other.path)
         try repoReviewExpect(try controller.listPanes().first { $0.id == pane.id }?.cwd == other.path, "terminal cwd was not retained for display")
         try controller.restartPane(pane.id)
@@ -481,3 +571,9 @@ private func repoReviewPane(_ id: String, kind: PaneKind = .codex) -> WorkbenchP
         try repoReviewRefuses { _ = try fields.read("body", maximumBytes: 100) }
     }),
 ]
+
+private final class LowReviewSyncFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fail = true
+    func consume() -> Bool { lock.withLock { let value = fail; fail = false; return value } }
+}

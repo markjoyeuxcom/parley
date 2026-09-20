@@ -102,10 +102,23 @@ func checkPaneActionsMenuTracking(contextual: Bool = false) throws {
                     probe.refreshes += 1
                     probe.revision = probe.refreshes
                     if probe.refreshes >= 12 {
-                        if contextual, probe.refreshes == 12, let submenu = probe.tracking?.items.first(where: { $0.title == "Move to Workspace" })?.submenu {
-                            submenu.performActionForItem(at: 0)
+                        if contextual {
+                            // Let AppKit end tracking and dispatch the selection.
+                            // Type-select Move, open its submenu, select Workspace,
+                            // then Return; never call the item's action ourselves.
+                            let keys: [(String, UInt16)] = [("m", 46), ("\u{f703}", 124), ("w", 13), ("\r", 36)]
+                            let step = probe.refreshes - 12
+                            if keys.indices.contains(step) {
+                                let (characters, code) = keys[step]
+                                let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                                    context: nil, characters: characters, charactersIgnoringModifiers: characters,
+                                    isARepeat: false, keyCode: code)!
+                                NSApp.postEvent(key, atStart: false)
+                            }
+                        } else {
+                            probe.tracking?.cancelTracking()
                         }
-                        probe.tracking?.cancelTracking()
                     }
                 }
             }

@@ -546,8 +546,11 @@ an unreadable root refuses instead of falling back to a child. The generation
 must match the current live pane. A copied token and self-chosen environment
 therefore cannot impersonate a sibling launch. Host vendor applications
 remain trusted local processes, not an isolation boundary. The shim asks for one with `/usr/bin/nc -U` and
-writes it as the `ticket` request field; the transport redeems it once, for
-that capability. `RelayTicketPolicy` says per pane whether a ticket is
+writes it as the `ticket` request field; the socket request names both the
+capability and the transport request UUID, and the transport redeems it once
+for that exact pair. The shim stages the body before obtaining the short-lived
+ticket. Both native socket bind paths share a serialized owner-only umask,
+restored before listening. `RelayTicketPolicy` says per pane whether a ticket is
 required, optional or unavailable, from what real panes were observed to do
 on 14 September 2026 (every vendor: Claude, Agy, Codex and Copilot each
 returned peer-verified from its own pane that evening), never from
@@ -1287,14 +1290,16 @@ Deletion never follows a source path to remove an original project file.
 Command history deletion holds coordinator then broker locks, clears finished
 worker artifacts after fresh lease checks, and forgets recovery copies only
 for durably removed handoffs. Only request-identity hashes remain in memory to
-refuse replay of a deleted command, with no command or result text. Waiting
+refuse replay of a deleted command during its originating pane launch, with no
+command or result text. A restarted pane has a new request-identity namespace. Waiting
 approvals, active work and running
 workers are preserved. Independently atomic store failures report partial
 completion and immediately publish only the successful removals.
 
 Context-review validation, durable recording, in-memory replacement and
-broadcast share one mutation lock. Approval carries the exact `updatedAt`
-revision shown in the UI and must fail stale if the draft changed.
+broadcast share one mutation lock. Approval and rejection carry the exact `updatedAt` revision shown in the UI
+and must fail stale if the draft changed. Rejection accepts only a waiting
+Ask; a plain draft uses the revision-checked discard route.
 
 Direct completion belongs to the app-resident core. Record approved before
 terminal input and failed delivery as terminal `.failed`. A delivery followed
@@ -1337,7 +1342,9 @@ session, scrollback, credential and folder. Refuse moving any pane with an
 active handoff, or a role/lead collision (moving the last pane out leaves an
 empty source workspace); revalidate topology
 after confirmation. Team templates and configuration clone were removed in the
-September 2026 reduction; saved layouts remain.
+September 2026 reduction; saved layouts remain. Saved agent leaves and their
+default folder use the reviewed launch folder, while Shell leaves keep their
+current folder.
 
 ## External integration boundaries
 
@@ -1414,6 +1421,9 @@ Production and Development use separate state, credentials, transports,
 protocol files, records and preference suites. Development never installs the
 stable router, changes Production preferences or publishes Production
 attention. Keep **DEV** visible in every development window and diagnostic.
+
+Host-agent launch commands explicitly unset an inherited `PARLEY_RUNTIME`
+before applying the launching app's own Development marker, if any.
 
 Each UI owns an exclusive runtime lease. A second instance must fail closed.
 There is no Development-attached-to-Production mode.
@@ -1544,3 +1554,16 @@ notes, and keep `Package.swift`, `Package.resolved` and
 - Before every commit, scan staged files for AWS keys, private keys, passwords
   and tokens, then run `npm run scan:public`.
 - Agent commits include `Co-Authored-By: Claude <noreply@anthropic.com>`.
+
+## September 2026 low review follow-ups
+
+Approved command tickets bind the app owner to its kernel process start time
+as well as PID; legacy tickets without that identity cannot execute. Before
+handing over to the login shell the worker restores default signal dispositions
+and clears the inherited signal mask. Container discovery and decoded cleanup
+configurations share the same fixed Docker executable allowlist.
+
+Worktree Predict reads identity without creating a tracking record. Integrate
+validates the branch before proposing argv. A bare Git registry entry is labelled
+as bare, never as a primary checkout; a repository without a primary checkout
+cannot be an implicit Integrate destination.

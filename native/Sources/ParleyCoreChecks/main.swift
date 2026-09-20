@@ -8614,7 +8614,11 @@ private func checkContextAddRacingAskHasOneDurableWinner() throws {
             )
         }
         try expect(
-            broker.rejectContextReview(reviewID: summary.id).status == 200,
+            broker.rejectContextReview(reviewID: summary.id, expectedUpdatedAt: review.updatedAt.addingTimeInterval(-1)).status == 409,
+            "a stale context review declined a waiting Ask"
+        )
+        try expect(
+            broker.rejectContextReview(reviewID: summary.id, expectedUpdatedAt: review.updatedAt).status == 200,
             "the add/Ask race could not be resolved explicitly"
         )
         try expect(eventually { askResult.value != nil }, "rejecting the raced review left Ask blocked")
@@ -10211,7 +10215,22 @@ if let resultPath = ProcessInfo.processInfo.environment["PARLEY_COMMAND_CAPTURE_
     exit(FileManager.default.fileExists(atPath: resultPath) ? 0 : 1)
 }
 
+if ProcessInfo.processInfo.environment["CHECK_WORKER_SIGNALS"] == "1", CommandLine.arguments.dropFirst() == ["-l"] {
+    var mask = sigset_t()
+    sigprocmask(SIG_SETMASK, nil, &mask)
+    let old = signal(SIGUSR1, SIG_DFL)
+    guard sigismember(&mask, SIGCHLD) == 0 else { exit(1) }
+    if let _ = old { exit(1) } // SIG_DFL is the null handler.
+    print("SHELL-SIGNALS-CLEAR")
+    exit(0)
+}
 if CommandLine.arguments.count == 4 && CommandLine.arguments[1] == ApprovedCommandWorker.argument {
+    if ProcessInfo.processInfo.environment["CHECK_WORKER_SIGNALS"] == "1" {
+        var mask = sigset_t()
+        sigemptyset(&mask); sigaddset(&mask, SIGCHLD)
+        sigprocmask(SIG_BLOCK, &mask, nil)
+        signal(SIGUSR1, SIG_IGN)
+    }
     ApprovedCommandWorker.execute(ticketPath: CommandLine.arguments[2], expectedDigest: CommandLine.arguments[3])
 }
 

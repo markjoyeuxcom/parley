@@ -114,7 +114,7 @@ public final class ContainerPaneService: @unchecked Sendable {
               !image.hasPrefix("-"), !image.contains(where: { $0.isWhitespace || $0.isNewline }) else {
             throw ContainerPaneError.refused("Choose a locally installed image containing /usr/local/bin/\(vendor.isAgent ? vendor.rawValue : "<vendor>").")
         }
-        let executable = ["/usr/local/bin/docker", "/opt/homebrew/bin/docker"].first { FileManager.default.isExecutableFile(atPath: $0) }
+        let executable = ContainerLaunchProjection.dockerExecutablePaths.first { FileManager.default.isExecutableFile(atPath: $0) }
         guard let executable else { throw ContainerPaneError.refused("Install and start a local Docker-compatible runtime first.") }
         let endpoint = try checked(executable, ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"])
         guard endpoint.hasPrefix("unix:///") else { throw ContainerPaneError.refused("The selected Docker context is not local. Remote daemons are unsupported.") }

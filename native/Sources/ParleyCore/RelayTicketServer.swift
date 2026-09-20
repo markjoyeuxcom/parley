@@ -127,7 +127,7 @@ public final class RelayTicketServer: @unchecked Sendable {
     private var acceptSource: DispatchSourceRead?
     private let queue = DispatchQueue(label: "parley.native.ticket-socket", qos: .utility)
     private let connections = DispatchQueue(label: "parley.native.ticket-connections", qos: .utility, attributes: .concurrent)
-    private var tickets: [String: (token: String, expires: Date)] = [:]
+    private var tickets: [String: (token: String, requestID: String, expires: Date)] = [:]
     private var issued = 0
     private var refused = 0
     private var listening = false
@@ -198,13 +198,13 @@ public final class RelayTicketServer: @unchecked Sendable {
                 destination[min(bytes.count, capacity - 1)] = 0
             }
             address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-            let previousMask = umask(0o177)
-            let bound = withUnsafePointer(to: &address) { pointer in
-                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                    Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            let bound = LocalSocketCreation.withOwnerOnlyPermissions {
+                withUnsafePointer(to: &address) { pointer in
+                    pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                        Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                    }
                 }
             }
-            umask(previousMask)
             guard bound == 0, chmod(path, 0o600) == 0, Darwin.listen(descriptor, 16) == 0 else {
                 let failure = "ticket socket could not listen: \(String(cString: strerror(errno)))"
                 close(descriptor)
@@ -236,11 +236,11 @@ public final class RelayTicketServer: @unchecked Sendable {
     }
 
     /// Consumes one ticket. True only for an unexpired, unused ticket issued
-    /// for exactly this capability.
-    public func redeem(_ ticket: String, token: String) -> Bool {
+    /// for exactly this capability and transport request directory.
+    public func redeem(_ ticket: String, token: String, requestID: String) -> Bool {
         lock.withLock {
             purgeExpiredLocked()
-            guard let entry = tickets[ticket], entry.token == token else { return false }
+            guard let entry = tickets[ticket], entry.token == token, entry.requestID == requestID else { return false }
             tickets[ticket] = nil
             return true
         }
@@ -305,9 +305,9 @@ public final class RelayTicketServer: @unchecked Sendable {
         }
     }
 
-    /// Reads the presented capability and checks the peer. Returns nil when a
-    /// ticket may be issued; the presented token is left in `presented`.
-    private var presented: [Int32: String] = [:]
+    /// Reads the capability and request UUID, then checks the peer. Returns
+    /// nil when a ticket may be issued; both fields are left in `presented`.
+    private var presented: [Int32: (token: String, requestID: String)] = [:]
 
     private func refusal(for connection: Int32) -> String? {
         var uid: uid_t = 0
@@ -329,12 +329,16 @@ public final class RelayTicketServer: @unchecked Sendable {
             if buffer[..<received].contains(10) { break }
         }
         guard let newline = buffer[..<received].firstIndex(of: 10),
-              let token = String(bytes: buffer[..<newline], encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !token.isEmpty else { return "no capability presented" }
+              let line = String(bytes: buffer[..<newline], encoding: .utf8) else { return "no capability presented" }
+        let fields = line.split(separator: " ", omittingEmptySubsequences: false)
+        guard fields.count == 2, !fields[0].isEmpty, UUID(uuidString: String(fields[1])) != nil else {
+            return "a capability and transport request UUID are required"
+        }
+        let token = String(fields[0]), requestID = String(fields[1])
         guard let paneID = credentials.paneID(for: token) else { return "unknown capability" }
         guard let generation = paneGeneration(paneID) else { return "pane unknown" }
         guard attest(peerPID: peer, paneID: paneID, generation: generation) else { return "not a process of that pane's current launch" }
-        lock.withLock { presented[connection] = token }
+        lock.withLock { presented[connection] = (token, requestID) }
         return nil
     }
 
@@ -344,8 +348,8 @@ public final class RelayTicketServer: @unchecked Sendable {
         let ticket = bytes.map { String(format: "%02x", $0) }.joined()
         lock.withLock {
             purgeExpiredLocked()
-            let token = presented.removeValue(forKey: connection) ?? ""
-            tickets[ticket] = (token: token, expires: clock().addingTimeInterval(Self.ticketLifetime))
+            guard let request = presented.removeValue(forKey: connection) else { return }
+            tickets[ticket] = (token: request.token, requestID: request.requestID, expires: clock().addingTimeInterval(Self.ticketLifetime))
             issued += 1
         }
         return ticket

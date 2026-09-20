@@ -456,7 +456,7 @@ func checkContainerControllerLifecycle() throws {
     let credentials = try RelayCredentials(file: app.appendingPathComponent("relay-tokens.json"))
     controller.configureRelay(RelayRuntime(infoFile: app.appendingPathComponent("relay-url"), shimDirectory: app.appendingPathComponent("bin"),
         transportDirectory: app.appendingPathComponent("relay"), credentials: credentials, runtimeMarker: "DEV"))
-    let configuration = ContainerConfiguration(dockerExecutable: "/fixture/docker", daemonEndpoint: "unix:///tmp/docker.sock",
+    let configuration = ContainerConfiguration(dockerExecutable: "/usr/local/bin/docker", daemonEndpoint: "unix:///tmp/docker.sock",
         daemonID: "daemon-one", imageID: "sha256:" + String(repeating: "b", count: 64), imageName: "fixture", legacyCodexSandbox: false)
     let definition = try PermissionProfileStore(file: app.appendingPathComponent("permission-profiles.json")).profiles().first { $0.id == "default" }!
     let profile = try PermissionProfileResolver.resolve(definition: definition, paneFolder: project.path, approvedRoots: [])
@@ -518,7 +518,7 @@ private final class ContainerReviewFixture {
     let service: ContainerPaneService
     let controller: WorkbenchController
     let credentials: RelayCredentials
-    let configuration = ContainerConfiguration(dockerExecutable: "/fixture/docker", daemonEndpoint: "unix:///tmp/docker.sock",
+    let configuration = ContainerConfiguration(dockerExecutable: "/usr/local/bin/docker", daemonEndpoint: "unix:///tmp/docker.sock",
         daemonID: "daemon-one", imageID: "sha256:" + String(repeating: "b", count: 64), imageName: "fixture", legacyCodexSandbox: false)
     var project: URL { directory.appendingPathComponent("project") }
     var transport: URL { directory.appendingPathComponent("transport") }
@@ -662,7 +662,7 @@ func checkContainerResponsiveRecords() throws {
     defer { try? FileManager.default.removeItem(at: directory) }
     let runner = ContainerLifecycleRunner()
     let service = try ContainerPaneService(directory: directory, environment: [:], runner: runner)
-    let config = ContainerConfiguration(dockerExecutable: "/fixture/docker", daemonEndpoint: "unix:///tmp/docker.sock",
+    let config = ContainerConfiguration(dockerExecutable: "/usr/local/bin/docker", daemonEndpoint: "unix:///tmp/docker.sock",
         daemonID: "daemon-one", imageID: "sha256:" + String(repeating: "b", count: 64), imageName: "fixture", legacyCodexSandbox: false)
     let pane = WorkbenchPane(id: "pane-fixture", kind: .codex, customName: nil, terminalTitle: "", cwd: "/project", currentCommand: "codex", isActive: true, workspaceID: "workspace")
     runner.pauseNextCreate = true
@@ -691,7 +691,7 @@ func checkContainerCleanupContinuation() throws {
     let service = try ContainerPaneService(directory: directory, environment: [:], runner: runner)
     func record(_ daemon: String) -> [String: Any] {
         ["id": "owner-" + daemon, "paneID": "pane-fixture", "generation": 1,
-         "configuration": ["dockerExecutable": "/fixture/docker", "daemonEndpoint": "unix:///tmp/docker.sock", "daemonID": daemon,
+         "configuration": ["dockerExecutable": "/usr/local/bin/docker", "daemonEndpoint": "unix:///tmp/docker.sock", "daemonID": daemon,
              "imageID": "sha256:" + String(repeating: "b", count: 64), "imageName": "fixture", "legacyCodexSandbox": false],
          "volume": "home-fixture", "runtime": "DEV", "containerID": String(repeating: "a", count: 64), "removed": false, "createdAt": 0]
     }
@@ -740,7 +740,7 @@ func checkContainerLinkedWorktree() throws {
     let facts = ContainerLaunchFacts(paneID: "pane-fixture", generation: 1, vendor: .codex, folder: tree.path,
         endpoint: "/transport/endpoint", protocolDirectory: "/protocol", shimDirectory: "/shim", uid: 501, gid: 20,
         volume: "fixture-home", owner: "fixture-owner", runtime: "DEV")
-    let config = ContainerConfiguration(dockerExecutable: "/fixture/docker", daemonEndpoint: "unix:///tmp/docker.sock", daemonID: "fixture",
+    let config = ContainerConfiguration(dockerExecutable: "/usr/local/bin/docker", daemonEndpoint: "unix:///tmp/docker.sock", daemonID: "fixture",
         imageID: "sha256:" + String(repeating: "b", count: 64), imageName: "fixture", legacyCodexSandbox: false, gitAccess: access)
     let mounts = try ContainerLaunchProjection.createArguments(configuration: config, facts: facts, vendorArguments: []).filter { $0.hasPrefix("type=bind") }
     try containerExpect(mounts.count == 5 && mounts.contains("type=bind,source=\(repository.path)/.git,target=\(repository.path)/.git"), "shared Git mount missing")
@@ -827,7 +827,7 @@ func checkContainerGitReviewRefusals() throws {
 }
 
 func checkContainerReviewedBypass() throws {
-    let standard = ContainerConfiguration(dockerExecutable: "/fixture/docker", daemonEndpoint: "unix:///tmp/docker.sock",
+    let standard = ContainerConfiguration(dockerExecutable: "/usr/local/bin/docker", daemonEndpoint: "unix:///tmp/docker.sock",
         daemonID: "daemon-one", imageID: "sha256:" + String(repeating: "b", count: 64), imageName: "fixture", legacyCodexSandbox: false)
     var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(standard)) as! [String: Any]
     json["bypassVendorPermissions"] = true
@@ -863,7 +863,7 @@ func checkContainerReviewedBypass() throws {
 /// mounts and capabilities unchanged, privileged ports refused, and an older
 /// record without the field publishing nothing.
 func checkContainerPublishedPort() throws {
-    let base = ContainerConfiguration(dockerExecutable: "/fixture/docker", daemonEndpoint: "unix:///tmp/docker.sock",
+    let base = ContainerConfiguration(dockerExecutable: "/usr/local/bin/docker", daemonEndpoint: "unix:///tmp/docker.sock",
         daemonID: "daemon-one", imageID: "sha256:" + String(repeating: "c", count: 64), imageName: "fixture", legacyCodexSandbox: false)
     let facts = ContainerLaunchFacts(paneID: "pane-fixture", generation: 1, vendor: .codex, folder: "/project",
         endpoint: "/transport/fixture", protocolDirectory: "/runtime/protocol", shimDirectory: "/runtime/bin",

@@ -68,6 +68,7 @@ public struct ContainerLaunchFacts: Equatable, Sendable {
 }
 
 public enum ContainerLaunchProjection {
+    public static let dockerExecutablePaths = ["/usr/local/bin/docker", "/opt/homebrew/bin/docker"]
     public static let ownerLabel = "com.parley.owner"
     public static let runtimeLabel = "com.parley.runtime"
     public static let paneLabel = "com.parley.pane"
@@ -85,7 +86,7 @@ public enum ContainerLaunchProjection {
                 throw ContainerPaneError.refused("A published port must be between 1024 and 65535. Codex's browser sign-in uses 1455.")
             }
         }
-        guard config.dockerExecutable.hasPrefix("/"), !config.dockerExecutable.contains("\n"),
+        guard dockerExecutablePaths.contains(config.dockerExecutable),
               config.daemonEndpoint.hasPrefix("unix:///"), !config.daemonEndpoint.contains("\n"),
               !config.daemonID.isEmpty, config.imageID.hasPrefix("sha256:"), isHex(String(config.imageID.dropFirst(7)), length: 64) else {
             throw ContainerPaneError.refused("Choose a running local Unix-socket Docker daemon and a locally installed image. Remote daemons are unsupported.")

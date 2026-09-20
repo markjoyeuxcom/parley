@@ -445,18 +445,20 @@ func reviewedRunWorkerExitWhenCleanChecks() throws {
     let coordinator = ReviewedCommandRunCoordinator(authenticate: { _ in "source" }, panes: { [source] }, record: { _ in })
     let directory = root.appendingPathComponent("approved-command-runs")
     var lastWorkerLifetime: TimeInterval = 0
-    func run(_ argv: [String], exitWhenClean: Bool) throws -> (stdout: String, status: Int32, result: ReviewedCommandRunResult?) {
+    func run(_ argv: [String], exitWhenClean: Bool, probeSignals: Bool = false) throws -> (stdout: String, status: Int32, result: ReviewedCommandRunResult?) {
         let request = try coordinator.request(token: "capability", argv: argv, folder: root.path)
         try coordinator.approve(id: request.id, revision: request.revision, argv: argv, folder: root.path, autoApprove: false)
         var ticket: URL?
         coordinator.launchApproved { run in
-            ticket = try ApprovedCommandWorker.stage(run: run, directory: directory, shellExecutable: shell.path,
+            ticket = try ApprovedCommandWorker.stage(run: run, directory: directory,
+                shellExecutable: probeSignals ? URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.path : shell.path,
                 ownerPID: ProcessInfo.processInfo.processIdentifier, exitWhenClean: exitWhenClean)
         }
         guard let ticket else { throw ReviewedCommandRunError.invalid("No worker ticket") }
         let launchedAt = ProcessInfo.processInfo.systemUptime
         let output = try ProcessCommandRunner(timeout: 5).run(executable: URL(fileURLWithPath: CommandLine.arguments[0]),
-            arguments: [ApprovedCommandWorker.argument, ticket.path, try ApprovedCommandWorker.ticketDigest(for: ticket)], environment: ["PATH": "/usr/bin:/bin"])
+            arguments: [ApprovedCommandWorker.argument, ticket.path, try ApprovedCommandWorker.ticketDigest(for: ticket)],
+            environment: ["PATH": "/usr/bin:/bin", "CHECK_WORKER_SIGNALS": probeSignals ? "1" : "0"])
         lastWorkerLifetime = ProcessInfo.processInfo.systemUptime - launchedAt
         let result = try ApprovedCommandWorker.result(runID: request.id, directory: directory)
         coordinator.complete(id: request.id, result: result ?? ReviewedCommandRunResult(exitStatus: nil, stdout: Data(), stderr: Data()))
@@ -476,6 +478,9 @@ func reviewedRunWorkerExitWhenCleanChecks() throws {
     let cleanShell = try run(["/bin/sh", "-c", "printf keep-out"], exitWhenClean: false)
     try runExpect(cleanShell.result?.exitStatus == 0 && cleanShell.stdout.contains("SHELL-STARTED"),
         "a clean run not staged to exit did not hand the pane to a shell: \(cleanShell.stdout)")
+    let signalProbe = try run(["/usr/bin/true"], exitWhenClean: false, probeSignals: true)
+    try runExpect(signalProbe.status == 0 && signalProbe.stdout.contains("SHELL-SIGNALS-CLEAR"),
+        "login shell inherited the worker's blocked mask or ignored signal: \(signalProbe.stdout)")
     // A ticket from an earlier build has no flag and keeps the shell handover.
     let legacy = "{\"resultKey\":\"\(Data(repeating: 1, count: 32).base64EncodedString())\",\"runID\":\"\(UUID().uuidString.lowercased())\",\"command\":{\"argv\":[\"/usr/bin/true\"],\"folder\":\"\(root.path)\"},\"sourceFolder\":\"\(root.path)\",\"shellExecutable\":\"/bin/sh\",\"ownerPID\":1,\"expiresAt\":0}"
     let decoded = try JSONDecoder().decode(ApprovedCommandTicket.self, from: Data(legacy.utf8))
