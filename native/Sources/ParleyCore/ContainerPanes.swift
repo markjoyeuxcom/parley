@@ -117,6 +117,10 @@ public enum ContainerLaunchProjection {
         }
     }
 
+    public static func bypassDisclosure(for vendor: PaneKind) -> String {
+        "\(vendor.label) receives \(bypassArguments(for: vendor).joined(separator: " ")) after the image ID and bypasses its permission checks inside this reviewed container."
+    }
+
     /// Vendor environment a container launch may carry, by exact key. Copilot
     /// reads its instructions directory from the environment rather than from
     /// an argument; no other vendor input Parley sets travels that way. Any

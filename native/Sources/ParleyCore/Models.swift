@@ -194,6 +194,16 @@ public struct WorkbenchPane: Identifiable, Equatable, Codable, Sendable {
     public var customName: String?
     public var terminalTitle: String
     public var cwd: String
+    /// The person-selected folder survives terminal OSC reports and relaunch.
+    /// Older documents migrate their last stored folder; agents still restart
+    /// through the native permission review after loading such a document.
+    public var launchFolder: String
+    public var launchWorkingDirectory: String { kind.isAgent ? launchFolder : cwd }
+    /// Removal must retain the reviewed agent root even after an OSC folder
+    /// report. Keep the reported folder too, conservatively, for live usage.
+    public var worktreeSafetyFolders: [String] {
+        kind.isAgent && launchFolder != cwd ? [launchFolder, cwd] : [cwd]
+    }
     public var currentCommand: String
     public var isActive: Bool
     public var relayEnabled: Bool
@@ -253,6 +263,7 @@ public struct WorkbenchPane: Identifiable, Equatable, Codable, Sendable {
         self.customName = customName
         self.terminalTitle = terminalTitle
         self.cwd = cwd
+        self.launchFolder = cwd
         self.currentCommand = currentCommand
         self.isActive = isActive
         self.workspaceID = workspaceID
@@ -281,6 +292,7 @@ public struct WorkbenchPane: Identifiable, Equatable, Codable, Sendable {
         case customName
         case terminalTitle
         case cwd
+        case launchFolder
         case currentCommand
         case isActive
         case relayEnabled
@@ -314,6 +326,7 @@ public struct WorkbenchPane: Identifiable, Equatable, Codable, Sendable {
         customName = try values.decodeIfPresent(String.self, forKey: .customName)
         terminalTitle = try values.decode(String.self, forKey: .terminalTitle)
         cwd = try values.decode(String.self, forKey: .cwd)
+        launchFolder = try values.decodeIfPresent(String.self, forKey: .launchFolder) ?? cwd
         currentCommand = try values.decode(String.self, forKey: .currentCommand)
         isActive = try values.decode(Bool.self, forKey: .isActive)
         relayEnabled = try values.decodeIfPresent(Bool.self, forKey: .relayEnabled) ?? false
@@ -354,6 +367,7 @@ public struct WorkbenchPane: Identifiable, Equatable, Codable, Sendable {
         try values.encodeIfPresent(customName, forKey: .customName)
         try values.encode(terminalTitle, forKey: .terminalTitle)
         try values.encode(cwd, forKey: .cwd)
+        try values.encode(launchFolder, forKey: .launchFolder)
         try values.encode(currentCommand, forKey: .currentCommand)
         try values.encode(isActive, forKey: .isActive)
         try values.encode(relayEnabled, forKey: .relayEnabled)

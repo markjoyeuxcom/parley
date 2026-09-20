@@ -487,6 +487,27 @@ public final class RelayBroker: @unchecked Sendable {
     private let activityJournal: RelayActivityJournal?
     private let historyRetentionStore: CollaborationHistoryRetentionStore?
     private let contextReviewStore: AgentContextReviewStore?
+    private var contextPersistenceErrors: [String: String] = [:]
+    public var contextPersistenceError: String? {
+        consultationCondition.lock()
+        defer { consultationCondition.unlock() }
+        let errors = contextPersistenceErrors.values.sorted()
+        return errors.isEmpty ? nil : "Context review persistence: " + errors.joined(separator: "; ")
+    }
+
+    /// Terminal reality must remain visible even when saving it fails. Retain
+    /// the error and retry the current record on the next native context read.
+    @discardableResult
+    private func persistContextRealityLocked(_ review: AgentContextReview) -> Error? {
+        do {
+            try contextReviewStore?.record(review)
+            if contextPersistenceErrors.removeValue(forKey: review.id) != nil { noteChangeLocked() }
+            return nil
+        } catch {
+            contextPersistenceErrors[review.id] = error.localizedDescription
+            return error
+        }
+    }
     private let busyDraftStore: ReviewedBusyDraftStore?
     private let contextPackBuilder = ContextPackBuilder()
     private let consultationCondition = NSCondition()
@@ -589,14 +610,14 @@ public final class RelayBroker: @unchecked Sendable {
             review.updatedAt = recoveredAt
             review.detail = "Parley discarded this editable draft after seven days without review activity."
             recoveredContext[id] = review
-            try? contextReviewStore?.record(review)
+            _ = persistContextRealityLocked(review)
         }
         for (id, var review) in recoveredContext where review.state == .awaitingReview || review.state == .approved {
             review.state = .interrupted
             review.updatedAt = recoveredAt
             review.detail = "Parley core restarted before the reviewed context Ask completed."
             recoveredContext[id] = review
-            try? contextReviewStore?.record(review)
+            _ = persistContextRealityLocked(review)
         }
         contextReviewRecords = recoveredContext
         pruneHandoffsLocked()
@@ -626,7 +647,7 @@ public final class RelayBroker: @unchecked Sendable {
                 sourcePaneID: sender.id,
                 sourcePaneName: sender.displayName,
                 sourcePaneKind: sender.kind,
-                sourceFolder: sender.cwd,
+                sourceFolder: sender.launchWorkingDirectory,
                 pack: pack,
                 sourceWorkspaceID: sender.workspaceID,
                 sourceWorkspaceName: sender.workspaceName
@@ -1031,6 +1052,10 @@ public final class RelayBroker: @unchecked Sendable {
     public func contextReviews() -> [AgentContextReview] {
         consultationCondition.lock()
         defer { consultationCondition.unlock() }
+        for id in Array(contextPersistenceErrors.keys) {
+            if let review = contextReviewRecords[id] { _ = persistContextRealityLocked(review) }
+            else { contextPersistenceErrors.removeValue(forKey: id) }
+        }
         return contextReviewRecords.values.sorted {
             if $0.updatedAt == $1.updatedAt { return $0.id < $1.id }
             return $0.updatedAt > $1.updatedAt
@@ -1243,12 +1268,7 @@ public final class RelayBroker: @unchecked Sendable {
         review.detail = detail
         contextReviewRecords[reviewID] = review
         noteChangeLocked()
-        do {
-            try contextReviewStore?.record(review)
-            return nil
-        } catch {
-            return error
-        }
+        return persistContextRealityLocked(review)
     }
 
     public func rejectContextReview(reviewID: String) -> RelayTextResponse {
@@ -1347,7 +1367,7 @@ public final class RelayBroker: @unchecked Sendable {
         review.updatedAt = Date()
         review.detail = response.text
         contextReviewRecords[review.id] = review
-        try? contextReviewStore?.record(review)
+        _ = persistContextRealityLocked(review)
         noteChangeLocked()
         consultationCondition.unlock()
     }
@@ -1409,6 +1429,9 @@ public final class RelayBroker: @unchecked Sendable {
         guard let sender = try panes().first(where: { $0.id == senderID }), sender.kind.isAgent else {
             throw BrokerFailure(status: 400, message: "unknown sender pane")
         }
+        guard sender.isStarted, !sender.isDead, sender.relayEnabled else {
+            throw BrokerFailure(status: 403, message: "the source agent pane is not running or relay is disabled")
+        }
         return sender
     }
 
@@ -1441,7 +1464,7 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         referenceID: String? = nil
     ) throws -> (path: String, part: ContextPackPart) {
-        let path = try normalizedAgentContextPath(suppliedPath, cwd: sender.cwd)
+        let path = try normalizedAgentContextPath(suppliedPath, cwd: sender.launchWorkingDirectory)
         let normalized = ContextPackText.normalize(text)
         guard !normalized.isEmpty else {
             throw BrokerFailure(status: 400, message: "the context file is empty")
@@ -1716,7 +1739,7 @@ public final class RelayBroker: @unchecked Sendable {
         // Informational Git facts are read outside the coordination lock. They
         // never gate delivery, and terminal input is never driven while the
         // lock is held.
-        let gitAtDelegation = gitFacts?(target.cwd)
+        let gitAtDelegation = gitFacts?(target.launchWorkingDirectory)
 
         // Revalidate the same created, still-active delegation immediately
         // before delivery. A cancellation or any other terminal transition
@@ -1805,9 +1828,10 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         succeeded: Bool
     ) -> RelayTextResponse {
-        guard let senderID = credentials.paneID(for: token) else {
-            return RelayTextResponse(status: 401, text: "bad token")
-        }
+        let senderID: String
+        do { senderID = try authenticatedSender(token: token).id }
+        catch let error as BrokerFailure { return RelayTextResponse(status: error.status, text: error.message) }
+        catch { return RelayTextResponse(status: 409, text: error.localizedDescription) }
         let cleaned = RelayText.clean(text)
         guard !cleaned.isEmpty else {
             return RelayTextResponse(status: 400, text: succeeded ? "nothing to report as done" : "nothing to report as failed")
@@ -1901,7 +1925,7 @@ public final class RelayBroker: @unchecked Sendable {
             guard normalized.utf8.count <= ContextPackBuilder.defaultMaximumPartBytes else {
                 throw BrokerFailure(status: 413, message: "the completion file is too large")
             }
-            let path = try normalizedAgentContextPath(suppliedPath, cwd: sender.cwd)
+            let path = try normalizedAgentContextPath(suppliedPath, cwd: sender.launchWorkingDirectory)
             let gitAtReturn = gitFactsForReportingPane(sender.id)
 
             consultationCondition.lock()
@@ -1950,7 +1974,7 @@ public final class RelayBroker: @unchecked Sendable {
                 sourcePaneID: sender.id,
                 sourcePaneName: sender.displayName,
                 sourcePaneKind: sender.kind,
-                sourceFolder: sender.cwd,
+                sourceFolder: sender.launchWorkingDirectory,
                 pack: ContextPack(
                     name: "Delegation result from \(sender.displayName)",
                     parts: [staged.part],
@@ -2003,9 +2027,10 @@ public final class RelayBroker: @unchecked Sendable {
         handoffID requestedHandoffID: String,
         text: String
     ) -> RelayTextResponse {
-        guard let senderID = credentials.paneID(for: token) else {
-            return RelayTextResponse(status: 401, text: "bad token")
-        }
+        let senderID: String
+        do { senderID = try authenticatedSender(token: token).id }
+        catch let error as BrokerFailure { return RelayTextResponse(status: error.status, text: error.message) }
+        catch { return RelayTextResponse(status: 409, text: error.localizedDescription) }
         let cleaned = DelegationProgressText.normalize(text)
         guard !cleaned.isEmpty else {
             return RelayTextResponse(status: 400, text: "nothing to report as progress")
@@ -2119,12 +2144,14 @@ public final class RelayBroker: @unchecked Sendable {
     /// Whether this generation's launch profile allows network; nil before
     /// launch or when unknown. Set by the core, never read from edited settings.
     public var hostNetworkAllowed: ((WorkbenchPane) -> Bool?)?
+    public var hostClaudeSandbox: ((WorkbenchPane) -> ClaudeSandboxFact?)?
 
     /// The ticket policy of the pane a capability belongs to, or nil for a
     /// capability nobody holds. The transport asks before it reads a request.
     public func ticketPolicy(token: String, socketListening: Bool) -> RelayTicketPolicy? {
         guard let sender = try? authenticatedSender(token: token) else { return nil }
-        return RelayTicketPolicy.policy(for: sender, socketListening: socketListening, networkAllowed: hostNetworkAllowed?(sender))
+        return RelayTicketPolicy.policy(for: sender, socketListening: socketListening,
+            networkAllowed: hostNetworkAllowed?(sender), claudeSandbox: hostClaudeSandbox?(sender))
     }
 
     public func agentIdentity(token: String, attestation: RelayAttestation? = nil, ticketPolicy: RelayTicketPolicy? = nil) -> RelayTextResponse {
@@ -2232,9 +2259,10 @@ public final class RelayBroker: @unchecked Sendable {
     }
 
     public func delegationStatus(token: String) -> RelayTextResponse {
-        guard let sourceID = credentials.paneID(for: token) else {
-            return RelayTextResponse(status: 401, text: "bad token")
-        }
+        let sourceID: String
+        do { sourceID = try authenticatedSender(token: token).id }
+        catch let error as BrokerFailure { return RelayTextResponse(status: error.status, text: error.message) }
+        catch { return RelayTextResponse(status: 409, text: error.localizedDescription) }
         reconcileDelegations()
         consultationCondition.lock()
         let statuses = handoffRecords.values
@@ -2410,11 +2438,12 @@ public final class RelayBroker: @unchecked Sendable {
     }
 
     public func waitForTrackedWork(token: String, handoffID requestedHandoffID: String) -> RelayTextResponse {
-        if let commandRuns, commandRuns.owns(id: requestedHandoffID) { return commandRuns.wait(token: token, id: requestedHandoffID) }
-        if let teamSessions, teamSessions.owns(id: requestedHandoffID) { return teamSessions.wait(token: token, id: requestedHandoffID) }
         let source: WorkbenchPane
         do { source = try authenticatedSender(token: token) }
+        catch let error as BrokerFailure { return RelayTextResponse(status: error.status, text: error.message) }
         catch { return RelayTextResponse(status: 403, text: error.localizedDescription) }
+        if let commandRuns, commandRuns.owns(id: requestedHandoffID) { return commandRuns.wait(token: token, id: requestedHandoffID) }
+        if let teamSessions, teamSessions.owns(id: requestedHandoffID) { return teamSessions.wait(token: token, id: requestedHandoffID) }
         consultationCondition.lock()
         let handoffID: String
         if requestedHandoffID.caseInsensitiveCompare("current") == .orderedSame {
@@ -3154,9 +3183,10 @@ public final class RelayBroker: @unchecked Sendable {
     }
 
     public func handleAnswer(token: String, consultationID: String, text: String) -> RelayTextResponse {
-        guard let senderID = credentials.paneID(for: token) else {
-            return RelayTextResponse(status: 401, text: "bad token")
-        }
+        let senderID: String
+        do { senderID = try authenticatedSender(token: token).id }
+        catch let error as BrokerFailure { return RelayTextResponse(status: error.status, text: error.message) }
+        catch { return RelayTextResponse(status: 409, text: error.localizedDescription) }
         let resolvedID: String
         if consultationID.caseInsensitiveCompare("current") == .orderedSame {
             consultationCondition.lock()
@@ -3314,11 +3344,20 @@ public final class RelayBroker: @unchecked Sendable {
         maximumRecords: Int
     ) throws -> CollaborationHistoryRetentionChange {
         let policy = try CollaborationHistoryRetentionPolicy(maximumRecords: maximumRecords)
-        try historyRetentionStore?.save(policy)
-        let durableHandoffRemoval = try handoffJournal?.updateMaximumHandoffs(maximumRecords)
-        let durableActivityRemoval = try activityJournal?.updateMaximumEvents(maximumRecords)
-
+        // Serialize policy changes and broker projections; each journal also
+        // serializes its own appends. Publish the committed preference even
+        // if one journal cannot be compacted;
+        // every successful partial mutation must be reconciled and disclosed.
         consultationCondition.lock()
+        defer { consultationCondition.unlock() }
+        try historyRetentionStore?.save(policy)
+        var failures: [String] = []
+        var durableHandoffRemoval: Int?
+        var durableActivityRemoval: Int?
+        do { durableHandoffRemoval = try handoffJournal?.updateMaximumHandoffs(maximumRecords) }
+        catch { failures.append("handoffs: \(error.localizedDescription)") }
+        do { durableActivityRemoval = try activityJournal?.updateMaximumEvents(maximumRecords) }
+        catch { failures.append("activity: \(error.localizedDescription)") }
         let handoffCountBefore = handoffRecords.count
         let activityCountBefore = activityRecords.count
         historyRetentionPolicy = policy
@@ -3340,13 +3379,15 @@ public final class RelayBroker: @unchecked Sendable {
         let inMemoryHandoffRemoval = handoffCountBefore - handoffRecords.count
         let inMemoryActivityRemoval = activityCountBefore - activityRecords.count
         noteChangeLocked()
-        consultationCondition.unlock()
-
-        return CollaborationHistoryRetentionChange(
+        let change = CollaborationHistoryRetentionChange(
             policy: policy,
             removedHandoffs: durableHandoffRemoval ?? inMemoryHandoffRemoval,
             removedActivityEvents: durableActivityRemoval ?? inMemoryActivityRemoval
         )
+        if !failures.isEmpty {
+            throw CollaborationHistoryRetentionPartialFailure(change: change, failures: failures)
+        }
+        return change
     }
 
     /// Saves a person's review of one returned result. The core-control route
@@ -3539,9 +3580,10 @@ public final class RelayBroker: @unchecked Sendable {
     /// Pane-scoped cancellation for work initiated by that exact pane. It can
     /// never interrupt the target CLI and cannot cancel another pane's work.
     public func cancelHandoff(token: String, handoffID requestedHandoffID: String) -> RelayTextResponse {
-        guard let sourceID = credentials.paneID(for: token) else {
-            return RelayTextResponse(status: 401, text: "bad token")
-        }
+        let sourceID: String
+        do { sourceID = try authenticatedSender(token: token).id }
+        catch let error as BrokerFailure { return RelayTextResponse(status: error.status, text: error.message) }
+        catch { return RelayTextResponse(status: 409, text: error.localizedDescription) }
         consultationCondition.lock()
         let active = handoffRecords.values.filter {
             $0.sourcePaneID == sourceID
@@ -3765,7 +3807,7 @@ public final class RelayBroker: @unchecked Sendable {
             review.updatedAt = Date()
             review.detail = reason
             contextReviewRecords[id] = review
-            try? contextReviewStore?.record(review)
+            _ = persistContextRealityLocked(review)
             noteChangeLocked()
         }
         consultationCondition.broadcast()
@@ -3830,13 +3872,8 @@ public final class RelayBroker: @unchecked Sendable {
     }
 
     private func route(token: String, requestedTarget: String) throws -> (WorkbenchPane, WorkbenchPane) {
-        guard let senderID = credentials.paneID(for: token) else {
-            throw BrokerFailure(status: 401, message: "bad token")
-        }
+        let sender = try authenticatedSender(token: token)
         let livePanes = try panes()
-        guard let sender = livePanes.first(where: { $0.id == senderID }), sender.kind.isAgent else {
-            throw BrokerFailure(status: 400, message: "unknown sender pane")
-        }
         let requested = requestedTarget.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !requested.isEmpty else { throw BrokerFailure(status: 400, message: "name a target pane") }
         let candidates = resolve(requested, panes: livePanes, sender: sender)
@@ -4178,7 +4215,7 @@ public final class RelayBroker: @unchecked Sendable {
         consultationCondition.unlock()
         guard hasTrackedWork,
               let pane = (try? panes())?.first(where: { $0.id == paneID }) else { return nil }
-        return gitFacts(pane.cwd)
+        return gitFacts(pane.launchWorkingDirectory)
     }
 
     private func finishDelegationLocked(

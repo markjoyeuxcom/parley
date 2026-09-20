@@ -408,7 +408,9 @@ Multiline payloads travel through Ghostty paste as one text operation.
 Submission is a separate Enter key event after paste succeeds. Never send raw
 newlines as key events. The settle between those steps pumps the main run loop,
 so the pane can be stopped, closed or restarted part-way through a delivery: the
-target is re-resolved by pane id, launch generation and view identity before
+controller refuses another delivery to that pane until the first returns,
+including a nested call while the run loop is pumped. The target is re-resolved
+by pane id, launch generation and view identity before
 each step that sends input, and a pane that went away refuses rather than
 writing into a torn-down surface. Restoring the person's focus afterwards is not
 delivery and never turns a completed submission into a reported failure. Bound
@@ -446,6 +448,12 @@ timeout rather than holding the thread past the deadline it exists to enforce.
 Giving up leaves a zombie until the process exits; a permanently blocked thread
 would be worse. Its primitives are injectable because that state cannot be
 created on demand, and a check that cannot fail is not coverage.
+
+Reviewed command cancellation uses the same bounded reap and a monotonic
+deadline after SIGKILL; an unobserved exit returns no exit status and says
+completion is unknown. The transient Codex configuration query uses bounded
+nonblocking reads and writes, with bounded cleanup, so a descendant retaining
+stdout cannot hold the launch review beyond its deadline.
 
 Host vendor CLIs launch directly as trusted local applications, with their own
 permissions and approval prompts. Do not put Parley's Seatbelt profile around
@@ -503,7 +511,11 @@ Native control uses a fresh memory-only token, a socket path supplied directly
 by native construction, and kernel peer-PID checks on both sides before native
 control requests are accepted. The client checks the peer before sending any
 authority. Both socket writers suppress SIGPIPE per send. The old control-token
-file is never read. `AgentProcessBoundary` remains only around the host Docker
+file is never read. The control socket has no pane-token routes; agent requests
+use the ticket-checked file transport exclusively. Request fields are read
+through pinned directory/file descriptors with no-follow opens and descriptor
+validation, never an `lstat` followed by a second pathname lookup.
+`AgentProcessBoundary` remains only around the host Docker
 client; Docker owns the vendor's container boundary and reviewed mounts.
 
 Pane capabilities still authenticate and route explicit messages.
@@ -516,11 +528,14 @@ own sandbox allows it (a design lifted from the donkeykong review):
 user's temporary directory when that path would exceed a Unix socket's 103
 bytes; `socketURL(transportDirectory:)` decides for server and shim alike),
 verifies the connecting peer's uid and `LOCAL_PEERPID`, and issues a one-use
-ten-second ticket only when the peer's nearest marked ancestor carries this
-pane's `PARLEY_PANE_ID` and, beside it, `PARLEY_PANE_GENERATION` equal to
-the pane's current launch generation (both are in every host launch
-environment), so a process left over from an earlier generation of the same
-pane is refused like a process of another pane. The shim asks for one with `/usr/bin/nc -U` and
+ten-second ticket only after a bounded kernel parent walk reaches this app.
+Only the app's direct launch root (or its child below Ghostty's root-owned
+`login` intermediate) may supply `PARLEY_PANE_ID` and
+`PARLEY_PANE_GENERATION`; descendant markers never establish identity, and
+an unreadable root refuses instead of falling back to a child. The generation
+must match the current live pane. A copied token and self-chosen environment
+therefore cannot impersonate a sibling launch. Host vendor applications
+remain trusted local processes, not an isolation boundary. The shim asks for one with `/usr/bin/nc -U` and
 writes it as the `ticket` request field; the transport redeems it once, for
 that capability. `RelayTicketPolicy` says per pane whether a ticket is
 required, optional or unavailable, from what real panes were observed to do
@@ -539,8 +554,22 @@ socket, so a ticket is welcome, not demanded; the broker answers the
 network question from the controller's per-generation host launch snapshot
 through `hostNetworkAllowed`, nil meaning unknown and therefore optional).
 Editing or deleting a profile affects the next launch, never a running
-pane's ticket requirement; an old, stopped or not-yet-configured generation
-has no live network fact. Tickets are unavailable for any container,
+pane's ticket requirement. The reviewed profile is captured when a generation
+starts, before surface creation, and also supplies shared-writer warnings;
+container bypass counts as write-capable regardless of the nominal profile.
+`WorkbenchPane.launchFolder` persists the person-selected agent folder separately
+from the terminal-reported `cwd`. Generation snapshots retain that folder;
+start, restart, resume, container preparation and permission reviews use it.
+Only a native stopped-pane folder selection changes it. Legacy documents use
+the last stored folder until the person reviews or changes it.
+Command-run containment and exact-command grants, team grants, agent context
+staging and the working folder of trusted context captures use this same
+reviewed folder; OSC reports never widen those roots. Worktree scans and
+writer warnings use the reviewed agent root, while cleanup conservatively
+protects both the launch folder and the reported folder, including records
+read from the other native runtime.
+Old or stopped generations have no live permission fact, and inactive or
+relay-disabled source panes are refused by broker authentication. Tickets are unavailable for any container,
 where the socket is not mounted, and whenever the socket is not listening;
 and optional for a Claude
 host pane whose own sandbox is switched on: `ClaudeHostConfiguration` reads
@@ -549,7 +578,9 @@ settings, `CLAUDE_CODE_FORCE_SANDBOX`, the project's `.claude/settings.local.jso
 its `.claude/settings.json`, then `~/.claude/settings.json`; unreadable or
 silent files are skipped, unknown is never on or off), and that sandbox
 denies Unix sockets unless its `allowUnixSockets` list admits one, which
-Parley has not checked. Parley never writes Claude's settings. `whoami`
+Parley has not checked. The controller snapshots this fact at launch alongside
+the reviewed profile; later setting edits and terminal cwd reports cannot
+relax that generation's ticket policy. Parley never writes Claude's settings. `whoami`
 reports `attestation` (peer-verified or token-only) and the pane's policy
 with its reason, and the launch review lists the same fact under What is
 carried or What is not carried. A ticket socket that fails to start never
@@ -817,7 +848,12 @@ longer lists as present, with its record present and unchanged in a
 successfully read store, becomes record-only cleanup that runs no Git
 command. Every ignored entry Git would delete is shown in full in a
 scrollable native list with control characters escaped (`displayPath`), a
-directory entry meaning its whole contents; more than 200 refuses; the
+directory entry meaning its whole contents. Ignored directories are also
+inspected for independent repositories, including bare repositories, before
+cleanup can proceed; an unreadable or over-budget traversal refuses removal.
+Attaching a path with a Parley creation record whose marker no longer matches
+refuses rather than replacing the record with an unowned tree. More than 200
+ignored entries refuses; the
 person acknowledges exactly that list and the preview words the preservation
 evidence from the facts (local remote-tracking state, not current remote
 knowledge). While a removal runs, `WorkbenchController` holds a folder
@@ -1456,6 +1492,13 @@ and counts them in the summary; a skipped check is never a passed one, and
 `npm test` itself skips nothing. `npm run test:checks` and
 `npm run test:scripts` are the two halves `npm test` is composed from, so a
 pipeline can pass that argument without restating the suite.
+
+The GitLab `prepare-production-release` job is manual and restricted to
+protected version tags. It imports protected signing/notary variables into a
+temporary keychain, deletes signing material on exit and emits verified
+production assets as successful-job artifacts only. It never publishes or
+changes the stable feed; public distribution remains an explicit reviewed
+action. The beta job remains separate.
 
 The manual release jobs must pass the 25-round eight-pane soak, write the
 standalone JSON report, include it in SHA256SUMS and attach it to the release.

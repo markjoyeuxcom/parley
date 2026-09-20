@@ -172,7 +172,10 @@ public final class RelayHandoffJournal: @unchecked Sendable {
             self.maximumHandoffs = max(1, maximumHandoffs)
             let removed = pruneLocked()
             let removedCount = previous.count - byID.count
-            guard removed else { return 0 }
+            // Appends may already have pruned the projection while older
+            // snapshots remain on disk. Persist that pruning before a larger
+            // bound can make those snapshots visible again at reload.
+            guard removed || eventCount > byID.count || uncertainTail else { return 0 }
             do {
                 try compactLocked()
                 storedError = nil

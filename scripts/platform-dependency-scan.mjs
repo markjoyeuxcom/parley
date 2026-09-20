@@ -54,6 +54,8 @@ export const BASELINE = {
   "RelayActivityJournal.swift": ["Darwin"],
   "RelayFileTransport.swift": ["Darwin"],
   "RelayHTTPServer.swift": ["Darwin"],
+  // Descriptor-relative, no-follow reads are the transport's platform boundary.
+  "RelayRequestFields.swift": ["Darwin"],
   "RelayTicketServer.swift": ["Darwin"],
   "RelayHandoffJournal.swift": ["Darwin"],
   "ReleaseLifecycle.swift": ["CryptoKit"],

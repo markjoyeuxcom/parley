@@ -604,12 +604,16 @@ public struct ManagedWorktreeService: Sendable {
     // MARK: Reads
 
     public func identity(of folder: String) throws -> GitRepositoryIdentity {
-        let output = try run(in: folder, ["rev-parse", "--path-format=absolute", "--git-common-dir", "--show-toplevel"], timeout: readTimeout)
-        let lines = output.stdoutText.split(separator: "\n").map(String.init)
-        guard lines.count == 2, lines[0].hasPrefix("/"), lines[1].hasPrefix("/") else {
+        // Each output is one path. Combining them and splitting on LF makes
+        // an embedded newline in a legal filename indistinguishable from a delimiter.
+        let common = GitWorktreeResolver.singlePathOutput(try run(in: folder,
+            ["rev-parse", "--path-format=absolute", "--git-common-dir"], timeout: readTimeout).stdoutText)
+        let top = GitWorktreeResolver.singlePathOutput(try run(in: folder,
+            ["rev-parse", "--path-format=absolute", "--show-toplevel"], timeout: readTimeout).stdoutText)
+        guard common.hasPrefix("/"), top.hasPrefix("/") else {
             throw ManagedWorktreeError.git("could not resolve the repository for \(folder)")
         }
-        return GitRepositoryIdentity(commonDirectory: GitWorktreeResolver.canonicalPath(lines[0]), toplevel: GitWorktreeResolver.canonicalPath(lines[1]))
+        return GitRepositoryIdentity(commonDirectory: GitWorktreeResolver.canonicalPath(common), toplevel: GitWorktreeResolver.canonicalPath(top))
     }
 
     public func registeredWorktrees(of identity: GitRepositoryIdentity) throws -> [RegisteredWorktree] {
@@ -739,7 +743,7 @@ public struct ManagedWorktreeService: Sendable {
     /// recorded common directory.
     private func adminDirectory(ofWorktreeAt path: String, commonDirectory: String) throws -> String {
         let output = try run(in: path, ["rev-parse", "--path-format=absolute", "--git-dir"], timeout: readTimeout)
-        let directory = GitWorktreeResolver.canonicalPath(output.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines))
+        let directory = GitWorktreeResolver.canonicalPath(GitWorktreeResolver.singlePathOutput(output.stdoutText))
         guard directory.hasPrefix(commonDirectory + "/worktrees/") else {
             throw ManagedWorktreeError.invalid("\(path) is not a linked worktree of the recorded repository.")
         }
@@ -767,7 +771,10 @@ public struct ManagedWorktreeService: Sendable {
         guard !registered.isPrunable else { throw ManagedWorktreeError.invalid("\(existingPath) is missing or prunable.") }
         // Ownership never transfers by path: an existing record keeps
         // parleyCreated only while the live tree still carries its token.
-        if let existing = try store.record(path: canonical), existing.parleyCreated, creationTokenMatches(existing) {
+        if let existing = try store.record(path: canonical), existing.parleyCreated {
+            guard existing.commonDirectory == identity.commonDirectory, creationTokenMatches(existing) else {
+                throw ManagedWorktreeError.invalid("This path has a Parley creation record but its repository or creation marker no longer matches. Inspect the existing record; attaching cannot replace it with an unowned tree.")
+            }
             var updated = existing
             updated.teamSessionID = teamSessionID ?? existing.teamSessionID
             try store.add(updated)
@@ -1069,8 +1076,16 @@ public struct ManagedWorktreeService: Sendable {
             guard let data = try? Data(contentsOf: file),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let panes = object["panes"] as? [[String: Any]] else { otherUnreadable = true; continue }
-            let folders = panes.compactMap { $0["cwd"] as? String }
-            guard folders.count == panes.count, folders.allSatisfy({ $0.hasPrefix("/") }) else {
+            // Keep one relevant folder per pane so usage counts stay accurate,
+            // while either its reviewed root or its reported cwd blocks removal.
+            let folders = panes.compactMap { pane -> String? in
+                guard let cwd = pane["cwd"] as? String, cwd.hasPrefix("/") else { return nil }
+                guard pane["kind"] as? String != PaneKind.shell.rawValue,
+                      pane["launchFolder"] != nil else { return cwd }
+                guard let launch = pane["launchFolder"] as? String, launch.hasPrefix("/") else { return nil }
+                return WorktreeCleanupPolicy.isNested(launch, in: record.path) ? launch : cwd
+            }
+            guard folders.count == panes.count else {
                 otherUnreadable = true; continue
             }
             other += folders
@@ -1083,6 +1098,14 @@ public struct ManagedWorktreeService: Sendable {
                 modified = status.modified; untracked = status.untracked
                 truncated = status.ignored.count > WorktreeCleanupPolicy.maximumReviewedIgnoredPaths
                 ignored = Array(status.ignored.prefix(WorktreeCleanupPolicy.maximumReviewedIgnoredPaths))
+                // Git collapses an ignored directory into one !! entry. A
+                // nested independent repository inside it is not disposable
+                // merely because the person acknowledged that outer entry.
+                if !truncated {
+                    let directories = status.ignored.filter { $0.hasSuffix("/") }
+                        .map { URL(fileURLWithPath: record.path).appendingPathComponent($0) }
+                    nested += try nestedRepositories(in: directories)
+                }
             } else { uncertain = true }
         }
         let upstream: UpstreamState = registered == nil || !pathIsDirectory ? UpstreamState(hasUpstream: nil, ahead: nil) : upstreamState(in: record.path)
@@ -1094,7 +1117,8 @@ public struct ManagedWorktreeService: Sendable {
         return WorktreeCleanupFacts(parleyCreated: record.parleyCreated, creationTokenVerified: tokenVerified, registered: registered != nil,
             registryReadable: registryReadable, pathInspectable: pathInspectable, pathExists: pathExists, pathIsDirectory: pathIsDirectory,
             recordInventoryReadable: recordInventoryReadable,
-            recordPresentInInventory: recordPresent, recordUnchangedInInventory: recordUnchanged, locked: registered?.isLocked ?? false, prunable: registered?.isPrunable ?? true, nestedWorktreePaths: nested.sorted(),
+            recordPresentInInventory: recordPresent, recordUnchangedInInventory: recordUnchanged, locked: registered?.isLocked ?? false, prunable: registered?.isPrunable ?? true,
+            nestedWorktreePaths: Set(nested.map(GitWorktreeResolver.canonicalPath)).sorted(),
             livePaneFolders: livePaneFolders, otherRuntimePaneFolders: other, otherRuntimeStateUnreadable: otherUnreadable, modifiedPaths: modified,
             untrackedPaths: untracked, ignoredPaths: ignored, ignoredListTruncated: truncated, upstreamAheadCount: upstream.ahead ?? 0,
             hasUpstream: upstream.hasUpstream ?? false, mergedIntoPrimary: merged,
@@ -1103,6 +1127,49 @@ public struct ManagedWorktreeService: Sendable {
     }
 
     // MARK: Helpers
+
+    private func nestedRepositories(in directories: [URL]) throws -> [String] {
+        var pending = directories
+        var repositories: [String] = []
+        var inspected = 0
+        let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(readTimeout * 1_000_000_000)
+        while let folder = pending.popLast() {
+            guard inspected < 20_000, DispatchTime.now().uptimeNanoseconds < deadline else {
+                throw ManagedWorktreeError.refused(["the ignored directory is too large to check for nested repositories; inspect or move it before removal"])
+            }
+            var folderInfo = stat()
+            guard lstat(folder.path, &folderInfo) == 0, folderInfo.st_mode & S_IFMT == S_IFDIR else {
+                throw ManagedWorktreeError.refused(["an ignored directory changed or could not be inspected for nested repositories"])
+            }
+            let entries: [URL]
+            do { entries = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) }
+            catch {
+                throw ManagedWorktreeError.refused(["an ignored directory could not be read to check for nested repositories"])
+            }
+            if entries.contains(where: { $0.lastPathComponent == ".git" }) {
+                repositories.append(folder.path)
+                continue
+            }
+            // A bare repository has no .git entry.
+            let names = Set(entries.map(\.lastPathComponent))
+            if names.contains("HEAD"), names.contains("objects"), names.contains("refs") {
+                repositories.append(folder.path)
+                continue
+            }
+            for entry in entries {
+                inspected += 1
+                guard inspected <= 20_000, DispatchTime.now().uptimeNanoseconds < deadline else {
+                    throw ManagedWorktreeError.refused(["the ignored directory is too large to check for nested repositories; inspect or move it before removal"])
+                }
+                var info = stat()
+                guard lstat(entry.path, &info) == 0 else {
+                    throw ManagedWorktreeError.refused(["an ignored path could not be inspected for nested repositories"])
+                }
+                if info.st_mode & S_IFMT == S_IFDIR { pending.append(entry) }
+            }
+        }
+        return repositories
+    }
 
     private func primaryToplevel(_ identity: GitRepositoryIdentity) -> String? {
         (try? registeredWorktrees(of: identity))?.first?.path
@@ -1241,7 +1308,7 @@ extension ManagedWorktreeService {
     /// Browser-only inspection. It owns no clock and authorizes no mutation.
     public func inspectLifecycle(_ record: ManagedWorktreeRecord, panes: [WorkbenchPane], workspaces: [WorkbenchWorkspace],
                                  handoffs: [RelayHandoff], activeTeamPaths: [String], otherRuntimeStateFiles: [URL]) throws -> WorktreeLifecycleInspection {
-        let cleanup = try cleanupPreview(record, livePaneFolders: panes.map(\.cwd), otherRuntimeStateFiles: otherRuntimeStateFiles)
+        let cleanup = try cleanupPreview(record, livePaneFolders: panes.flatMap(\.worktreeSafetyFolders), otherRuntimeStateFiles: otherRuntimeStateFiles)
         let usage = WorktreeUsage.project(path: record.path, panes: panes, workspaces: workspaces, handoffs: handoffs,
             otherPaneFolders: cleanup.facts.otherRuntimePaneFolders, otherRuntimeUnknown: cleanup.facts.otherRuntimeStateUnreadable,
             activeTeamPaths: activeTeamPaths)

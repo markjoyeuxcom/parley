@@ -259,10 +259,15 @@ func teamSessionInvalidationChecks() throws {
     try teamExpect(coordinator.sessions().first(where: { $0.id == policy.id })?.state == .interrupted && coordinator.grant(for: policy.id) == nil, "a policy change kept the grant")
     box.update { $0 = [fixture.lead] }
 
-    // Folder change invalidates.
+    // OSC folder reports do not change the reviewed grant; an explicit
+    // change to its launch folder does invalidate it.
     let folder = try coordinator.request(token: "lead-token", proposal: proposal)
     try coordinator.approve(id: folder.id, revision: folder.revision, objective: "x", folder: fixture.project, allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 3, hours: 2)
     box.update { $0[0].cwd = fixture.root.appendingPathComponent("outside").path }
+    coordinator.reconcile()
+    try teamExpect(coordinator.sessions().first(where: { $0.id == folder.id })?.state == .active,
+        "an OSC report changed the reviewed grant")
+    box.update { $0[0].launchFolder = fixture.root.appendingPathComponent("outside").path }
     coordinator.reconcile()
     try teamExpect(coordinator.sessions().first(where: { $0.id == folder.id })?.state == .interrupted, "a lead folder change kept the grant")
     box.update { $0 = [fixture.lead] }
@@ -575,7 +580,7 @@ func teamSessionShimChecks() throws {
         "the lead did not receive the approved values")
     try teamExpect(String(decoding: approved.stderr, as: UTF8.self).contains("Parley Team Session ID: \(pending.id)"), "the session id was not reported on stderr")
     try teamExpect(broker.waitForTrackedWork(token: token, handoffID: pending.id).status == 200, "parley wait could not recover the decision")
-    try teamExpect(broker.waitForTrackedWork(token: "wrong", handoffID: pending.id).status == 403, "another identity recovered the decision")
+    try teamExpect(broker.waitForTrackedWork(token: "wrong", handoffID: pending.id).status == 401, "invalid credentials passed broker authentication")
     try teamExpect(broker.activityEvents().contains { $0.kind == .teamSessionApproved && $0.paneID == "lead" }, "approval was not recorded as native activity")
 
     let add = runShim(executable, ["team", "add", "--vendor", "codex", "--name", "Reviewer", "--role", "reviewer"], token: token)
@@ -773,9 +778,9 @@ private func teamSessionWorkScopeChecks() throws {
     let requesterToken = try credentials.token(for: "%requester")
     let memberToken = try credentials.token(for: "%member")
     let panes = [
-        WorkbenchPane(id: "%requester", kind: .claude, customName: "Lead", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0", workspaceName: "app"),
-        WorkbenchPane(id: "%member", kind: .codex, customName: "Team Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0", workspaceName: "app"),
-        WorkbenchPane(id: "%other", kind: .agy, customName: "Old Agy", terminalTitle: "", cwd: directory.path, currentCommand: "agy", isActive: false, workspaceID: "@0", workspaceName: "app"),
+        WorkbenchPane(id: "%requester", kind: .claude, customName: "Lead", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0", relayEnabled: true, workspaceName: "app"),
+        WorkbenchPane(id: "%member", kind: .codex, customName: "Team Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true, workspaceName: "app"),
+        WorkbenchPane(id: "%other", kind: .agy, customName: "Old Agy", terminalTitle: "", cwd: directory.path, currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true, workspaceName: "app"),
     ]
     let broker = RelayBroker(credentials: credentials, panes: { panes }, paste: { _, _ in }, submit: { _, _ in })
     func handoffID(_ response: RelayResponse, _ label: String) throws -> String {

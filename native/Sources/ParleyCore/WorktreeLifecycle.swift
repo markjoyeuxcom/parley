@@ -62,7 +62,7 @@ public struct WorktreeUsage: Equatable, Sendable {
     /// the source workspace must never be included just because it delegated.
     public static func project(path: String, panes: [WorkbenchPane], workspaces: [WorkbenchWorkspace], handoffs: [RelayHandoff],
                                otherPaneFolders: [String], otherRuntimeUnknown: Bool, activeTeamPaths: [String]) -> Self {
-        let relevant = panes.filter { WorktreeCleanupPolicy.isNested($0.cwd, in: path) }
+        let relevant = panes.filter { pane in pane.worktreeSafetyFolders.contains { WorktreeCleanupPolicy.isNested($0, in: path) } }
         let snapshots = handoffs.flatMap { handoff in
             [handoff.gitFactsAtDelegation, handoff.gitFactsAtReturn].compactMap { $0 }.filter { $0.managedWorktree?.path == path }
         }

@@ -442,9 +442,7 @@ struct PermissionProfilePickerView: View {
             lines.append(ReviewLine(
                 title: "Bypass vendor permissions",
                 tag: "NOT ENFORCED", tagColor: .orange,
-                detail: kind == .codex
-                    ? "Codex receives --dangerously-bypass-approvals-and-sandbox after the image ID and skips its sandbox and approval prompts inside this container."
-                    : "Claude receives --dangerously-skip-permissions after the image ID and skips its permission checks inside this container."))
+                detail: ContainerLaunchProjection.bypassDisclosure(for: kind)))
             return lines
         }
         guard let effectiveProfile, let plan = launchPlan else { return lines }

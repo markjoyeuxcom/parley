@@ -137,9 +137,17 @@ public struct GitWorktreeResolver: Sendable {
         guard let root = runGit(
             in: standardized,
             arguments: ["rev-parse", "--path-format=absolute", "--show-toplevel"]
-        )?.trimmingCharacters(in: .whitespacesAndNewlines),
+        ).map(Self.singlePathOutput),
         !root.isEmpty else { return nil }
         return Self.canonicalPath(root)
+    }
+
+    /// Git terminates each path with one LF; every preceding byte belongs to
+    /// the path, including a trailing space, CR or another LF.
+    static func singlePathOutput(_ output: String) -> String {
+        // CR+LF is one Swift Character. Remove one UTF-8 byte, not one
+        // Character, or a path ending in CR loses that byte as well.
+        output.utf8.last == 10 ? String(decoding: output.utf8.dropLast(), as: UTF8.self) : output
     }
 
     private func repository(atRoot currentWorktreePath: String) -> GitWorktreeRepository? {
@@ -271,18 +279,17 @@ public struct WorktreeWriterCollision: Identifiable, Equatable, Sendable {
 public enum WorktreeWriterCollisionProjection {
     public static func collisions(
         panes: [WorkbenchPane],
-        profiles: [PermissionProfileDefinition],
+        launchProfiles: [String: PermissionProfileDefinition],
         worktrees: [GitWorktreeRecord],
         paneWorktreePaths: [String: String]
     ) -> [WorktreeWriterCollision] {
-        let profileByID = Dictionary(uniqueKeysWithValues: profiles.map { ($0.id, $0) })
         let worktreeByPath = Dictionary(uniqueKeysWithValues: worktrees.map { ($0.path, $0) })
         var writersByPath: [String: [WorktreeWriter]] = [:]
 
         for pane in panes where pane.kind.isAgent && pane.isStarted && !pane.isDead {
-            guard let selection = pane.permissionSelection,
-                  let profile = profileByID[selection.profileID],
-                  profile.rule(for: .projectWrite) == .allow,
+            let bypass = pane.containerConfiguration?.bypassVendorPermissions == true
+            let profile = launchProfiles[pane.id]
+            guard bypass || profile?.rule(for: .projectWrite) == .allow,
                   let path = paneWorktreePaths[pane.id],
                   worktreeByPath[path] != nil else { continue }
             writersByPath[path, default: []].append(WorktreeWriter(
@@ -290,7 +297,7 @@ public enum WorktreeWriterCollisionProjection {
                 paneName: pane.displayName,
                 paneKind: pane.kind,
                 workspaceID: pane.workspaceID,
-                permissionProfileName: profile.name,
+                permissionProfileName: bypass ? "Vendor permissions bypassed" : (profile?.name ?? "Unknown"),
                 enforcement: pane.permissionEnforcement
             ))
         }

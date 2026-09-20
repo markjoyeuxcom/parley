@@ -1056,11 +1056,11 @@ private func checkVendorPermissionStateIsNotInferredFromTerminalText() throws {
     let targetToken = try credentials.token(for: "%2")
     let source = WorkbenchPane(
         id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp",
-        currentCommand: "claude", isActive: true, workspaceID: "@0"
+        currentCommand: "claude", isActive: true, workspaceID: "@0", relayEnabled: true
     )
     let target = WorkbenchPane(
         id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp",
-        currentCommand: "codex", isActive: false, workspaceID: "@0"
+        currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true
     )
     let submissions = LockedCounter()
     let terminalReads = LockedCounter()
@@ -2610,7 +2610,9 @@ private func checkSharedWorktreeWriterCollisionProjection() throws {
     ]
     let collisions = WorktreeWriterCollisionProjection.collisions(
         panes: panes,
-        profiles: PermissionProfileDefinition.builtIns,
+        launchProfiles: Dictionary(uniqueKeysWithValues: panes.compactMap { pane in
+            PermissionProfileDefinition.builtIns.first { $0.id == pane.permissionSelection?.profileID }.map { (pane.id, $0) }
+        }),
         worktrees: [worktree],
         paneWorktreePaths: Dictionary(uniqueKeysWithValues: panes.map { ($0.id, worktree.path) })
     )
@@ -2621,7 +2623,9 @@ private func checkSharedWorktreeWriterCollisionProjection() throws {
 
     let separate = WorktreeWriterCollisionProjection.collisions(
         panes: Array(panes.prefix(2)),
-        profiles: PermissionProfileDefinition.builtIns,
+        launchProfiles: Dictionary(uniqueKeysWithValues: panes.compactMap { pane in
+            PermissionProfileDefinition.builtIns.first { $0.id == pane.permissionSelection?.profileID }.map { (pane.id, $0) }
+        }),
         worktrees: [worktree],
         paneWorktreePaths: ["%1": worktree.path, "%2": "/Users/example/other-worktree"]
     )
@@ -2687,7 +2691,9 @@ private func checkWorkspaceSafetySummaryUsesOnlyAuthoritativeFacts() throws {
     )
     let collisions = WorktreeWriterCollisionProjection.collisions(
         panes: panes,
-        profiles: PermissionProfileDefinition.builtIns,
+        launchProfiles: Dictionary(uniqueKeysWithValues: panes.compactMap { pane in
+            PermissionProfileDefinition.builtIns.first { $0.id == pane.permissionSelection?.profileID }.map { (pane.id, $0) }
+        }),
         worktrees: [worktree],
         paneWorktreePaths: ["%1": "/repo", "%2": "/repo", "%4": "/repo"]
     )
@@ -3770,10 +3776,10 @@ private func checkSupervisedLeadWorkflowPolicyAndCancellation() throws {
     let implementerToken = try credentials.token(for: "%3")
     let observerToken = try credentials.token(for: "%4")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .claude, customName: "Planner", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0", workspaceName: "app", isWorkspaceLead: true, automationPolicy: .askAndDelegate),
-        WorkbenchPane(id: "%2", kind: .codex, customName: "Reviewer", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0", workspaceName: "app", automationPolicy: .askAndDelegate),
-        WorkbenchPane(id: "%3", kind: .agy, customName: "Builder", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0", workspaceName: "app", automationPolicy: .askAndDelegate),
-        WorkbenchPane(id: "%4", kind: .copilot, customName: "Observer", terminalTitle: "", cwd: "/tmp", currentCommand: "copilot", isActive: false, workspaceID: "@0", workspaceName: "app", automationPolicy: .askAndDelegate),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Planner", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0", relayEnabled: true, workspaceName: "app", isWorkspaceLead: true, automationPolicy: .askAndDelegate),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Reviewer", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true, workspaceName: "app", automationPolicy: .askAndDelegate),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Builder", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true, workspaceName: "app", automationPolicy: .askAndDelegate),
+        WorkbenchPane(id: "%4", kind: .copilot, customName: "Observer", terminalTitle: "", cwd: "/tmp", currentCommand: "copilot", isActive: false, workspaceID: "@0", relayEnabled: true, workspaceName: "app", automationPolicy: .askAndDelegate),
     ]
     let submissions = LockedSubmissions()
     let broker = RelayBroker(
@@ -3808,14 +3814,14 @@ private func checkSupervisedLeadWorkflowPolicyAndCancellation() throws {
     try expect(broker.handoffs().first(where: { $0.id == cancellableID })?.state == .cancelled, "agent cancellation did not reach a terminal state")
 
     let offPanes = panes.map { pane in
-        WorkbenchPane(id: pane.id, kind: pane.kind, customName: pane.customName, terminalTitle: pane.terminalTitle, cwd: pane.cwd, currentCommand: pane.currentCommand, isActive: pane.isActive, workspaceID: pane.workspaceID, workspaceName: pane.workspaceName, inputAvailable: pane.inputAvailable, isWorkspaceLead: pane.isWorkspaceLead, automationPolicy: .off)
+        WorkbenchPane(id: pane.id, kind: pane.kind, customName: pane.customName, terminalTitle: pane.terminalTitle, cwd: pane.cwd, currentCommand: pane.currentCommand, isActive: pane.isActive, workspaceID: pane.workspaceID, relayEnabled: true, workspaceName: pane.workspaceName, inputAvailable: pane.inputAvailable, isWorkspaceLead: pane.isWorkspaceLead, automationPolicy: .off)
     }
     let offBroker = RelayBroker(credentials: credentials, panes: { offPanes }, paste: { _, _ in }, submit: { _, _ in })
     try expect(offBroker.handle(token: leadToken, target: "reviewer", text: "Must not send.").status == 403, "Off policy allowed automatic relay")
     try expect(offBroker.handleAsk(token: leadToken, target: "reviewer", text: "Must not ask.").status == 403, "Off policy allowed Ask")
 
     let askOnlyPanes = panes.map { pane in
-        WorkbenchPane(id: pane.id, kind: pane.kind, customName: pane.customName, terminalTitle: pane.terminalTitle, cwd: pane.cwd, currentCommand: pane.currentCommand, isActive: pane.isActive, workspaceID: pane.workspaceID, workspaceName: pane.workspaceName, inputAvailable: pane.inputAvailable, isWorkspaceLead: pane.isWorkspaceLead, automationPolicy: .askAnswer)
+        WorkbenchPane(id: pane.id, kind: pane.kind, customName: pane.customName, terminalTitle: pane.terminalTitle, cwd: pane.cwd, currentCommand: pane.currentCommand, isActive: pane.isActive, workspaceID: pane.workspaceID, relayEnabled: true, workspaceName: pane.workspaceName, inputAvailable: pane.inputAvailable, isWorkspaceLead: pane.isWorkspaceLead, automationPolicy: .askAnswer)
     }
     let askOnlyBroker = RelayBroker(credentials: credentials, panes: { askOnlyPanes }, paste: { _, _ in }, submit: { _, _ in })
     try expect(askOnlyBroker.handleDelegate(token: leadToken, target: "builder", text: "Must not delegate.").status == 403, "Ask/Answer policy allowed tracked delegation")
@@ -3828,9 +3834,9 @@ private func checkTrackedDelegationCompletesAndWaits() throws {
     let targetToken = try credentials.token(for: "%2")
     let wrongToken = try credentials.token(for: "%3")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp/api", currentCommand: "codex", isActive: true, workspaceID: "@0", workspaceName: "api"),
-        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/web", currentCommand: "agy", isActive: false, workspaceID: "@1", workspaceName: "web"),
-        WorkbenchPane(id: "%3", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp/api", currentCommand: "codex", isActive: true, workspaceID: "@0", relayEnabled: true, workspaceName: "api"),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/web", currentCommand: "agy", isActive: false, workspaceID: "@1", relayEnabled: true, workspaceName: "web"),
+        WorkbenchPane(id: "%3", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let submitted = LockedDelivery()
     let submissionCount = LockedCounter()
@@ -3922,9 +3928,9 @@ private func checkTrackedDelegationProgressIsBoundedOwnedAndDurable() throws {
     let targetToken = try credentials.token(for: "%2")
     let foreignToken = try credentials.token(for: "%3")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .claude, customName: "Builder", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, workspaceID: "@0"),
-        WorkbenchPane(id: "%3", kind: .agy, customName: "Observer", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .claude, customName: "Builder", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Observer", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let journal = try RelayHandoffJournal(file: historyFile)
     let broker = RelayBroker(
@@ -4014,9 +4020,9 @@ private func checkDelegationFileResultsAreBoundedOwnedAndReviewed() throws {
     let targetToken = try credentials.token(for: "%2")
     let foreignToken = try credentials.token(for: "%3")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .claude, customName: "Builder", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: false, workspaceID: "@0"),
-        WorkbenchPane(id: "%3", kind: .agy, customName: "Observer", terminalTitle: "", cwd: directory.path, currentCommand: "agy", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .claude, customName: "Builder", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: false, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Observer", terminalTitle: "", cwd: directory.path, currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let broker = RelayBroker(
         credentials: credentials,
@@ -4131,15 +4137,15 @@ private func checkDetachedAskRecoveryIsDurableAndGenerationBound() throws {
     let foreignToken = try credentials.token(for: "%3")
     let source = WorkbenchPane(
         id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp/api",
-        currentCommand: "codex", isActive: true, workspaceID: "@0", launchGeneration: 4
+        currentCommand: "codex", isActive: true, workspaceID: "@0", relayEnabled: true, launchGeneration: 4
     )
     let target = WorkbenchPane(
         id: "%2", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp/api",
-        currentCommand: "claude", isActive: false, workspaceID: "@0", launchGeneration: 2
+        currentCommand: "claude", isActive: false, workspaceID: "@0", relayEnabled: true, launchGeneration: 2
     )
     let foreign = WorkbenchPane(
         id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/api",
-        currentCommand: "agy", isActive: false, workspaceID: "@0", launchGeneration: 1
+        currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true, launchGeneration: 1
     )
     let livePanes = LockedPanes([source, target, foreign])
     let journal = try RelayHandoffJournal(file: journalFile)
@@ -4225,8 +4231,8 @@ private func checkTrackedDelegationFailureAndLiveness() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
     let targetToken = try credentials.token(for: "%2")
-    let source = WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0")
-    let target = WorkbenchPane(id: "%2", kind: .copilot, customName: "Copilot", terminalTitle: "", cwd: "/tmp", currentCommand: "copilot", isActive: false, workspaceID: "@0")
+    let source = WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0", relayEnabled: true)
+    let target = WorkbenchPane(id: "%2", kind: .copilot, customName: "Copilot", terminalTitle: "", cwd: "/tmp", currentCommand: "copilot", isActive: false, workspaceID: "@0", relayEnabled: true)
     let livePanes = LockedPanes([source, target])
     let broker = RelayBroker(
         credentials: credentials,
@@ -4279,8 +4285,8 @@ private func checkDelegationShimRoundTrip() throws {
     let sourceToken = try credentials.token(for: "%1")
     let targetToken = try credentials.token(for: "%2")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let broker = RelayBroker(
         credentials: credentials,
@@ -5597,8 +5603,8 @@ private func checkHistoryRetentionCoreControlRoute() throws {
     let sourceToken = try credentials.token(for: "%source")
     _ = try credentials.token(for: "%target")
     let panes = [
-        WorkbenchPane(id: "%source", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0", workspaceName: "app"),
-        WorkbenchPane(id: "%target", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, workspaceID: "@0", workspaceName: "app"),
+        WorkbenchPane(id: "%source", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0", relayEnabled: true, workspaceName: "app"),
+        WorkbenchPane(id: "%target", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, workspaceID: "@0", relayEnabled: true, workspaceName: "app"),
     ]
     let retentionStore = CollaborationHistoryRetentionStore(
         file: directory.appendingPathComponent("history-retention.json")
@@ -5966,8 +5972,8 @@ private func checkAgentRelaySubmitsAndExplicitPasteDoesNot() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let token = try credentials.token(for: "%1")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let pasted = LockedDelivery()
     let submitted = LockedDelivery()
@@ -5999,8 +6005,8 @@ private func checkStableHandoffIdentityAndIdempotentRelay() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let token = try credentials.token(for: "%1")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let submissions = LockedCounter()
     let broker = RelayBroker(
@@ -6060,8 +6066,8 @@ private func checkCompletedHandoffRetentionIsBounded() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let token = try credentials.token(for: "%1")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let broker = RelayBroker(
         credentials: credentials,
@@ -6092,8 +6098,8 @@ private func checkDurableHandoffJournal() throws {
     let sourceToken = try credentials.token(for: "%1")
     let targetToken = try credentials.token(for: "%2")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp/repo-a", currentCommand: "codex", isActive: true, workspaceID: "@0", workspaceName: "repo-a"),
-        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/repo-b", currentCommand: "agy", isActive: false, workspaceID: "@1", workspaceName: "repo-b"),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp/repo-a", currentCommand: "codex", isActive: true, workspaceID: "@0", relayEnabled: true, workspaceName: "repo-a"),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/repo-b", currentCommand: "agy", isActive: false, workspaceID: "@1", relayEnabled: true, workspaceName: "repo-b"),
     ]
     let historyFile = directory.appendingPathComponent("handoffs.jsonl")
     let journal = try RelayHandoffJournal(file: historyFile)
@@ -6226,8 +6232,8 @@ private func checkAllWorkspaceHistoryClearing() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("tokens.json"))
     let token = try credentials.token(for: "%source")
     let panes = [
-        WorkbenchPane(id: "%source", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "live"),
-        WorkbenchPane(id: "%target", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, workspaceID: "live"),
+        WorkbenchPane(id: "%source", kind: .codex, customName: "Builder", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "live", relayEnabled: true),
+        WorkbenchPane(id: "%target", kind: .claude, customName: "Reviewer", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, workspaceID: "live", relayEnabled: true),
     ]
     let historyFile = directory.appendingPathComponent("handoffs.jsonl")
     let activityFile = directory.appendingPathComponent("activity.jsonl")
@@ -6301,12 +6307,12 @@ private func checkWorkspaceHandoffHistoryDeletion() throws {
     let repoCToken = try credentials.token(for: "%3")
     let duplicateNameToken = try credentials.token(for: "%5")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex A", terminalTitle: "", cwd: "/tmp/repo-a", currentCommand: "codex", isActive: true, workspaceID: "@0", workspaceName: "repo-a"),
-        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy B", terminalTitle: "", cwd: "/tmp/repo-b", currentCommand: "agy", isActive: false, workspaceID: "@1", workspaceName: "repo-b"),
-        WorkbenchPane(id: "%3", kind: .claude, customName: "Claude C", terminalTitle: "", cwd: "/tmp/repo-c", currentCommand: "claude", isActive: false, workspaceID: "@2", workspaceName: "repo-c"),
-        WorkbenchPane(id: "%4", kind: .codex, customName: "Codex C", terminalTitle: "", cwd: "/tmp/repo-c", currentCommand: "codex", isActive: false, workspaceID: "@2", workspaceName: "repo-c"),
-        WorkbenchPane(id: "%5", kind: .claude, customName: "Claude Duplicate", terminalTitle: "", cwd: "/tmp/duplicate-a", currentCommand: "claude", isActive: false, workspaceID: "@3", workspaceName: "repo-a"),
-        WorkbenchPane(id: "%6", kind: .codex, customName: "Codex Duplicate", terminalTitle: "", cwd: "/tmp/duplicate-a", currentCommand: "codex", isActive: false, workspaceID: "@3", workspaceName: "repo-a"),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex A", terminalTitle: "", cwd: "/tmp/repo-a", currentCommand: "codex", isActive: true, workspaceID: "@0", relayEnabled: true, workspaceName: "repo-a"),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy B", terminalTitle: "", cwd: "/tmp/repo-b", currentCommand: "agy", isActive: false, workspaceID: "@1", relayEnabled: true, workspaceName: "repo-b"),
+        WorkbenchPane(id: "%3", kind: .claude, customName: "Claude C", terminalTitle: "", cwd: "/tmp/repo-c", currentCommand: "claude", isActive: false, workspaceID: "@2", relayEnabled: true, workspaceName: "repo-c"),
+        WorkbenchPane(id: "%4", kind: .codex, customName: "Codex C", terminalTitle: "", cwd: "/tmp/repo-c", currentCommand: "codex", isActive: false, workspaceID: "@2", relayEnabled: true, workspaceName: "repo-c"),
+        WorkbenchPane(id: "%5", kind: .claude, customName: "Claude Duplicate", terminalTitle: "", cwd: "/tmp/duplicate-a", currentCommand: "claude", isActive: false, workspaceID: "@3", relayEnabled: true, workspaceName: "repo-a"),
+        WorkbenchPane(id: "%6", kind: .codex, customName: "Codex Duplicate", terminalTitle: "", cwd: "/tmp/duplicate-a", currentCommand: "codex", isActive: false, workspaceID: "@3", relayEnabled: true, workspaceName: "repo-a"),
     ]
     let historyFile = directory.appendingPathComponent("handoffs.jsonl")
     let journal = try RelayHandoffJournal(file: historyFile)
@@ -6378,10 +6384,10 @@ private func checkCrossWorkspaceRelayAddressing() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let token = try credentials.token(for: "%1")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp/api", currentCommand: "codex", isActive: true, workspaceID: "@0", workspaceName: "api"),
-        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/api", currentCommand: "agy", isActive: false, workspaceID: "@0", workspaceName: "api"),
-        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/web", currentCommand: "agy", isActive: false, workspaceID: "@1", workspaceName: "web"),
-        WorkbenchPane(id: "%4", kind: .claude, customName: "Critic", terminalTitle: "", cwd: "/tmp/web", currentCommand: "claude", isActive: false, workspaceID: "@1", workspaceName: "web", role: "reviewer"),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp/api", currentCommand: "codex", isActive: true, workspaceID: "@0", relayEnabled: true, workspaceName: "api"),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/api", currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true, workspaceName: "api"),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp/web", currentCommand: "agy", isActive: false, workspaceID: "@1", relayEnabled: true, workspaceName: "web"),
+        WorkbenchPane(id: "%4", kind: .claude, customName: "Critic", terminalTitle: "", cwd: "/tmp/web", currentCommand: "claude", isActive: false, workspaceID: "@1", relayEnabled: true, workspaceName: "web", role: "reviewer"),
     ]
     let submitted = LockedDelivery()
     let broker = RelayBroker(
@@ -6403,7 +6409,7 @@ private func checkCrossWorkspaceRelayAddressing() throws {
     try expect(bareRole.status == 400, "a bare name silently resolved through the stable-role namespace")
 
     let ambiguousPanes = panes + [
-        WorkbenchPane(id: "%5", kind: .copilot, customName: "Second critic", terminalTitle: "", cwd: "/tmp/web", currentCommand: "copilot", isActive: false, workspaceID: "@1", workspaceName: "web", role: "reviewer"),
+        WorkbenchPane(id: "%5", kind: .copilot, customName: "Second critic", terminalTitle: "", cwd: "/tmp/web", currentCommand: "copilot", isActive: false, workspaceID: "@1", relayEnabled: true, workspaceName: "web", role: "reviewer"),
     ]
     let ambiguousBroker = RelayBroker(
         credentials: credentials,
@@ -6445,8 +6451,8 @@ private func checkRelayFilesystemRoundTrip() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let token = try credentials.token(for: "%1")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let pasted = LockedDelivery()
     let submitted = LockedDelivery()
@@ -6648,8 +6654,8 @@ private func checkLargeCoreActivityResponseIsComplete() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let token = try credentials.token(for: "%1")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let broker = RelayBroker(credentials: credentials, panes: { panes }, paste: { _, _ in }, submit: { _, _ in })
     for index in 0..<40 {
@@ -6674,8 +6680,8 @@ private func checkCoreControlSurvivesClientReattachment() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let retryAttempts = LockedCounter()
     let broker = RelayBroker(
@@ -6899,9 +6905,9 @@ private func checkAgentAskSubmitsAndBlocksUntilTheTargetAnswers() throws {
     let targetToken = try credentials.token(for: "%2")
     let wrongToken = try credentials.token(for: "%3")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
-        WorkbenchPane(id: "%3", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Planner", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%3", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let submitted = LockedDelivery()
     let submissionCount = LockedCounter()
@@ -7007,9 +7013,9 @@ private func checkAskManyFansOutIndependentlyAndReturnsAnOrderedBundle() throws 
     let codexToken = try credentials.token(for: "%2")
     let agyToken = try credentials.token(for: "%3")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
-        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let submissions = LockedSubmissions()
     let broker = RelayBroker(
@@ -7196,9 +7202,9 @@ private func checkHumanAskManyUsesTheTrackedBrokerPath() throws {
     let codexToken = try credentials.token(for: "%2")
     let agyToken = try credentials.token(for: "%3")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .claude, customName: "Lead", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0", automationPolicy: .off),
-        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
-        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Lead", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0", relayEnabled: true, automationPolicy: .off),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let submissions = LockedSubmissions()
     let broker = RelayBroker(
@@ -7244,7 +7250,7 @@ private func checkHumanAskManyUsesTheTrackedBrokerPath() throws {
         credentials: credentials,
         panes: {
             panes + [
-                WorkbenchPane(id: "%4", kind: .codex, customName: "Codex Two", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
+                WorkbenchPane(id: "%4", kind: .codex, customName: "Codex Two", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true),
             ]
         },
         paste: { _, _ in },
@@ -7287,9 +7293,9 @@ private func checkHumanAskManyCoreControlRoute() throws {
     let codexToken = try credentials.token(for: "%2")
     let agyToken = try credentials.token(for: "%3")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .claude, customName: "Lead", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0", automationPolicy: .off),
-        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
-        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Lead", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0", relayEnabled: true, automationPolicy: .off),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let submissions = LockedSubmissions()
     let broker = RelayBroker(
@@ -7353,8 +7359,8 @@ private func checkAgentAskRejectsBusyTargetAndTimesOut() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let token = try credentials.token(for: "%1")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let broker = RelayBroker(
         credentials: credentials,
@@ -7742,8 +7748,8 @@ private func checkHumanCancellationUnblocksAsk() throws {
     let sourceToken = try credentials.token(for: "%1")
     _ = try credentials.token(for: "%2")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let submissions = LockedCounter()
     let broker = RelayBroker(
@@ -7796,8 +7802,8 @@ private func checkSafeFailedDeliveryRetryIsStableAndDeduplicated() throws {
     let sourceToken = try credentials.token(for: "%1")
     _ = try credentials.token(for: "%2")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let attempts = LockedCounter()
     let retryStarted = DispatchSemaphore(value: 0)
@@ -7867,8 +7873,8 @@ private func checkUncertainAndAskFailuresCannotBeRetried() throws {
     let sourceToken = try credentials.token(for: "%1")
     _ = try credentials.token(for: "%2")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let attempts = LockedCounter()
     let broker = RelayBroker(
@@ -7913,8 +7919,8 @@ private func checkAskDetectsDeadAndRestartedPanes() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
     _ = try credentials.token(for: "%2")
-    let source = WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0")
-    let target = WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0")
+    let source = WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0", relayEnabled: true)
+    let target = WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true)
     let livePanes = LockedPanes([source, target])
     let broker = RelayBroker(
         credentials: credentials,
@@ -8002,8 +8008,8 @@ private func checkConsultationShimRoundTrip() throws {
     let sourceToken = try credentials.token(for: "%1")
     let targetToken = try credentials.token(for: "%2")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let broker = RelayBroker(
         credentials: credentials,
@@ -8088,9 +8094,9 @@ private func checkAskManyShimRoundTrip() throws {
     let codexToken = try credentials.token(for: "%2")
     let agyToken = try credentials.token(for: "%3")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0"),
-        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp", currentCommand: "claude", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: "/tmp", currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: "/tmp", currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let broker = RelayBroker(
         credentials: credentials,
@@ -8260,8 +8266,8 @@ private final class CommandCaptureProbeDelegate: NSObject, NSApplicationDelegate
     let claudeToken = try credentials.token(for: "%1")
     let reviewerToken = try credentials.token(for: "%2")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp/project", currentCommand: "claude", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .claude, customName: "Claude Reviewer", terminalTitle: "", cwd: "/tmp/project", currentCommand: "claude", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: "/tmp/project", currentCommand: "claude", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .claude, customName: "Claude Reviewer", terminalTitle: "", cwd: "/tmp/project", currentCommand: "claude", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let submissions = LockedDelivery()
     let reviewStore = try AgentContextReviewStore(
@@ -8445,7 +8451,7 @@ private func checkConcurrentContextAddsRetainEveryAcceptedPart() throws {
             cwd: directory.path,
             currentCommand: "claude",
             isActive: true,
-            workspaceID: "@0"
+            workspaceID: "@0", relayEnabled: true
         ),
     ]
     let broker = RelayBroker(
@@ -8524,7 +8530,7 @@ private func checkContextAddRacingAskHasOneDurableWinner() throws {
             cwd: directory.path,
             currentCommand: "claude",
             isActive: true,
-            workspaceID: "@0"
+            workspaceID: "@0", relayEnabled: true
         ),
         WorkbenchPane(
             id: "%2",
@@ -8534,7 +8540,7 @@ private func checkContextAddRacingAskHasOneDurableWinner() throws {
             cwd: directory.path,
             currentCommand: "codex",
             isActive: false,
-            workspaceID: "@0"
+            workspaceID: "@0", relayEnabled: true
         ),
     ]
     let broker = RelayBroker(
@@ -8621,8 +8627,8 @@ private func checkContextAddRacingCompletionHasOneDurableWinner() throws {
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let broker = RelayBroker(
         credentials: credentials,
@@ -8773,9 +8779,9 @@ private func checkContextDraftDiscardIsOwnedReleasesAskAndCleansUpStaleDrafts() 
     let targetToken = try credentials.token(for: "%2")
     let outsiderToken = try credentials.token(for: "%3")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0"),
-        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: directory.path, currentCommand: "agy", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%3", kind: .agy, customName: "Agy", terminalTitle: "", cwd: directory.path, currentCommand: "agy", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let store = try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json"))
     let broker = RelayBroker(
@@ -8909,8 +8915,8 @@ private func checkContextDraftAskOnePaneIsACorrelatedAsk() throws {
     let sourceToken = try credentials.token(for: "%1")
     let targetToken = try credentials.token(for: "%2")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .claude, customName: "Claude Reviewer", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .claude, customName: "Claude Reviewer", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let delivered = LockedDelivery()
     let broker = RelayBroker(
@@ -9063,8 +9069,8 @@ private func checkTrustedContextCaptureExtendsAgentDraftWithoutTrustingApproval(
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let sourceToken = try credentials.token(for: "%1")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let broker = RelayBroker(
         credentials: credentials,
@@ -9185,8 +9191,8 @@ private func checkContextReviewTransportBoundsAndEscaping() throws {
     let sourceToken = try credentials.token(for: "%1")
     let targetToken = try credentials.token(for: "%2")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let broker = RelayBroker(
         credentials: credentials,
@@ -9298,8 +9304,8 @@ private func checkContextReviewShimRoundTrip() throws {
     let claudeToken = try credentials.token(for: "%1")
     let codexToken = try credentials.token(for: "%2")
     let panes = [
-        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0"),
-        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0"),
+        WorkbenchPane(id: "%1", kind: .claude, customName: "Claude", terminalTitle: "", cwd: directory.path, currentCommand: "claude", isActive: true, workspaceID: "@0", relayEnabled: true),
+        WorkbenchPane(id: "%2", kind: .codex, customName: "Codex", terminalTitle: "", cwd: directory.path, currentCommand: "codex", isActive: false, workspaceID: "@0", relayEnabled: true),
     ]
     let submissions = LockedDelivery()
     let reviewStore = try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json"))
@@ -9753,10 +9759,51 @@ private func checkRealGhosttyAppResidentPaneLifecycle() throws {
     }
 }
 
-/// The launch word is what a real pane process sees. Ghostty sets `TERM`
-/// from its own option on top of the surface environment, so this proves
-/// the command-word route wins there and that a launch without the word
-/// still reads Ghostty's own type, with the bundled terminfo behind it.
+/// Exercise ticket attestation through Ghostty's actual login/launch tree,
+/// with synthetic credentials and a non-platform executable as the vendor root.
+private func checkRealGhosttyTicketLaunchRoot() throws {
+    try GhosttyLaunchPreflight.check()
+    try MainActor.assumeIsolated {
+        _ = NSApplication.shared
+        let directory = URL(fileURLWithPath: "/private/tmp/pr-ghostty-" + String(UUID().uuidString.prefix(8)))
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let credentials = try RelayCredentials(file: directory.appendingPathComponent("tokens.json"))
+        let token = try credentials.token(for: "fixture-pane")
+        let pane = WorkbenchPane(id: "fixture-pane", kind: .claude, customName: "fixture", terminalTitle: "", cwd: directory.path,
+            currentCommand: "fixture", isActive: false, workspaceID: "fixture", relayEnabled: true)
+        let broker = RelayBroker(credentials: credentials, panes: { [pane] }, paste: { _, _ in }, submit: { _, _ in })
+        let runtime = directory.appendingPathComponent("transport")
+        let tickets = RelayTicketServer(socketFile: RelayTicketServer.socketURL(transportDirectory: runtime), credentials: credentials,
+            paneGeneration: { $0 == pane.id ? 0 : nil })
+        let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: runtime, tickets: tickets)
+        try transport.start(); defer { transport.stop() }
+        try tickets.start(); defer { tickets.stop() }
+        let shim = try RelayShim.install(in: directory, transportDirectory: runtime).appendingPathComponent("parley")
+        let report = directory.appendingPathComponent("identity.json")
+        let executable = Bundle.main.executableURL!.path
+        let words = [executable, "--run-marked", "/bin/sh", "-c", "\"$1\" whoami > \"$2\"; /bin/sleep 1", "fixture", shim.path, report.path]
+        let terminal = AppTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 420))
+        let controller = TerminalController { $0.withBackgroundOpacity(1) }
+        terminal.configuration = TerminalSurfaceOptions(backend: .exec, workingDirectory: directory.path,
+            envVars: ["PARLEY_RELAY_TOKEN": token, "PARLEY_PANE_ID": pane.id, "PARLEY_PANE_GENERATION": "0"],
+            command: GhosttyLaunchCommand.render(words), waitAfterCommand: true)
+        terminal.controller = controller
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 420), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.contentView = terminal; window.orderFront(nil)
+        defer { terminal.controller = nil; window.close() }
+        let deadline = DispatchTime.now().uptimeNanoseconds + 8_000_000_000
+        var identity: RelayAgentIdentity?
+        while identity == nil && DispatchTime.now().uptimeNanoseconds < deadline {
+            if let data = try? Data(contentsOf: report) { identity = try? JSONDecoder().decode(RelayAgentIdentity.self, from: data) }
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+        try expect(identity?.attestation == "peer-verified", "Ghostty's actual launch root did not attest: \((try? String(contentsOf: report, encoding: .utf8)) ?? "no response")")
+    }
+}
+
+/// The command-word route must win over Ghostty's own TERM option while
+/// launches without the word retain Ghostty's bundled terminal type.
 private func checkRealGhosttyLaunchHonoursTerminalTypeWord() throws {
     try GhosttyLaunchPreflight.check()
     try MainActor.assumeIsolated {
@@ -9922,6 +9969,7 @@ let checks: [(String, () throws -> Void)] = [
     ("real Ghostty app-resident pane lifecycle", checkRealGhosttyAppResidentPaneLifecycle),
     ("real Ghostty six-pane input isolation", checkRealGhosttySixPaneInputIsolation),
     ("real Ghostty launch honours the terminal type word", checkRealGhosttyLaunchHonoursTerminalTypeWord),
+    ("real Ghostty ticket verification binds to the app-owned launch root", checkRealGhosttyTicketLaunchRoot),
     ("runtime namespaces are explicit and disjoint", checkRuntimeNamespacesAreExplicitAndDisjoint),
     ("runtime termination choice survives dead agents", checkRuntimeTerminationChoiceSurvivesDeadAgents),
     ("useful copyable build information", checkBuildInformationIsUsefulAndCopyable),
@@ -10241,7 +10289,7 @@ if let image = argument(named: "--container-transport-spike") {
 let onlyFilter = argument(named: "--only")?.lowercased()
 let skipFilters = (argument(named: "--skip") ?? "").lowercased()
     .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-let allChecks = (containerPaneChecks + checks + reviewRegressionChecks + approvalHandlingChecks + folderListChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + worktreeBoardChecks + worktreeRepositoryChecks + emptyWorkspaceChecks + relayTicketChecks + protocolDriftChecks + auxiliaryWindowChecks + helpAuditChecks + terminalTypeChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + askCorrelationChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
+let allChecks = (containerPaneChecks + checks + reviewRegressionChecks + repositoryReviewChecks + approvalHandlingChecks + folderListChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + worktreeBoardChecks + worktreeRepositoryChecks + emptyWorkspaceChecks + relayTicketChecks + protocolDriftChecks + auxiliaryWindowChecks + helpAuditChecks + terminalTypeChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + askCorrelationChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
     onlyFilter.map { name.lowercased().contains($0) } ?? true
 }
 var skippedCount = 0

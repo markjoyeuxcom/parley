@@ -209,14 +209,15 @@ final class GhosttyPaneRegistry {
             },
             onClose: { [weak self] paneID, processAlive in
                 guard let self, let workbench = self.workbench else { return }
-                let closed = try? workbench.listPanes().first { $0.id == paneID }
-                try? workbench.terminalDidClose(paneID: paneID, processAlive: processAlive)
+                guard let closed = try? workbench.listPanes().first(where: { $0.id == paneID }),
+                      closed.launchGeneration == launch.generation else { return }
+                try? workbench.terminalDidClose(paneID: paneID, generation: launch.generation, processAlive: processAlive)
                 self.onPaneStateChanged?()
                 // A lost docker client does not prove its daemon-owned process
                 // ended. Reconcile its exact receipt in the background. Ordinary
                 // deliberate termination has already completed this cleanup.
                 if !processAlive, !workbench.isTerminatingSurface,
-                   let closed, closed.containerConfiguration != nil, closed.launchGeneration == launch.generation {
+                   closed.containerConfiguration != nil {
                     Task { [weak self] in
                         do {
                             try await Task.detached(priority: .utility) { try workbench.prepareContainerStop(closed) }.value

@@ -605,13 +605,15 @@ compilation and fail closed if the expected upstream source shape changes.
 
 `npm run package:mac` and `npm run verify:package:mac` remain local ad-hoc
 package checks. `npm run release:mac` now fails closed unless the Developer ID,
-Apple notary and Sparkle Ed25519 configuration is present. The manual
-notarized-release workflow (kept in the repository but disabled on GitHub until
-it moves to GitLab) notarizes and staples the app and DMG, verifies Gatekeeper,
-generates an Ed25519-signed stable appcast and a SHA-256-pinned `parley.rb`,
-and creates only an unpublished draft. Publishing that reviewed release opens a
-separate pull request to update `Casks/parley.rb`; it never pushes directly to
-main. Unnotarized test betas are published as GitLab releases. See
+Apple notary and Sparkle Ed25519 configuration is present. The manual GitLab
+`prepare-production-release` job runs only on protected version tags. It
+notarizes and staples the app and DMG, verifies Gatekeeper, and generates an
+Ed25519-signed stable appcast and a SHA-256-pinned `parley.rb`. It retains the
+verified assets for review without publishing a release or changing the feed.
+The existing public GitHub distribution URLs remain in those assets; public
+publication is a separate reviewed action. Updating `Casks/parley.rb` requires a
+separate reviewed change; the preparation job never pushes directly to main.
+Unnotarized test betas are published as GitLab releases. See
 [RELEASING.md](RELEASING.md).
 
 After the first notarized cask update has been merged, Homebrew users can add

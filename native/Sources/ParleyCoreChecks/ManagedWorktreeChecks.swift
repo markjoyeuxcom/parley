@@ -199,8 +199,11 @@ func managedWorktreeCreationChecks() throws {
     // Ownership never transfers by path: a tree removed and recreated outside Parley is not ours any more.
     try fixture.git(["worktree", "remove", second.path], in: fixture.repo)
     try fixture.git(["worktree", "add", "-q", "--detach", second.path, base], in: fixture.repo)
-    let reattached = try fixture.service.attach(existingPath: second.path, in: fixture.repo.path, baseRef: nil)
-    try wtExpect(!reattached.parleyCreated && !fixture.service.creationTokenMatches(second), "a recreated tree at the same path inherited Parley ownership")
+    _ = try wtRejects("reattaching a recreated tree replaced its broken creation record") {
+        _ = try fixture.service.attach(existingPath: second.path, in: fixture.repo.path, baseRef: nil)
+    }
+    try wtExpect(try fixture.store.record(path: second.path) == second && !fixture.service.creationTokenMatches(second),
+        "a recreated tree at the same path replaced the original ownership evidence")
     let recreatedRefusals = try fixture.service.cleanupPreview(second, livePaneFolders: [], otherRuntimeStateFiles: []).refusals
     try wtExpect(recreatedRefusals.contains { $0.contains("creation marker") }, "cleanup of a recreated tree was not refused on identity: \(recreatedRefusals)")
     // A successful add whose record cannot be saved is reported as created-but-unrecorded, never as a retryable failure.

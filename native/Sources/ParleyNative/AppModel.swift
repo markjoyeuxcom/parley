@@ -1571,7 +1571,7 @@ final class AppModel: ObservableObject {
     var canNavigatePanes: Bool { visiblePanes.count > 1 }
 
     func projectContext(for pane: WorkbenchPane) -> GitProjectContext? {
-        let folder = URL(fileURLWithPath: pane.cwd).standardizedFileURL.path
+        let folder = URL(fileURLWithPath: pane.launchWorkingDirectory).standardizedFileURL.path
         return projectContexts[folder]
     }
 
@@ -1603,7 +1603,7 @@ final class AppModel: ObservableObject {
     var worktreeWriterCollisions: [WorktreeWriterCollision] {
         WorktreeWriterCollisionProjection.collisions(
             panes: panes,
-            profiles: permissionProfiles,
+            launchProfiles: controller?.runningPermissionDefinitions() ?? [:],
             worktrees: worktreeScan.worktrees,
             paneWorktreePaths: worktreeScan.paneWorktreePaths
         )
@@ -1804,7 +1804,7 @@ final class AppModel: ObservableObject {
     /// hand. Resolution to a repository happens off the main actor.
     private func worktreeRepositoryCandidates() -> [WorktreeRepositoryCandidate] {
         var candidates: [WorktreeRepositoryCandidate] = []
-        for pane in panes { candidates.append(WorktreeRepositoryCandidate(folder: pane.cwd, source: .pane)) }
+        for pane in panes { candidates.append(WorktreeRepositoryCandidate(folder: pane.launchWorkingDirectory, source: .pane)) }
         for workspace in workspaces {
             for folder in workspace.attachedFolders { candidates.append(WorktreeRepositoryCandidate(folder: folder, source: .attachment)) }
         }
@@ -2415,7 +2415,7 @@ final class AppModel: ObservableObject {
     /// a deleted folder, so it blocks removal too.
     private func livePaneFoldersForCleanup() throws -> [String] {
         guard let controller else { throw RelayUIError.message("The workbench is not available.") }
-        return try controller.listPanes().map(\.cwd)
+        return try controller.listPanes().flatMap(\.worktreeSafetyFolders)
     }
 
     /// Browser-only, on-demand read. No inspection runs from the refresh tick.
@@ -4032,7 +4032,7 @@ final class AppModel: ObservableObject {
         // bounded Git snapshots for every live pane rather than only the
         // currently visible workspace.
         let folders = Set(panes.map {
-            URL(fileURLWithPath: $0.cwd).standardizedFileURL.path
+            URL(fileURLWithPath: $0.launchWorkingDirectory).standardizedFileURL.path
         })
         let foldersChanged = folders != projectContextFolders
         let isDue = Date().timeIntervalSince(lastProjectContextRefresh) >= Self.projectContextRefreshInterval
@@ -4053,7 +4053,7 @@ final class AppModel: ObservableObject {
                 guard let self else { return }
                 self.projectContextRefreshTask = nil
                 let currentFolders = Set(self.panes.map {
-                    URL(fileURLWithPath: $0.cwd).standardizedFileURL.path
+                    URL(fileURLWithPath: $0.launchWorkingDirectory).standardizedFileURL.path
                 })
                 guard currentFolders == folders else {
                     self.scheduleProjectContextRefresh(force: true)
@@ -4137,7 +4137,7 @@ final class AppModel: ObservableObject {
 
     private func scheduleWorktreeRefresh(force: Bool = false) {
         let paneFolders = Dictionary(uniqueKeysWithValues: panes.map { pane in
-            (pane.id, URL(fileURLWithPath: pane.cwd).standardizedFileURL.path)
+            (pane.id, URL(fileURLWithPath: pane.launchWorkingDirectory).standardizedFileURL.path)
         })
         let foldersChanged = paneFolders != worktreePaneFolders
         let isDue = Date().timeIntervalSince(lastWorktreeRefresh) >= Self.worktreeRefreshInterval
@@ -4159,7 +4159,7 @@ final class AppModel: ObservableObject {
                 guard let self else { return }
                 self.worktreeRefreshTask = nil
                 let currentPaneFolders = Dictionary(uniqueKeysWithValues: self.panes.map { pane in
-                    (pane.id, URL(fileURLWithPath: pane.cwd).standardizedFileURL.path)
+                    (pane.id, URL(fileURLWithPath: pane.launchWorkingDirectory).standardizedFileURL.path)
                 })
                 guard currentPaneFolders == paneFolders else {
                     self.scheduleWorktreeRefresh(force: true)
@@ -4360,15 +4360,18 @@ final class AppModel: ObservableObject {
     func setHistoryRetention(maximumRecords: Int) {
         do {
             let requested = try CollaborationHistoryRetentionPolicy(maximumRecords: maximumRecords)
-            guard requested != historyRetentionPolicy else { return }
+            // Reapplying the saved limit retries partial journal maintenance.
             let lowering = requested.maximumRecords < historyRetentionPolicy.maximumRecords
+            let retrying = requested == historyRetentionPolicy
             let alert = NSAlert()
             alert.messageText = "Keep up to \(requested.maximumRecords) local history records?"
             alert.informativeText = lowering
                 ? "Parley will keep up to \(requested.maximumRecords) collaboration handoffs and \(requested.maximumRecords) lifecycle events. Lowering the current \(historyRetentionPolicy.maximumRecords)-record limit permanently removes the oldest eligible records immediately and cannot restore them later. Active handoffs are always preserved. This changes only this local \(runtime.mode.label) runtime; nothing is uploaded."
-                : "Parley will keep up to \(requested.maximumRecords) collaboration handoffs and \(requested.maximumRecords) lifecycle events. Increasing the limit does not restore records previously removed. Active handoffs are preserved. This changes only this local \(runtime.mode.label) runtime; nothing is uploaded."
+                : retrying
+                    ? "Parley will retry journal maintenance for the saved \(requested.maximumRecords)-record limit and remove any remaining eligible excess records. Records already removed cannot be restored. Active handoffs are preserved. This changes only this local \(runtime.mode.label) runtime; nothing is uploaded."
+                    : "Parley will keep up to \(requested.maximumRecords) collaboration handoffs and \(requested.maximumRecords) lifecycle events. Increasing the limit does not restore records previously removed. Active handoffs are preserved. This changes only this local \(runtime.mode.label) runtime; nothing is uploaded."
             alert.alertStyle = lowering ? .warning : .informational
-            alert.addButton(withTitle: lowering ? "Apply and Prune" : "Change Retention")
+            alert.addButton(withTitle: lowering ? "Apply and Prune" : (retrying ? "Retry Maintenance" : "Change Retention"))
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             guard let relayClient else {
@@ -4386,6 +4389,7 @@ final class AppModel: ObservableObject {
             result.addButton(withTitle: "OK")
             result.runModal()
         } catch {
+            refreshStatusCenterQuietly()
             NSAlert(error: error).runModal()
         }
     }
@@ -5370,7 +5374,7 @@ final class AppModel: ObservableObject {
             sourcePaneID: source.id,
             sourcePaneKind: source.kind,
             sourcePaneName: source.displayName,
-            sourceFolder: source.cwd,
+            sourceFolder: source.launchWorkingDirectory,
             pack: ContextPack(name: "\(source.displayName) context"),
             reviewID: nil,
             reviewState: nil,
@@ -5422,7 +5426,7 @@ final class AppModel: ObservableObject {
                 sourcePaneID: source.id,
                 sourcePaneKind: source.kind,
                 sourcePaneName: source.displayName,
-                sourceFolder: source.cwd,
+                sourceFolder: source.launchWorkingDirectory,
                 pack: pack,
                 reviewID: nil,
                 reviewState: nil,
@@ -6182,7 +6186,7 @@ final class AppModel: ObservableObject {
     func reviewChanges(with target: WorkbenchPane) {
         perform {
             guard let source = activePane, let reviewDraftBuilder else { return }
-            let draft = try reviewDraftBuilder.changes(in: source.cwd)
+            let draft = try reviewDraftBuilder.changes(in: source.launchWorkingDirectory)
             try sendReview(draft, from: source, to: target)
         }
     }
@@ -6195,7 +6199,7 @@ final class AppModel: ObservableObject {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.directoryURL = URL(fileURLWithPath: source.cwd)
+        panel.directoryURL = URL(fileURLWithPath: source.launchWorkingDirectory)
         guard panel.runModal() == .OK, let file = panel.url else { return }
 
         perform {
@@ -6803,7 +6807,7 @@ final class AppModel: ObservableObject {
             let workspace = workspaces.first { $0.workspaceID == pane.workspaceID }
             panePermissionRequest = PanePermissionRequest(
                 kind: pane.kind,
-                folder: pane.cwd,
+                folder: pane.launchWorkingDirectory,
                 workspaceName: workspace?.name ?? pane.workspaceName ?? "Workspace",
                 workspaceFolders: workspace?.attachedFolders ?? [],
                 action: .restart(pane.id),
@@ -6854,7 +6858,7 @@ final class AppModel: ObservableObject {
             panel.canChooseFiles = false
             panel.canChooseDirectories = true
             panel.allowsMultipleSelection = false
-            panel.directoryURL = URL(fileURLWithPath: pane.cwd)
+            panel.directoryURL = URL(fileURLWithPath: pane.launchWorkingDirectory)
             guard panel.runModal() == .OK, let url = panel.url else { return }
             let folder = url.standardizedFileURL.path
             do {
@@ -6876,7 +6880,7 @@ final class AppModel: ObservableObject {
         }
         panePermissionRequest = PanePermissionRequest(
             kind: pane.kind,
-            folder: pane.cwd,
+            folder: pane.launchWorkingDirectory,
             workspaceName: workspace?.name ?? pane.workspaceName ?? "Workspace",
             workspaceFolders: workspace?.attachedFolders ?? [],
             action: .resume(paneID: pane.id, replacingRunningProcess: pane.isStarted),
@@ -6895,7 +6899,7 @@ final class AppModel: ObservableObject {
             panel.canChooseFiles = false
             panel.canChooseDirectories = true
             panel.allowsMultipleSelection = false
-            panel.directoryURL = URL(fileURLWithPath: pane.cwd)
+            panel.directoryURL = URL(fileURLWithPath: pane.launchWorkingDirectory)
             guard panel.runModal() == .OK, let url = panel.url else { return }
             let folder = url.standardizedFileURL.path
             do {
@@ -6917,7 +6921,7 @@ final class AppModel: ObservableObject {
         }
         panePermissionRequest = PanePermissionRequest(
             kind: pane.kind,
-            folder: pane.cwd,
+            folder: pane.launchWorkingDirectory,
             workspaceName: workspace?.name ?? pane.workspaceName ?? "Workspace",
             workspaceFolders: workspace?.attachedFolders ?? [],
             action: .start(pane.id),
@@ -6934,7 +6938,7 @@ final class AppModel: ObservableObject {
         let workspace = workspaces.first { $0.workspaceID == pane.workspaceID }
         panePermissionRequest = PanePermissionRequest(
             kind: pane.kind,
-            folder: pane.cwd,
+            folder: pane.launchWorkingDirectory,
             workspaceName: workspace?.name ?? pane.workspaceName ?? "Workspace",
             workspaceFolders: workspace?.attachedFolders ?? [],
             action: .folderAccess(pane.id),
@@ -6952,8 +6956,8 @@ final class AppModel: ObservableObject {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         if let path = onlyInsideWorktree {
             guard let fresh = try? controller?.listPanes().first(where: { $0.id == pane.id }),
-                  fresh.launchGeneration == pane.launchGeneration, fresh.cwd == pane.cwd,
-                  WorktreeCleanupPolicy.isNested(fresh.cwd, in: path) else {
+                  fresh.launchGeneration == pane.launchGeneration, fresh.worktreeSafetyFolders == pane.worktreeSafetyFolders,
+                  fresh.worktreeSafetyFolders.contains(where: { WorktreeCleanupPolicy.isNested($0, in: path) }) else {
                 NSAlert(error: RelayUIError.message("This pane changed since the preview. Refresh before closing it.")).runModal()
                 return
             }
@@ -7332,8 +7336,8 @@ final class AppModel: ObservableObject {
                 let fresh = try controller.listPanes().filter { $0.workspaceID == workspace.workspaceID }
                 guard !fresh.isEmpty, fresh.count == reviewedPanes.count,
                       fresh.allSatisfy({ pane in
-                          WorktreeCleanupPolicy.isNested(pane.cwd, in: path) &&
-                          reviewedPanes.contains(where: { $0.id == pane.id && $0.launchGeneration == pane.launchGeneration && $0.cwd == pane.cwd })
+                          pane.worktreeSafetyFolders.contains(where: { WorktreeCleanupPolicy.isNested($0, in: path) }) &&
+                          reviewedPanes.contains(where: { $0.id == pane.id && $0.launchGeneration == pane.launchGeneration && $0.worktreeSafetyFolders == pane.worktreeSafetyFolders })
                       }) else { throw RelayUIError.message("Workspace panes changed or include another folder. Refresh before closing it.") }
             }
             let currentIDs = Set(try controller.listPanes().filter { $0.workspaceID == workspace.workspaceID }.map(\.id))

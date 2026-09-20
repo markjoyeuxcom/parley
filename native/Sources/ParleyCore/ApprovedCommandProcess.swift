@@ -7,7 +7,11 @@ public enum ApprovedCommandProcess {
     public static func run(_ command: ReviewedCommand, environment: [String: String],
                            shouldCancel: () -> Bool = { false },
                            stdoutMirror: (Data) -> Void = { _ in },
-                           stderrMirror: (Data) -> Void = { _ in }) throws -> ReviewedCommandRunResult {
+                           stderrMirror: (Data) -> Void = { _ in },
+                           now: () -> UInt64 = { DispatchTime.now().uptimeNanoseconds },
+                           pause: (UInt32) -> Void = { usleep($0) },
+                           observe: (id_t, UnsafeMutablePointer<siginfo_t>) -> Int32 = { waitid(P_PID, $0, $1, WEXITED | WNOHANG | WNOWAIT) },
+                           wait: (pid_t, UnsafeMutablePointer<Int32>, Int32) -> pid_t = { waitpid($0, $1, $2) }) throws -> ReviewedCommandRunResult {
         if shouldCancel() { return ReviewedCommandRunResult(exitStatus: nil, stdout: Data(), stderr: Data(), cancelled: true, detail: "Cancelled before the command was spawned.") }
         let output = try makePipe()
         var outputWriterOpen = true
@@ -57,14 +61,14 @@ public enum ApprovedCommandProcess {
         outputWriterOpen = false
         close(error.1)
         errorWriterOpen = false
-        var reaped = false
+        var cleanupAttempted = false
         defer {
-            if !reaped {
+            if !cleanupAttempted {
                 // The unreaped direct child reserves the process-group id.
                 // Never target an id after it may have been recycled.
                 _ = kill(-pid, SIGKILL)
                 var status: Int32 = 0
-                while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+                _ = BoundedReap.run(pid, status: &status, now: now, wait: wait, pause: pause)
             }
         }
 
@@ -72,23 +76,29 @@ public enum ApprovedCommandProcess {
         var openStreams = [true, true]
         let descriptors = [output.0, error.0]
         var truncated = false
-        var cancelledAt: Date?
-        var exitedAt: Date?
-        var killSent = false
-        let deadline = Date().addingTimeInterval(24 * 60 * 60)
+        var cancelledAt: UInt64?
+        var exitedAt: UInt64?
+        var killedAt: UInt64?
+        let deadline = now() &+ 24 * 60 * 60 * 1_000_000_000
         while true {
-            if (shouldCancel() || Date() >= deadline), cancelledAt == nil {
-                cancelledAt = Date()
+            let instant = now()
+            if (shouldCancel() || instant >= deadline), cancelledAt == nil {
+                cancelledAt = instant
                 _ = kill(-pid, SIGTERM)
             }
-            if let cancelledAt, Date().timeIntervalSince(cancelledAt) > 0.5, !killSent {
+            if let cancelledAt, instant &- cancelledAt >= 500_000_000, killedAt == nil {
                 _ = kill(-pid, SIGKILL)
-                killSent = true
+                killedAt = instant
             }
             var info = siginfo_t()
-            let observed = waitid(P_PID, id_t(pid), &info, WEXITED | WNOHANG | WNOWAIT)
-            if observed == 0 && info.si_pid == pid && exitedAt == nil { exitedAt = Date() }
-            if observed != 0 && errno != EINTR { try checked(errno) }
+            let observed = observe(id_t(pid), &info)
+            if observed == 0 && info.si_pid == pid && exitedAt == nil { exitedAt = instant }
+            if observed != 0 && errno != EINTR {
+                // ECHILD means the identity is no longer reserved; do not send
+                // a cleanup signal to a potentially recycled process group.
+                if errno == ECHILD { cleanupAttempted = true }
+                try checked(errno)
+            }
             for index in 0..<2 where openStreams[index] {
                 // Bound work per poll so a noisy process cannot starve Cancel.
                 for _ in 0..<8 {
@@ -109,21 +119,27 @@ public enum ApprovedCommandProcess {
             }
             if let exitedAt {
                 // Descendants retaining a pipe cannot hold completion forever.
-                if !openStreams.contains(true) || Date().timeIntervalSince(exitedAt) > 0.5 {
+                if !openStreams.contains(true) || instant &- exitedAt >= 500_000_000 {
                     if openStreams.contains(true) { truncated = true }
                     break
                 }
             }
-            usleep(10_000)
+            if let killedAt, instant &- killedAt >= BoundedReap.bound {
+                truncated = true
+                break
+            }
+            pause(10_000)
         }
         // Terminate descendants still in this owned group before reaping the
         // root, preserving the identity used for cancellation and cleanup.
         _ = kill(-pid, SIGKILL)
         var status: Int32 = 0
-        var waited: pid_t
-        repeat { waited = waitpid(pid, &status, 0) } while waited < 0 && errno == EINTR
-        guard waited == pid else { try checked(errno); throw ReviewedCommandRunError.invalid("Could not collect the owned command exit.") }
-        reaped = true
+        let reap = BoundedReap.run(pid, status: &status, now: now, wait: wait, pause: pause)
+        cleanupAttempted = true
+        guard reap == "killed-after-timeout" else {
+            return ReviewedCommandRunResult(exitStatus: nil, stdout: buffers[0], stderr: buffers[1], outputTruncated: true,
+                cancelled: cancelledAt != nil, detail: "The command's exit could not be observed after bounded cleanup (\(reap)); completion is unknown.")
+        }
         let signal = status & 0x7f
         return ReviewedCommandRunResult(exitStatus: signal == 0 ? (status >> 8) & 0xff : nil,
             terminationSignal: signal == 0 ? nil : signal,

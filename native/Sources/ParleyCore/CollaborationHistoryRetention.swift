@@ -67,6 +67,15 @@ public struct CollaborationHistoryRetentionChange: Codable, Equatable, Sendable 
     }
 }
 
+public struct CollaborationHistoryRetentionPartialFailure: LocalizedError {
+    public let change: CollaborationHistoryRetentionChange
+    public let failures: [String]
+
+    public var errorDescription: String? {
+        "The \(change.policy.maximumRecords)-record retention policy was saved. Parley removed \(change.removedHandoffs) handoffs and \(change.removedActivityEvents) activity events, but could not finish all journal maintenance: \(failures.joined(separator: "; ")). Apply this limit again to retry; records already removed cannot be restored."
+    }
+}
+
 /// The app-resident core owns this preference across window hiding and remounts.
 /// The file is runtime-local, owner-only and deliberately contains no content
 /// beyond the bounded record-count policy.
@@ -129,8 +138,24 @@ public final class CollaborationHistoryRetentionStore: @unchecked Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(Document(version: 1, policy: policy))
-        try data.write(to: file, options: .atomic)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        let temporary = directory.appendingPathComponent(".retention-\(UUID().uuidString).tmp")
+        let descriptor = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        defer { close(descriptor); try? fileManager.removeItem(at: temporary) }
+        try data.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < bytes.count {
+                let count = Darwin.write(descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(count == 0 ? EIO : errno)) }
+                offset += count
+            }
+        }
+        guard fsync(descriptor) == 0, rename(temporary.path, file.path) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        // No throwing chmod after commit: a reported failure must leave the
+        // old preference intact, so the broker can report partial work honestly.
     }
 
     private func validateExistingFile() throws {

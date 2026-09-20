@@ -3,11 +3,12 @@ import Foundation
 
 /// A bounded, transient stdio config query. This never opens a thread, runs a
 /// model, changes vendor configuration, or connects to a vendor daemon.
-enum CodexHostConfiguration {
+public enum CodexHostConfiguration {
     /// Reads Codex's resolved configuration for one folder through a transient
     /// `codex app-server --stdio`. Config replies may include private
     /// settings: callers read the keys they need and never log the reply.
-    static func read(executable: URL, arguments: [String], environment: [String: String], folder: String) throws -> [String: Any] {
+    public static func read(executable: URL, arguments: [String], environment: [String: String], folder: String,
+                            timeout: TimeInterval = 15) throws -> [String: Any] {
         let process = Process()
         let input = Pipe()
         let output = Pipe()
@@ -18,30 +19,48 @@ enum CodexHostConfiguration {
         process.standardOutput = output
         // Config replies may include private settings. Never surface the raw reply or logs.
         process.standardError = FileHandle.nullDevice
-        guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) == 0 else {
+        let writer = input.fileHandleForWriting.fileDescriptor
+        let reader = output.fileHandleForReading.fileDescriptor
+        guard fcntl(writer, F_SETNOSIGPIPE, 1) == 0,
+              fcntl(writer, F_SETFL, fcntl(writer, F_GETFL) | O_NONBLOCK) == 0,
+              fcntl(reader, F_SETFL, fcntl(reader, F_GETFL) | O_NONBLOCK) == 0 else {
             throw PermissionProfileError.invalid("Could not prepare the Codex configuration check.")
         }
         try process.run()
-        let deadline = DispatchWorkItem {
-            if process.isRunning { _ = kill(process.processIdentifier, SIGKILL) }
-        }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 15, execute: deadline)
+        let deadline = DispatchTime.now().uptimeNanoseconds &+ UInt64(max(0, timeout) * 1_000_000_000)
         defer {
             try? input.fileHandleForWriting.close()
-            // EOF ends this stdio server; the deadline also bounds cleanup.
-            process.waitUntilExit()
-            deadline.cancel()
             try? output.fileHandleForReading.close()
+            // Foundation owns reaping. Neither an unreapable child nor a
+            // descendant holding stdout may extend this configuration query.
+            if process.isRunning { _ = kill(process.processIdentifier, SIGKILL) }
+            let cleanupDeadline = DispatchTime.now().uptimeNanoseconds &+ BoundedReap.bound
+            while process.isRunning && DispatchTime.now().uptimeNanoseconds < cleanupDeadline { usleep(5_000) }
         }
         var buffer = Data()
         var total = 0
+        func requireTime() throws {
+            guard DispatchTime.now().uptimeNanoseconds < deadline else {
+                throw PermissionProfileError.invalid("Codex did not return a bounded configuration reply before the check timed out.")
+            }
+        }
         func send(_ object: [String: Any]) throws {
             var bytes = try JSONSerialization.data(withJSONObject: object)
             bytes.append(0x0a)
-            try input.fileHandleForWriting.write(contentsOf: bytes)
+            try bytes.withUnsafeBytes { contents in
+                var offset = 0
+                while offset < contents.count {
+                    try requireTime()
+                    let count = Darwin.write(writer, contents.baseAddress!.advanced(by: offset), contents.count - offset)
+                    if count > 0 { offset += count }
+                    else if count < 0 && (errno == EINTR || errno == EAGAIN) { usleep(5_000) }
+                    else { throw PermissionProfileError.invalid("Codex closed the read-only configuration check.") }
+                }
+            }
         }
         func response(id: Int) throws -> [String: Any] {
             while true {
+                try requireTime()
                 if let newline = buffer.firstIndex(of: 0x0a) {
                     let line = buffer[..<newline]
                     buffer.removeSubrange(...newline)
@@ -53,12 +72,14 @@ enum CodexHostConfiguration {
                         return result
                     }
                 } else {
-                    let bytes = output.fileHandleForReading.availableData
-                    total += bytes.count
-                    guard !bytes.isEmpty, total <= 200_000 else {
+                    var bytes = [UInt8](repeating: 0, count: 8_192)
+                    let count = Darwin.read(reader, &bytes, bytes.count)
+                    if count < 0 && (errno == EINTR || errno == EAGAIN) { usleep(5_000); continue }
+                    total += max(0, count)
+                    guard count > 0, total <= 200_000 else {
                         throw PermissionProfileError.invalid("Codex did not return a bounded configuration reply before the check ended.")
                     }
-                    buffer.append(bytes)
+                    buffer.append(contentsOf: bytes.prefix(count))
                 }
             }
         }

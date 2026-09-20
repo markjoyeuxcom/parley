@@ -73,9 +73,9 @@ private func ticketPane(id: String, kind: PaneKind, container: Bool = false) -> 
 
 /// Which panes must present a ticket: the facts behind the table, observed
 /// from real panes on 14 September 2026, never a guess from terminal text.
-/// Claude, Copilot and Agy reached the socket and must present one; Codex
-/// reached it under Parley's launch while `codex sandbox` denies it, so it
-/// is optional until that is understood; a container never has it.
+/// Claude, Copilot and Agy reached the socket and must present one. Codex
+/// must present one when its launch profile enables network; a container
+/// never has the host socket mounted.
 func checkTicketPolicyTable() throws {
     func requirement(_ kind: PaneKind, container: Bool = false, listening: Bool = true) -> RelayTicketPolicy.Requirement {
         RelayTicketPolicy.policy(kind: kind, inContainer: container, socketListening: listening).requirement
@@ -108,30 +108,30 @@ func checkTicketPolicyTable() throws {
     }
 }
 
-/// Ancestry, pure: the marker on any ancestor before the application admits
-/// the peer; the application, pid 1, a cycle, an unreadable parent or the hop
-/// bound ends the walk without admitting it.
+/// A caller's markers cannot replace those on the app-owned launch root.
 func checkTicketAncestry() throws {
-    let credentials = try RelayCredentials(file: try ticketDirectory().appendingPathComponent("tokens.json"))
-    let parents: [Int32: Int32] = [500: 400, 400: 300, 300: 200, 200: 100]
-    let markers: [Int32: String] = [300: "pane-a", 200: "pane-b"]
-    let generations: [Int32: String] = [300: "3", 200: "1"]
-    let idKey = PaneProcessAnchorProjection.markerKey, genKey = RelayTicketServer.generationMarkerKey
-    let server = RelayTicketServer(socketFile: URL(fileURLWithPath: "/tmp/unused.sock"), credentials: credentials, applicationPID: 100,
-        paneGeneration: { _ in nil }, markerValue: { key, pid in key == idKey ? markers[pid] : key == genKey ? generations[pid] : nil }, parentPID: { parents[$0] })
-    try ticketExpect(server.attest(peerPID: 500, paneID: "pane-a", generation: 3), "the marker three hops up did not admit the peer")
-    try ticketExpect(!server.attest(peerPID: 500, paneID: "pane-a", generation: 4), "a process of an earlier generation admitted the peer")
-    try ticketExpect(!server.attest(peerPID: 500, paneID: "pane-b", generation: 1), "a marker above the pane's own admitted the peer: the walk did not stop at the first marker's pane")
-    try ticketExpect(server.attest(peerPID: 200, paneID: "pane-b", generation: 1), "a marker on the peer itself did not admit it")
-    try ticketExpect(!server.attest(peerPID: 500, paneID: "pane-z", generation: 3), "an absent marker admitted the peer")
-    try ticketExpect(!server.attest(peerPID: 1, paneID: "pane-a", generation: 3) && !server.attest(peerPID: 0, paneID: "pane-a", generation: 3), "pid 1 or 0 was walked")
-    let chain: [Int32: Int32] = Dictionary(uniqueKeysWithValues: (Int32(2)...Int32(60)).map { ($0, $0 - 1) })
-    let long = RelayTicketServer(socketFile: URL(fileURLWithPath: "/tmp/unused.sock"), credentials: credentials, applicationPID: 1,
-        paneGeneration: { _ in nil }, markerValue: { key, pid in pid == 2 ? (key == idKey ? "pane-a" : "0") : nil }, parentPID: { chain[$0] })
-    try ticketExpect(!long.attest(peerPID: 60, paneID: "pane-a", generation: 0), "the hop bound did not end a long walk")
-    let cycle = RelayTicketServer(socketFile: URL(fileURLWithPath: "/tmp/unused.sock"), credentials: credentials, applicationPID: 1,
-        paneGeneration: { _ in nil }, markerValue: { _, _ in nil }, parentPID: { $0 == 7 ? 8 : 7 })
-    try ticketExpect(!cycle.attest(peerPID: 7, paneID: "pane-a", generation: 0), "a parent cycle did not end the walk")
+    let directory = try ticketDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("tokens.json"))
+    let parents: [Int32: Int32] = [500: 400, 400: 300, 300: 200, 200: 100, 700: 600, 600: 100, 800: 1, 901: 900, 900: 100]
+    let markers: [Int32: String] = [500: "pane-b", 300: "pane-a", 600: "pane-b", 800: "pane-a", 901: "pane-a"]
+    let generations: [Int32: String] = [500: "1", 300: "3", 600: "1", 800: "3", 901: "3"]
+    let idKey = PaneProcessAnchorProjection.markerKey
+    let server = RelayTicketServer(socketFile: directory.appendingPathComponent("unused.sock"), credentials: credentials, applicationPID: 100,
+        paneGeneration: { _ in nil }, markerValue: { key, pid in key == idKey ? markers[pid] : generations[pid] },
+        parentPID: { parents[$0] }, isLaunchIntermediate: { $0 == 200 })
+    try ticketExpect(server.attest(peerPID: 500, paneID: "pane-a", generation: 3), "a valid launch root was not admitted")
+    try ticketExpect(!server.attest(peerPID: 500, paneID: "pane-b", generation: 1), "a child impersonated another pane with its environment")
+    try ticketExpect(!server.attest(peerPID: 800, paneID: "pane-a", generation: 3), "a matching marker outside the app's tree was accepted")
+    try ticketExpect(!server.attest(peerPID: 901, paneID: "pane-a", generation: 3), "an unreadable launch root fell back to a child's assertion")
+    try ticketExpect(!server.attest(peerPID: 500, paneID: "pane-a", generation: 4), "a stale generation was admitted")
+    try ticketExpect(server.attest(peerPID: 700, paneID: "pane-b", generation: 1), "a direct app-owned launch root was refused")
+    for peer: Int32 in [0, 1, 100, 999] {
+        try ticketExpect(!server.attest(peerPID: peer, paneID: "pane-a", generation: 3), "an invalid or unknown peer was admitted")
+    }
+    let cycle = RelayTicketServer(socketFile: directory.appendingPathComponent("unused.sock"), credentials: credentials, applicationPID: 100,
+        paneGeneration: { _ in nil }, markerValue: { _, _ in "pane-a" }, parentPID: { $0 == 7 ? 8 : 7 })
+    try ticketExpect(!cycle.attest(peerPID: 7, paneID: "pane-a", generation: 0), "a parent cycle was admitted")
 }
 
 /// The socket, end to end: a child of this process that carries the marker
@@ -288,9 +288,10 @@ func checkClaudeSandboxFactAndPolicy() throws {
     try ticketExpect(container.requirement == .unavailable && container.reason.contains("container"), "a container pane's reason was replaced by the host sandbox")
     var pane = ticketPane(id: "pane-sb", kind: .claude)
     pane.cwd = folder.path
-    // The pane-level policy reads the real home, not the fixture, so only the
-    // project files decide here; the local file above enables the sandbox.
-    try ticketExpect(RelayTicketPolicy.policy(for: pane, socketListening: true).requirement == .optional, "the pane-level policy ignored the project's local settings")
+    try ticketExpect(RelayTicketPolicy.policy(for: pane, socketListening: true).requirement == .required,
+        "mutable project settings relaxed policy without a launch snapshot")
+    try ticketExpect(RelayTicketPolicy.policy(for: pane, socketListening: true, claudeSandbox: fact()).requirement == .optional,
+        "the pane-level policy ignored the supplied launch snapshot")
 }
 
 @MainActor

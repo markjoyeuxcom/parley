@@ -7,7 +7,7 @@ import Foundation
 public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
     public static let trustDisclosure = "Runs as you outside the agent boundary. The command executes this project's current code, which agents can change. It can access your files and other panes' credentials; cross-vendor attribution cannot be guaranteed while this trust is granted."
     /// Shown wherever the person's automatic-approval choice is offered or in effect.
-    public static let automaticApprovalDisclosure = "While this is on, every command an agent requests with parley request-run is approved exactly as requested and starts in a new Shell pane without a preview. Each run still needs a live agent pane in a workspace that allows command runs and a canonical folder inside that pane's folder. " + trustDisclosure + " Turning it off restores per-run approval immediately, and any request it approved that has not started yet goes back to waiting for you. Unlike exact-command session trust, this choice stays on across Parley relaunches until you turn it off here. It is stored in Parley's own private directory, which agent processes cannot read or write."
+    public static let automaticApprovalDisclosure = "While this is on, every command an agent requests with parley request-run is approved exactly as requested and starts in a new Shell pane without a preview. Each run still needs a live agent pane in a workspace that allows command runs and a canonical folder inside that pane's folder. " + trustDisclosure + " Turning it off restores per-run approval immediately, and any request it approved that has not started yet goes back to waiting for you. This choice applies only to this app session and resets to off when Parley quits. No disk file or saved preference restores automatic approval."
     private static let automaticApprovalRevokedDetail = "Automatic approval was turned off before this run started; human approval is required."
     private static let automaticApprovalDetail = "Approved automatically: the person turned on automatic approval of agent command runs in Settings; runs outside the agent boundary"
     private let lock = NSRecursiveLock()
@@ -46,7 +46,7 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
                   eligible(source) else {
                 throw ReviewedCommandRunError.invalid("A live authenticated agent and an Ask-enabled workspace are required.")
             }
-            let command = try ReviewedCommand(argv: argv, folder: folder, sourceFolder: source.cwd)
+            let command = try ReviewedCommand(argv: argv, folder: folder, sourceFolder: source.launchWorkingDirectory)
             guard !idempotencyKey.isEmpty, idempotencyKey.utf8.count <= 128 else { throw ReviewedCommandRunError.invalid("Invalid request identity.") }
             let owner = RequestOwner(paneID: source.id, generation: source.launchGeneration)
             let fingerprint = Data(SHA256.hash(data: Data(idempotencyKey.utf8)))
@@ -64,7 +64,7 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
             let approved = grant != nil || automaticApproval
             let now = Date()
             let run = ReviewedCommandRun(id: UUID().uuidString.lowercased(), idempotencyKey: idempotencyKey, requestedCommand: command, revision: UUID().uuidString,
-                source: source, sourceFolder: URL(fileURLWithPath: source.cwd).resolvingSymlinksInPath().standardizedFileURL.path, command: command, state: approved ? .approved : .pending,
+                source: source, sourceFolder: URL(fileURLWithPath: source.launchWorkingDirectory).resolvingSymlinksInPath().standardizedFileURL.path, command: command, state: approved ? .approved : .pending,
                 createdAt: now, updatedAt: now, shellPaneID: "pane-" + UUID().uuidString.lowercased(),
                 autoApprovalGrantID: grant?.id, approvedAutomatically: grant == nil && automaticApproval, result: nil,
                 detail: grant != nil ? "Approved by an explicit session grant; runs outside the agent boundary"
@@ -462,7 +462,7 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
         return eligible(source) && source.id == requester.id
             && source.automationPolicy == requester.automationPolicy
             && source.launchGeneration == requester.launchGeneration && source.workspaceID == requester.workspaceID
-            && URL(fileURLWithPath: source.cwd).resolvingSymlinksInPath().standardizedFileURL.path
+            && URL(fileURLWithPath: source.launchWorkingDirectory).resolvingSymlinksInPath().standardizedFileURL.path
                 == run.sourceFolder
     }
     /// The folder the approved command must stay inside: the live requesting
@@ -470,7 +470,7 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
     /// proposed it in. nil means an agent run's pane is no longer current.
     private func currentContainmentRoot(_ run: ReviewedCommandRun) throws -> String? {
         switch run.origin {
-        case .agentPane: try currentSource(run)?.cwd
+        case .agentPane: try currentSource(run)?.launchWorkingDirectory
         case .person: run.sourceFolder
         }
     }
