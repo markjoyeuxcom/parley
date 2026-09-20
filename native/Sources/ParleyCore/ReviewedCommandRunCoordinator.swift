@@ -19,7 +19,8 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
         let paneID: String
         let generation: Int
     }
-    /// A deleted result must never make the same transport retry executable.
+    /// A deleted result must never make the same transport retry executable
+    /// during its originating pane launch. A new generation owns new requests.
     /// Keep only hashes of request identities, without argv, folders or output.
     private var deletedRequests: [RequestOwner: Set<Data>] = [:]
     private var sessionGrants: [ReviewedCommandGrant] = []
@@ -51,7 +52,7 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
             let owner = RequestOwner(paneID: source.id, generation: source.launchGeneration)
             let fingerprint = Data(SHA256.hash(data: Data(idempotencyKey.utf8)))
             guard deletedRequests[owner]?.contains(fingerprint) != true else {
-                throw ReviewedCommandRunError.invalid("The person deleted this command run and its result. The original request cannot be replayed.")
+                throw ReviewedCommandRunError.invalid("The person deleted this command run and its result. The original request cannot be replayed during this pane launch.")
             }
             if let previous = records.values.first(where: { $0.source?.id == id && $0.source?.launchGeneration == source.launchGeneration && $0.idempotencyKey == idempotencyKey }) {
                 guard previous.requestedCommand == command else { throw ReviewedCommandRunError.invalid("A request identity cannot name different commands.") }

@@ -157,12 +157,12 @@ public struct RelayCoreClient: Sendable {
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
     }
 
-    public func rejectContextReview(_ reviewID: String) throws -> RelayTextResponse {
+    public func rejectContextReview(_ reviewID: String, expectedUpdatedAt: Date) throws -> RelayTextResponse {
         let response = try request(
             method: "POST",
             path: "/ui/context-reviews/reject/\(reviewID)",
-            headers: ["X-Parley-Control": controlToken],
-            body: Data()
+            headers: ["X-Parley-Control": controlToken, "Content-Type": "application/json"],
+            body: try JSONEncoder().encode(AgentContextDraftDiscard(reviewID: reviewID, expectedUpdatedAt: expectedUpdatedAt))
         )
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
     }

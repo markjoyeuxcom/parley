@@ -6,6 +6,22 @@ import test from 'node:test'
 const repositoryRoot = join(import.meta.dirname, '..')
 const workflowsDirectory = join(repositoryRoot, '.github', 'workflows')
 
+test('low review saved layouts preserve the reviewed agent folder', () => {
+  const source = readFileSync(join(repositoryRoot, 'native/Sources/ParleyNative/AppModel.swift'), 'utf8')
+  const builder = source.slice(source.indexOf('func saved(_ node:'), source.indexOf('func saveActiveWorkspaceLayout'))
+  assert.match(builder, /folder: pane\.launchWorkingDirectory/)
+  assert.doesNotMatch(builder, /\.cwd/)
+})
+
+test('low review worktree actions validate integration and predict without attaching', () => {
+  const source = readFileSync(join(repositoryRoot, 'native/Sources/ParleyNative/AppModel.swift'), 'utf8')
+  const prediction = source.slice(source.indexOf('func predictWorktreeMerge('), source.indexOf('func predictWorktreeMerge(') + 1600)
+  assert.match(prediction, /service\.mergePreview\(path: tree\.path/)
+  assert.doesNotMatch(prediction, /ensureWorktreeRecord/)
+  const integration = source.slice(source.indexOf('func proposeWorktreeIntegration('), source.indexOf('func integrateWorktreeFromManager('))
+  assert.match(integration, /try WorktreeNaming\.validateBranch\(branch\)/)
+})
+
 test('the native permission review uses the selected vendor bypass disclosure', () => {
   const source = readFileSync(join(repositoryRoot, 'native/Sources/ParleyNative/PermissionProfilePickerView.swift'), 'utf8')
   assert.match(source, /detail:\s*ContainerLaunchProjection\.bypassDisclosure\(for: kind\)/,

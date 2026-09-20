@@ -1271,18 +1271,19 @@ public final class RelayBroker: @unchecked Sendable {
         return persistContextRealityLocked(review)
     }
 
-    public func rejectContextReview(reviewID: String) -> RelayTextResponse {
+    public func rejectContextReview(reviewID: String, expectedUpdatedAt: Date) -> RelayTextResponse {
         consultationCondition.lock()
-        guard var review = contextReviewRecords[reviewID], review.state.needsHumanReview else {
+        guard var review = contextReviewRecords[reviewID], review.state == .awaitingReview else {
             consultationCondition.unlock()
-            return RelayTextResponse(status: 409, text: "that context draft is not awaiting review")
+            return RelayTextResponse(status: 409, text: "that context Ask is not awaiting review; discard plain drafts from their draft review")
         }
-        let wasAwaitingAsk = review.state == .awaitingReview
-        review.state = wasAwaitingAsk ? .rejected : .discarded
+        guard review.updatedAt == expectedUpdatedAt else {
+            consultationCondition.unlock()
+            return RelayTextResponse(status: 409, text: "that context Ask changed since it was reviewed; read it again before declining")
+        }
+        review.state = .rejected
         review.updatedAt = Date()
-        review.detail = wasAwaitingAsk
-            ? "The person declined this context Ask."
-            : "The person discarded this context draft."
+        review.detail = "The person declined this context Ask."
         do {
             try contextReviewStore?.record(review)
             contextReviewRecords[review.id] = review
@@ -5047,7 +5048,7 @@ public enum RelayShim {
     request_ticket() {
       ticket=""
       [ -n "$ticket_socket" ] && [ -S "$ticket_socket" ] && [ -x /usr/bin/nc ] || return 0
-      ticket="$(/usr/bin/printf '%s\n' "$pane_token" | /usr/bin/nc -U -w 3 "$ticket_socket" 2>/dev/null | /usr/bin/tr -d '\r\n')" || ticket=""
+      ticket="$(/usr/bin/printf '%s %s\n' "$pane_token" "$request_id" | /usr/bin/nc -U -w 3 "$ticket_socket" 2>/dev/null | /usr/bin/tr -d '\r\n')" || ticket=""
       case "$ticket" in refused:*) ticket="" ;; esac
     }
 
@@ -5066,11 +5067,11 @@ public enum RelayShim {
       /usr/bin/printf '%s' "$item" > "$request_dir/item"
       /usr/bin/printf '%s' "$idempotency_key" > "$request_dir/idempotency-key"
       /usr/bin/printf '%s' "$pane_token" > "$request_dir/token"
+      /bin/cat > "$request_dir/body"
       request_ticket
       if [ -n "$ticket" ]; then
         /usr/bin/printf '%s' "$ticket" > "$request_dir/ticket"
       fi
-      /bin/cat > "$request_dir/body"
       /usr/bin/printf '%s' ready > "$request_dir/ready"
 
       ask_id_reported=0

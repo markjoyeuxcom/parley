@@ -81,7 +81,7 @@ public struct RegisteredWorktree: Equatable, Sendable {
         func flush() {
             guard let raw = current["worktree"] else { current = [:]; return }
             records.append(RegisteredWorktree(rawPath: raw, path: GitWorktreeResolver.canonicalPath(raw), head: current["HEAD"],
-                branch: current["branch"], isDetached: current["detached"] != nil, isPrimary: order == 0,
+                branch: current["branch"], isDetached: current["detached"] != nil, isPrimary: order == 0 && current["bare"] == nil,
                 lockReason: current["locked"], isLocked: current["locked"] != nil,
                 pruneReason: current["prunable"], isPrunable: current["prunable"] != nil))
             order += 1
@@ -1053,7 +1053,7 @@ public struct ManagedWorktreeService: Sendable {
         if let list = try? registeredWorktrees(of: GitRepositoryIdentity(commonDirectory: identity.commonDirectory, toplevel: primaryToplevel(identity) ?? identity.toplevel)) {
             registryReadable = true
             registered = list.first { $0.path == record.path }
-            primaryHead = list.first?.head
+            primaryHead = list.first(where: \.isPrimary)?.head
             nested = list.filter { $0.path != record.path && WorktreeCleanupPolicy.isNested($0.path, in: record.path) }.map(\.path)
         }
         var recordInventoryReadable = false
@@ -1172,7 +1172,7 @@ public struct ManagedWorktreeService: Sendable {
     }
 
     private func primaryToplevel(_ identity: GitRepositoryIdentity) -> String? {
-        (try? registeredWorktrees(of: identity))?.first?.path
+        (try? registeredWorktrees(of: identity))?.first(where: \.isPrimary)?.path
     }
 
     private func prepareWorktreesDirectory(_ directory: String, toplevel: String) throws {
@@ -1360,8 +1360,24 @@ extension ManagedWorktreeService {
               try registeredWorktrees(of: identity).contains(where: { $0.path == record.path && !$0.isPrunable }) else {
             throw ManagedWorktreeError.invalid("The worktree identity changed. Refresh before previewing a merge.")
         }
-        let source = try resolveCommit("HEAD", in: record.path)
-        let target = try resolveCommit(targetRef, in: record.path)
+        return try performMergePreview(path: record.path, commonDirectory: record.commonDirectory, targetRef: targetRef)
+    }
+
+    /// A prediction needs repository identity, never an ownership record.
+    public func mergePreview(path: String, repositoryFolder: String, targetRef: String) throws -> WorktreeMergePreview {
+        try WorktreeNaming.validateRef(targetRef)
+        let identity = try identity(of: repositoryFolder)
+        let path = GitWorktreeResolver.canonicalPath(path)
+        guard try self.identity(of: path).commonDirectory == identity.commonDirectory,
+              try registeredWorktrees(of: identity).contains(where: { $0.path == path && !$0.isPrunable }) else {
+            throw ManagedWorktreeError.invalid("The worktree identity changed. Refresh before previewing a merge.")
+        }
+        return try performMergePreview(path: path, commonDirectory: identity.commonDirectory, targetRef: targetRef)
+    }
+
+    private func performMergePreview(path: String, commonDirectory: String, targetRef: String) throws -> WorktreeMergePreview {
+        let source = try resolveCommit("HEAD", in: path)
+        let target = try resolveCommit(targetRef, in: path)
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("parley-merge-preview-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -1372,7 +1388,7 @@ extension ManagedWorktreeService {
         env["GIT_NO_REPLACE_OBJECTS"] = "1"
         env["GIT_NO_LAZY_FETCH"] = "1"
         // C-quoted environment entry protects colons, newlines and backslashes.
-        let objects = record.commonDirectory + "/objects"
+        let objects = commonDirectory + "/objects"
         env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = "\"" + objects.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "\n", with: "\\n")
             .replacingOccurrences(of: "\r", with: "\\r").replacingOccurrences(of: "\t", with: "\\t") + "\""

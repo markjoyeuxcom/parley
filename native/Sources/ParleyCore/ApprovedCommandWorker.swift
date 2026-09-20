@@ -9,6 +9,7 @@ public struct ApprovedCommandTicket: Codable, Sendable {
     public let sourceFolder: String
     public let shellExecutable: String
     public let ownerPID: Int32
+    public let ownerStartTime: UInt64?
     public let expiresAt: Date
     /// The person's Settings choice at staging time: after a clean result the
     /// worker exits so the pane's process ends and Parley can remove the
@@ -17,23 +18,24 @@ public struct ApprovedCommandTicket: Codable, Sendable {
     public let exitInsteadOfShellWhenClean: Bool
 
     public init(resultKey: Data, runID: String, command: ReviewedCommand, sourceFolder: String, shellExecutable: String,
-                ownerPID: Int32, expiresAt: Date, exitInsteadOfShellWhenClean: Bool) {
+                ownerPID: Int32, expiresAt: Date, exitInsteadOfShellWhenClean: Bool, ownerStartTime: UInt64? = nil) {
         self.resultKey = resultKey
         self.runID = runID
         self.command = command
         self.sourceFolder = sourceFolder
         self.shellExecutable = shellExecutable
         self.ownerPID = ownerPID
+        self.ownerStartTime = ownerStartTime
         self.expiresAt = expiresAt
         self.exitInsteadOfShellWhenClean = exitInsteadOfShellWhenClean
     }
 
     private enum CodingKeys: String, CodingKey {
-        case resultKey, runID, command, sourceFolder, shellExecutable, ownerPID, expiresAt, exitInsteadOfShellWhenClean
+        case resultKey, runID, command, sourceFolder, shellExecutable, ownerPID, ownerStartTime, expiresAt, exitInsteadOfShellWhenClean
     }
 
-    /// A ticket staged by an earlier build has no flag and keeps the old
-    /// behaviour: hand the pane to an interactive shell.
+    /// Missing optional fields remain decodable. A missing owner start time
+    /// still fails validation; an absent exit flag retains the shell handoff.
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         resultKey = try container.decode(Data.self, forKey: .resultKey)
@@ -42,6 +44,7 @@ public struct ApprovedCommandTicket: Codable, Sendable {
         sourceFolder = try container.decode(String.self, forKey: .sourceFolder)
         shellExecutable = try container.decode(String.self, forKey: .shellExecutable)
         ownerPID = try container.decode(Int32.self, forKey: .ownerPID)
+        ownerStartTime = try container.decodeIfPresent(UInt64.self, forKey: .ownerStartTime)
         expiresAt = try container.decode(Date.self, forKey: .expiresAt)
         exitInsteadOfShellWhenClean = try container.decodeIfPresent(Bool.self, forKey: .exitInsteadOfShellWhenClean) ?? false
     }
@@ -74,10 +77,28 @@ private func interruptCommandWorker(_ signal: Int32) { commandWorkerInterrupted 
 public enum ApprovedCommandWorker {
     private static let resultKeys = CommandResultKeys()
     public static let argument = "--parley-approved-command-worker"
+
+    /// Kernel start time makes an owner PID meaningful across a long run.
+    /// Legacy tickets without it still decode, but cannot authorize execution.
+    public static func processStartTime(_ pid: Int32) -> UInt64? {
+        guard pid > 1 else { return nil }
+        var info = proc_taskallinfo()
+        let size = Int32(MemoryLayout<proc_taskallinfo>.stride)
+        guard proc_pidinfo(pid, PROC_PIDTASKALLINFO, 0, &info, size) == size else { return nil }
+        return info.pbsd.pbi_start_tvsec * 1_000_000 + info.pbsd.pbi_start_tvusec
+    }
+
+    public static func ownerIsCurrent(_ ticket: ApprovedCommandTicket) -> Bool {
+        guard let expected = ticket.ownerStartTime else { return false }
+        return processStartTime(ticket.ownerPID) == expected
+    }
     public static func stage(run: ReviewedCommandRun, directory: URL, shellExecutable: String, ownerPID: Int32, exitWhenClean: Bool = false, now: Date = Date()) throws -> URL {
         guard run.state == .running, UUID(uuidString: run.id) != nil,
               shellExecutable.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: shellExecutable) else {
             throw ReviewedCommandRunError.invalid("Only a natively approved running request can create a worker ticket.")
+        }
+        guard let ownerStartTime = processStartTime(ownerPID) else {
+            throw ReviewedCommandRunError.invalid("The application owner's process identity is unavailable.")
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try privateDirectory(directory)
@@ -87,7 +108,7 @@ public enum ApprovedCommandWorker {
         let keyData = key.withUnsafeBytes { Data($0) }
         let ticket = ApprovedCommandTicket(resultKey: keyData, runID: run.id, command: run.command, sourceFolder: run.sourceFolder,
             shellExecutable: shellExecutable, ownerPID: ownerPID, expiresAt: now.addingTimeInterval(120),
-            exitInsteadOfShellWhenClean: exitWhenClean)
+            exitInsteadOfShellWhenClean: exitWhenClean, ownerStartTime: ownerStartTime)
         let path = job.appendingPathComponent("ticket.json")
         let bytes = try JSONEncoder().encode(ticket)
         try writeNew(bytes, to: path)
@@ -144,7 +165,7 @@ public enum ApprovedCommandWorker {
 
     private static func validate(_ value: ApprovedCommandTicket) throws {
         guard value.resultKey.count == 32, UUID(uuidString: value.runID) != nil,
-              value.expiresAt > Date(), value.ownerPID > 1, kill(value.ownerPID, 0) == 0,
+              value.expiresAt > Date(), ownerIsCurrent(value),
               value.shellExecutable.hasPrefix("/"), FileManager.default.isExecutableFile(atPath: value.shellExecutable) else {
             throw ReviewedCommandRunError.invalid("The worker ticket expired or its application owner is unavailable.")
         }
@@ -306,7 +327,7 @@ public enum ApprovedCommandWorker {
                 result = try ApprovedCommandProcess.run(ticket.command,
                     environment: ProcessInfo.processInfo.environment,
                     shouldCancel: {
-                        commandWorkerInterrupted != 0 || kill(ticket.ownerPID, 0) != 0
+                        commandWorkerInterrupted != 0 || !ownerIsCurrent(ticket)
                             || FileManager.default.fileExists(atPath: job.appendingPathComponent("cancel").path)
                     }, stdoutMirror: { mirror($0, to: STDOUT_FILENO) },
                     stderrMirror: { mirror($0, to: STDERR_FILENO) })
@@ -323,7 +344,7 @@ public enum ApprovedCommandWorker {
             guard renamex_np(temporary.path, job.appendingPathComponent("result.json").path, UInt32(RENAME_EXCL)) == 0 else { throw posixError() }
             endsPaneAfterResult = ticket.exitInsteadOfShellWhenClean && ReviewedCommandRunPaneClosePolicy.isClean(result)
             mirror(Data("\r\n[Parley captured command result: exit \(result.exitStatus.map(String.init) ?? "unavailable"), signal \(result.terminationSignal.map(String.init) ?? "none"). \(endsPaneAfterResult ? "Clean result; this pane closes." : "Returning to Shell.")]\r\n".utf8), to: STDOUT_FILENO)
-            if commandWorkerInterrupted == SIGHUP || commandWorkerInterrupted == SIGTERM || kill(ticket.ownerPID, 0) != 0 { exit(0) }
+            if commandWorkerInterrupted == SIGHUP || commandWorkerInterrupted == SIGTERM || !ownerIsCurrent(ticket) { exit(0) }
             _ = chdir(ticket.command.folder)
         } catch {
             if lease >= 0 {
@@ -343,7 +364,10 @@ public enum ApprovedCommandWorker {
         guard let shell else { exit(1) }
         // The one-use command is over. The same retained Ghostty pane now owns
         // an ordinary human login shell, with no reusable execution ticket.
-        for value in [SIGHUP, SIGTERM, SIGINT, SIGPIPE] { signal(value, SIG_DFL) }
+        for value in 1..<NSIG where value != SIGKILL && value != SIGSTOP { signal(value, SIG_DFL) }
+        var emptyMask = sigset_t()
+        sigemptyset(&emptyMask)
+        guard sigprocmask(SIG_SETMASK, &emptyMask, nil) == 0 else { exit(1) }
         for descriptor in [STDOUT_FILENO, STDERR_FILENO] {
             _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL, 0) & ~O_NONBLOCK)
         }

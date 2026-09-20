@@ -11,6 +11,7 @@ public struct GitWorktreeRecord: Identifiable, Equatable, Sendable {
     public let lockReason: String?
     public let pruneReason: String?
     public let isPrimary: Bool
+    public let isBare: Bool
 
     public init(
         path: String,
@@ -19,7 +20,8 @@ public struct GitWorktreeRecord: Identifiable, Equatable, Sendable {
         isDetached: Bool,
         lockReason: String?,
         pruneReason: String?,
-        isPrimary: Bool
+        isPrimary: Bool,
+        isBare: Bool = false
     ) {
         self.path = path
         self.head = head
@@ -28,6 +30,7 @@ public struct GitWorktreeRecord: Identifiable, Equatable, Sendable {
         self.lockReason = lockReason
         self.pruneReason = pruneReason
         self.isPrimary = isPrimary
+        self.isBare = isBare
     }
 
     public var id: String { path }
@@ -36,7 +39,7 @@ public struct GitWorktreeRecord: Identifiable, Equatable, Sendable {
         guard !head.isEmpty else { return "detached" }
         return "@" + head.prefix(8)
     }
-    public var locationKind: String { isPrimary ? "Primary worktree" : "Linked worktree" }
+    public var locationKind: String { isBare ? "Bare repository" : (isPrimary ? "Primary worktree" : "Linked worktree") }
 }
 
 public struct GitWorktreeRepository: Identifiable, Equatable, Sendable {
@@ -164,7 +167,8 @@ public struct GitWorktreeResolver: Sendable {
                 isDetached: record.isDetached,
                 lockReason: record.lockReason,
                 pruneReason: record.pruneReason,
-                isPrimary: record.isPrimary
+                isPrimary: record.isPrimary,
+                isBare: record.isBare
             )
         }
         guard let primary = parsed.first else { return nil }
@@ -193,6 +197,7 @@ public struct GitWorktreeResolver: Sendable {
             var head = ""
             var branch: String?
             var detached = false
+            var bare = false
             var lockReason: String?
             var pruneReason: String?
         }
@@ -209,7 +214,8 @@ public struct GitWorktreeResolver: Sendable {
                 isDetached: value.detached,
                 lockReason: value.lockReason,
                 pruneReason: value.pruneReason,
-                isPrimary: records.isEmpty
+                isPrimary: records.isEmpty && !value.bare,
+                isBare: value.bare
             )
         }
 
@@ -236,6 +242,8 @@ public struct GitWorktreeResolver: Sendable {
                     : ref
             } else if line == "detached" {
                 draft?.detached = true
+            } else if line == "bare" {
+                draft?.bare = true
             } else if line == "locked" {
                 draft?.lockReason = ""
             } else if line.hasPrefix("locked ") {

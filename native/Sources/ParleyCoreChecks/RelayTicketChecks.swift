@@ -9,6 +9,7 @@ private func ticketExpect(_ condition: @autoclosure () throws -> Bool, _ message
 /// A client for the ticket socket, used from a child process so the kernel
 /// reports a real peer and the pane marker sits on a real ancestor.
 enum TicketClient {
+    static let requestID = "11111111-2222-4333-8444-555555555555"
     static func request(socketPath: String, token: String) throws -> String {
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { throw NSError(domain: "TicketClient", code: 1, userInfo: [NSLocalizedDescriptionKey: "socket: \(String(cString: strerror(errno)))"]) }
@@ -26,7 +27,7 @@ enum TicketClient {
             pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
         guard connected == 0 else { throw NSError(domain: "TicketClient", code: 2, userInfo: [NSLocalizedDescriptionKey: "connect: \(String(cString: strerror(errno)))"]) }
-        let line = token + "\n"
+        let line = token + " " + requestID + "\n"
         _ = line.withCString { Darwin.send(descriptor, $0, strlen($0), 0) }
         var reply = [UInt8]()
         var buffer = [UInt8](repeating: 0, count: 512)
@@ -161,9 +162,10 @@ func checkTicketSocketIssuesAndRedeems() throws {
     }
     let ticket = try ask(marker: "pane-a", presenting: token)
     try ticketExpect(ticket.count == 48 && ticket.allSatisfy(\.isHexDigit), "a marked descendant was not issued a ticket: \(ticket)")
-    try ticketExpect(!server.redeem(ticket, token: other), "a ticket redeemed for another capability")
-    try ticketExpect(server.redeem(ticket, token: token), "a fresh ticket did not redeem for its own capability")
-    try ticketExpect(!server.redeem(ticket, token: token), "a ticket redeemed twice")
+    try ticketExpect(!server.redeem(ticket, token: other, requestID: TicketClient.requestID), "a ticket redeemed for another capability")
+    try ticketExpect(!server.redeem(ticket, token: token, requestID: UUID().uuidString), "a ticket copied to another request redeemed")
+    try ticketExpect(server.redeem(ticket, token: token, requestID: TicketClient.requestID), "a fresh ticket did not redeem for its own request")
+    try ticketExpect(!server.redeem(ticket, token: token, requestID: TicketClient.requestID), "a ticket redeemed twice")
     try ticketExpect(try ask(marker: nil, presenting: token).hasPrefix("refused:"), "an unmarked process was issued a ticket")
     try ticketExpect(try ask(marker: "pane-b", presenting: token).hasPrefix("refused:"), "a process of another pane was issued a ticket for this one")
     try ticketExpect(try ask(marker: "pane-a", presenting: "not-a-capability").hasPrefix("refused:"), "an unknown capability was issued a ticket")
@@ -171,7 +173,7 @@ func checkTicketSocketIssuesAndRedeems() throws {
     try ticketExpect(try ask(marker: "pane-a", presenting: token, generation: nil).hasPrefix("refused:"), "a process without a generation marker was issued a ticket")
     let expiring = try ask(marker: "pane-a", presenting: token)
     clock.advance(by: RelayTicketServer.ticketLifetime + 1)
-    try ticketExpect(!server.redeem(expiring, token: token), "an expired ticket redeemed")
+    try ticketExpect(!server.redeem(expiring, token: token, requestID: TicketClient.requestID), "an expired ticket redeemed")
     try ticketExpect(server.issuedCount == 2 && server.refusedCount == 5, "counts are wrong: issued \(server.issuedCount), refused \(server.refusedCount)")
     server.stop()
     try ticketExpect(!server.isListening && !FileManager.default.fileExists(atPath: server.socketFile.path), "stop left the socket behind")

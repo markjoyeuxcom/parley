@@ -772,6 +772,11 @@ func worktreeMergePreviewChecks() throws {
     try wtExpect(try f.git(["rev-parse", "HEAD"], in: folder) == feature, "preview moved HEAD")
     let clean = try f.service.mergePreview(tree, targetRef: feature)
     try wtExpect(!clean.hasConflicts && clean.conflictedPaths.isEmpty, "identical commits were not clean")
+    let untracked = f.root.appendingPathComponent("untracked")
+    _ = try f.git(["worktree", "add", "-b", "untracked", untracked.path, "main"], in: f.repo)
+    let recordsBefore = try f.store.records()
+    _ = try f.service.mergePreview(path: untracked.path, repositoryFolder: f.repo.path, targetRef: "main")
+    try wtExpect(try f.store.records() == recordsBefore, "Predict attached an unrecorded tree")
     _ = try wtRejects("option-shaped target accepted") { _ = try f.service.mergePreview(tree, targetRef: "--help") }
 }
 

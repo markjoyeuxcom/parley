@@ -455,7 +455,7 @@ public final class RelayFileTransport: @unchecked Sendable {
         }
         let attestation: RelayAttestation
         if let ticket = try fields.read("ticket", maximumBytes: 64, optional: true)?.trimmingCharacters(in: .whitespacesAndNewlines), !ticket.isEmpty {
-            guard let tickets, tickets.redeem(ticket, token: token) else {
+            guard let tickets, tickets.redeem(ticket, token: token, requestID: directory.lastPathComponent) else {
                 throw RelayFileTransportError.runtime("the ticket is invalid, expired or already used")
             }
             attestation = .peerVerified

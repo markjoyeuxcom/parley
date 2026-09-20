@@ -1342,7 +1342,8 @@ public final class WorkbenchController: @unchecked Sendable {
                 ) { launchEnvironment[key] = value }
                 let endpoint = try RelayFileTransport.prepareEndpoint(
                     runtimeDirectory: relayRuntime.transportDirectory, paneToken: token, fileManager: fileManager)
-                argv = ["/usr/bin/env", "-u", "TMUX", "-u", "TMUX_PANE"]
+                argv = ["/usr/bin/env", "-u", "TMUX", "-u", "TMUX_PANE", "-u", "PARLEY_RUNTIME"]
+                if let marker = relayRuntime.runtimeMarker { argv.append("PARLEY_RUNTIME=\(marker)") }
                 if let assignment = terminalType.launchAssignment { argv.append(assignment) }
                 let launchMode = agentLaunchRequests[pane.id].flatMap {
                     $0.generation == pane.launchGeneration ? $0.mode : nil

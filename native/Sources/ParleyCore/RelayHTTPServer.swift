@@ -2,6 +2,19 @@ import Darwin
 import Dispatch
 import Foundation
 
+/// umask belongs to the process, so both native socket bind paths share this
+/// lock and restore the previous mask before listening or doing other work.
+public enum LocalSocketCreation {
+    private static let lock = NSLock()
+    public static func withOwnerOnlyPermissions<T>(_ operation: () throws -> T) rethrows -> T {
+        try lock.withLock {
+            let previous = umask(0o177)
+            defer { umask(previous) }
+            return try operation()
+        }
+    }
+}
+
 public enum RelayServerError: LocalizedError {
     case socket(String)
     case malformedRequest(String)
@@ -66,9 +79,11 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     throw socketError("could not protect socket from child-process inheritance")
                 }
                 var mutableAddress = address
-                let bindStatus = withUnsafePointer(to: &mutableAddress) { pointer in
-                    pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                        Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                let bindStatus = LocalSocketCreation.withOwnerOnlyPermissions {
+                    withUnsafePointer(to: &mutableAddress) { pointer in
+                        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                            Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                        }
                     }
                 }
                 guard bindStatus == 0 else { throw socketError("could not bind local socket") }
@@ -602,7 +617,11 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     return
                 }
                 let reviewID = String(path.dropFirst("/ui/context-reviews/reject/".count))
-                write(broker.rejectContextReview(reviewID: reviewID), to: client)
+                guard let review = try? JSONDecoder().decode(AgentContextDraftDiscard.self, from: request.body), review.reviewID == reviewID else {
+                    write(RelayTextResponse(status: 400, text: "invalid context rejection revision"), to: client)
+                    return
+                }
+                write(broker.rejectContextReview(reviewID: reviewID, expectedUpdatedAt: review.expectedUpdatedAt), to: client)
             default:
                 write(RelayResponse(
                     status: 404,

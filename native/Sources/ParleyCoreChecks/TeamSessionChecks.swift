@@ -1353,7 +1353,7 @@ func teamSessionBoundedDiagnosticsChecks() throws {
 }
 
 private func containerTeamConfiguration() -> ContainerConfiguration {
-    ContainerConfiguration(dockerExecutable: "/fixture/docker", daemonEndpoint: "unix:///tmp/docker.sock", daemonID: "fixture",
+    ContainerConfiguration(dockerExecutable: "/usr/local/bin/docker", daemonEndpoint: "unix:///tmp/docker.sock", daemonID: "fixture",
         imageID: "sha256:" + String(repeating: "b", count: 64), imageName: "fixture", legacyCodexSandbox: false)
 }
 

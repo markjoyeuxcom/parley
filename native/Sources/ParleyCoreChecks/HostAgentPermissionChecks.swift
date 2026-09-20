@@ -109,7 +109,7 @@ func checkHostLaunchesPreserveVendorControls() throws {
                     && shortPermissions.filesystem[shortTransport.appendingPathComponent("other-endpoint").path] == nil,
                     "the socket exception lost a path alias or exposed sibling endpoints")
             } else { expected += PermissionProfileAdapter.launchPlan(for: kind, profile: profile).arguments }
-            try hostExpect(launch.command == GhosttyLaunchCommand.render(["/usr/bin/env", "-u", "TMUX", "-u", "TMUX_PANE"] + expected),
+            try hostExpect(launch.command == GhosttyLaunchCommand.render(["/usr/bin/env", "-u", "TMUX", "-u", "TMUX_PANE", "-u", "PARLEY_RUNTIME"] + expected),
                 "\(kind) \(mode) changed the vendor argv or retained a host wrapper")
             try hostExpect(launch.paneID == pane.id && launch.workingDirectory == root.path && launch.environment["PARLEY_RELAY_TOKEN"] == token,
                 "host launch lost its folder or pane identity")
