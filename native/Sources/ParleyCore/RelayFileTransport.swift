@@ -432,72 +432,49 @@ public final class RelayFileTransport: @unchecked Sendable {
     }
 
     private func readRequest(from directory: URL, expectedToken: String) throws -> FileRequest {
-        try validateDirectory(directory)
-        let command = try readField("command", from: directory, maximumBytes: 32)
+        let fields = try RelayRequestFields(runtimeDirectory: runtimeDirectory,
+            components: [expectedToken, "processing", directory.lastPathComponent])
+        func field(_ name: String, maximumBytes: Int) throws -> String {
+            try fields.read(name, maximumBytes: maximumBytes)!
+        }
+        let command = try field("command", maximumBytes: 32)
         let allowed = [
             "request-run", "team-request", "team-add", "team-status", "whoami", "panes", "events", "signal", "relay", "paste", "ask", "ask-many", "answer", "delegate", "status", "wait", "progress", "done", "done-file", "fail", "cancel",
             "context-draft", "context-add", "context-list", "context-show", "context-discard", "context-ask",
         ]
         guard allowed.contains(command) else { throw RelayFileTransportError.runtime("unknown command") }
-        let token = try readField("token", from: directory, maximumBytes: 256)
+        let token = try field("token", maximumBytes: 256)
         guard token == expectedToken else {
             throw RelayFileTransportError.runtime("pane capability does not match its endpoint")
         }
         // A ticket proves the kernel saw the caller and that the caller
         // descends from this pane. Whether one is demanded is the pane's
         // policy; a ticket that arrives is always checked and consumed.
-        let policy = broker.ticketPolicy(token: token, socketListening: tickets?.isListening ?? false)
+        guard let policy = broker.ticketPolicy(token: token, socketListening: tickets?.isListening ?? false) else {
+            throw RelayFileTransportError.runtime("the source agent pane is not running or its capability is invalid")
+        }
         let attestation: RelayAttestation
-        if let ticket = try readOptionalField("ticket", from: directory, maximumBytes: 64) {
+        if let ticket = try fields.read("ticket", maximumBytes: 64, optional: true)?.trimmingCharacters(in: .whitespacesAndNewlines), !ticket.isEmpty {
             guard let tickets, tickets.redeem(ticket, token: token) else {
                 throw RelayFileTransportError.runtime("the ticket is invalid, expired or already used")
             }
             attestation = .peerVerified
-        } else if policy?.requirement == .required {
-            throw RelayFileTransportError.runtime("a ticket is required for this pane and none was presented: \(policy?.reason ?? "no policy")")
+        } else if policy.requirement == .required {
+            throw RelayFileTransportError.runtime("a ticket is required for this pane and none was presented: \(policy.reason)")
         } else {
             attestation = .tokenOnly
         }
         let request = FileRequest(
             command: command,
-            target: try readField("target", from: directory, maximumBytes: command == "request-run" ? 4_096 : 1_024),
-            item: try readField("item", from: directory, maximumBytes: 128),
-            idempotencyKey: try readField("idempotency-key", from: directory, maximumBytes: 128),
+            target: try field("target", maximumBytes: command == "request-run" ? 4_096 : 1_024),
+            item: try field("item", maximumBytes: 128),
+            idempotencyKey: try field("idempotency-key", maximumBytes: 128),
             token: token,
-            body: try readField("body", from: directory, maximumBytes: Self.maximumBodyBytes),
+            body: try field("body", maximumBytes: Self.maximumBodyBytes),
             attestation: attestation,
             ticketPolicy: policy
         )
         return request
-    }
-
-    /// A field the shim writes only when it has something to say; absence is
-    /// not an error, any other problem is.
-    private func readOptionalField(_ name: String, from directory: URL, maximumBytes: Int) throws -> String? {
-        let file = directory.appendingPathComponent(name, isDirectory: false)
-        var metadata = stat()
-        if lstat(file.path, &metadata) != 0, errno == ENOENT { return nil }
-        let value = try readField(name, from: directory, maximumBytes: maximumBytes).trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty ? nil : value
-    }
-
-    private func readField(_ name: String, from directory: URL, maximumBytes: Int) throws -> String {
-        let file = directory.appendingPathComponent(name, isDirectory: false)
-        var metadata = stat()
-        guard lstat(file.path, &metadata) == 0,
-              metadata.st_mode & S_IFMT == S_IFREG,
-              metadata.st_uid == getuid(),
-              metadata.st_mode & 0o077 == 0 else {
-            throw RelayFileTransportError.runtime("invalid request field \(name)")
-        }
-        guard metadata.st_size >= 0, metadata.st_size <= maximumBytes else {
-            throw RelayFileTransportError.runtime("request field \(name) is too large")
-        }
-        let data = try Data(contentsOf: file, options: [.mappedIfSafe])
-        guard data.count <= maximumBytes, let text = String(data: data, encoding: .utf8) else {
-            throw RelayFileTransportError.runtime("request field \(name) is invalid")
-        }
-        return text
     }
 
     private func writeAskAcceptance(handoffID: String, requestID: String, endpoint: URL) throws {

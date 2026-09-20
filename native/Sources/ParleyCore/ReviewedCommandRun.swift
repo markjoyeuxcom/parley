@@ -193,7 +193,7 @@ public struct ReviewedCommandGrant: Identifiable, Codable, Equatable, Sendable {
         sourcePolicy = source.automationPolicy
         sourceGeneration = source.launchGeneration
         sourceWorkspaceID = source.workspaceID
-        sourceFolder = URL(fileURLWithPath: source.cwd).resolvingSymlinksInPath().standardizedFileURL.path
+        sourceFolder = URL(fileURLWithPath: source.launchWorkingDirectory).resolvingSymlinksInPath().standardizedFileURL.path
         sourceName = source.displayName
         self.command = command
         createdAt = Date()
@@ -204,7 +204,7 @@ public struct ReviewedCommandGrant: Identifiable, Codable, Equatable, Sendable {
             && source.id == sourcePaneID && source.launchGeneration == sourceGeneration
             && source.automationPolicy == sourcePolicy
             && source.workspaceID == sourceWorkspaceID
-            && URL(fileURLWithPath: source.cwd).resolvingSymlinksInPath().standardizedFileURL.path == sourceFolder
+            && URL(fileURLWithPath: source.launchWorkingDirectory).resolvingSymlinksInPath().standardizedFileURL.path == sourceFolder
             && self.command == command
     }
 }
@@ -217,7 +217,7 @@ public struct ReviewedCommandGrant: Identifiable, Codable, Equatable, Sendable {
 /// released; the pane itself is removed only after its process has ended.
 /// Every other outcome keeps its pane, with an ordinary shell, for inspection.
 public enum ReviewedCommandRunPaneClosePolicy {
-    public static let disclosure = "While this is on, a run that starts afterwards and finishes cleanly (exit status 0, no signal, not cancelled, output within the capture limit) ends its pane's process instead of handing the pane to an interactive shell; once its result is saved and the process has ended, Parley removes that pane and returns focus to the pane you were using. The choice is fixed for each run when it starts, so a run already given a shell is never affected. Parley never closes a pane that is running an interactive shell, and a pane you restarted is yours. A failed, cancelled or truncated run keeps its pane, with an ordinary shell, so you can inspect it. The captured result stays available under Review runs and trust and in Status Center. Like automatic approval, this choice stays on across Parley relaunches until you turn it off here, and it is stored in Parley's own private directory, which agent processes cannot read or write."
+    public static let disclosure = "While this is on, a run that starts afterwards and finishes cleanly (exit status 0, no signal, not cancelled, output within the capture limit) ends its pane's process instead of handing the pane to an interactive shell; once its result is saved and the process has ended, Parley removes that pane and returns focus to the pane you were using. The choice is fixed for each run when it starts, so a run already given a shell is never affected. Parley never closes a pane that is running an interactive shell, and a pane you restarted is yours. A failed, cancelled or truncated run keeps its pane, with an ordinary shell, so you can inspect it. The captured result stays available under Review runs and trust and in Status Center. Like automatic approval, this choice applies only to this app session and resets to off when Parley quits."
 
     /// The result-only part of the rule, applied by the worker before it
     /// decides whether to hand the pane to an interactive shell.

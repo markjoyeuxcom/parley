@@ -142,7 +142,8 @@ public final class WorkbenchController: @unchecked Sendable {
     private var terminalTypeLaunches: [String: (generation: Int, type: TerminalTypePreference)] = [:]
     /// The profile actually carried by each host launch. Editing the store
     /// changes future launches, never the running process or its ticket policy.
-    private var hostPermissionLaunches: [String: (generation: Int, profile: EffectivePermissionProfile?)] = [:]
+    private var hostPermissionLaunches: [String: (generation: Int, profile: EffectivePermissionProfile?, claudeSandbox: ClaudeSandboxFact?, folder: String)] = [:]
+    private var deliveringPaneIDs: Set<String> = []
     public let environment: [String: String]
 
     private let stateFile: URL
@@ -222,10 +223,8 @@ public final class WorkbenchController: @unchecked Sendable {
     }
 
     /// Network permission carried by this exact live Codex generation, or
-    /// unknown before its launch configuration has been made. Never consults
+    /// unknown when no reviewed launch has been recorded. Never consults
     /// the editable profile store on behalf of an already-running process.
-    /// Ghostty requests the configuration before starting the generation's
-    /// process, so the unknown fact in that initial interval is intentional.
     public func hostNetworkAllowed(for pane: WorkbenchPane) -> Bool? {
         lock.withLock {
             guard let current = document.panes.first(where: { $0.id == pane.id }),
@@ -238,14 +237,44 @@ public final class WorkbenchController: @unchecked Sendable {
         }
     }
 
+    public func hostClaudeSandbox(for pane: WorkbenchPane) -> ClaudeSandboxFact? {
+        lock.withLock {
+            guard let current = document.panes.first(where: { $0.id == pane.id }),
+                  current.launchGeneration == pane.launchGeneration, current.kind == .claude,
+                  current.containerConfiguration == nil, current.isStarted, !current.isDead,
+                  let launch = hostPermissionLaunches[pane.id], launch.generation == current.launchGeneration else { return nil }
+            return launch.claudeSandbox
+        }
+    }
+
+    /// Definitions actually selected for live generations, including containers.
+    /// Used for advisory writer warnings; edits to the profile store affect no
+    /// already-running process.
+    public func runningPermissionDefinitions() -> [String: PermissionProfileDefinition] {
+        lock.withLock {
+            Dictionary(uniqueKeysWithValues: document.panes.compactMap { pane in
+                guard pane.kind.isAgent, pane.isStarted, !pane.isDead,
+                      let launch = hostPermissionLaunches[pane.id], launch.generation == pane.launchGeneration,
+                      let profile = launch.profile else { return nil }
+                return (pane.id, profile.definition)
+            })
+        }
+    }
+
+    private func recordLaunchPermissionsLocked(_ pane: WorkbenchPane, profile: EffectivePermissionProfile?) {
+        let liveIDs = Set(document.panes.map(\.id))
+        hostPermissionLaunches = hostPermissionLaunches.filter { liveIDs.contains($0.key) }
+        let sandbox = pane.kind == .claude && pane.containerConfiguration == nil
+            ? ClaudeHostConfiguration.sandbox(folder: pane.launchWorkingDirectory, environment: environment) : nil
+        hostPermissionLaunches[pane.id] = (pane.launchGeneration, profile, sandbox, pane.launchWorkingDirectory)
+    }
+
     private func hostPermissionProfileForLaunchLocked(_ pane: WorkbenchPane) throws -> EffectivePermissionProfile? {
         if let launch = hostPermissionLaunches[pane.id], launch.generation == pane.launchGeneration {
             return launch.profile
         }
-        let profile = try effectivePermissionProfile(for: pane.kind, cwd: pane.cwd, supplied: nil, selection: pane.permissionSelection)
-        let liveIDs = Set(document.panes.map(\.id))
-        hostPermissionLaunches = hostPermissionLaunches.filter { liveIDs.contains($0.key) }
-        hostPermissionLaunches[pane.id] = (pane.launchGeneration, profile)
+        let profile = try effectivePermissionProfile(for: pane.kind, cwd: pane.launchWorkingDirectory, supplied: nil, selection: pane.permissionSelection)
+        recordLaunchPermissionsLocked(pane, profile: profile)
         return profile
     }
 
@@ -580,7 +609,7 @@ public final class WorkbenchController: @unchecked Sendable {
                   let lead = document.panes.first(where: { $0.id == grant.requesterPaneID }),
                   lead.kind.isAgent, lead.isStarted, !lead.isDead,
                   lead.launchGeneration == grant.requesterGeneration, lead.workspaceID == grant.workspaceID,
-                  WorkspaceFolderIdentity.matchingKey(lead.cwd) == session.sourceFolder,
+                  WorkspaceFolderIdentity.matchingKey(lead.launchWorkingDirectory) == session.sourceFolder,
                   let workspace = document.workspaces.first(where: { $0.workspaceID == grant.workspaceID }),
                   workspace.automationPolicy == grant.automationPolicy else {
                 throw TeamSessionError.invalid("The approved team session or its requesting pane changed before pane creation.")
@@ -641,7 +670,7 @@ public final class WorkbenchController: @unchecked Sendable {
                       source.kind.isAgent, source.isStarted, !source.isDead,
                       source.launchGeneration == requester.launchGeneration,
                       source.workspaceID == requester.workspaceID,
-                      WorkspaceFolderIdentity.matchingKey(source.cwd) == run.sourceFolder,
+                      WorkspaceFolderIdentity.matchingKey(source.launchWorkingDirectory) == run.sourceFolder,
                       let found = document.workspaces.first(where: { $0.workspaceID == source.workspaceID }) else {
                     throw ReviewedCommandRunError.invalid("The approved request or its source pane changed before Shell creation.")
                 }
@@ -725,10 +754,10 @@ public final class WorkbenchController: @unchecked Sendable {
             guard containerConfiguration == nil else {
                 throw ContainerPaneError.refused("Stop and prepare the container in the background before starting this pane.")
             }
-            try requireDirectory(document.panes[index].cwd)
+            try requireDirectory(document.panes[index].launchWorkingDirectory)
             let profile = try effectivePermissionProfile(
                 for: document.panes[index].kind,
-                cwd: document.panes[index].cwd,
+                cwd: document.panes[index].launchWorkingDirectory,
                 supplied: permissionProfile,
                 selection: document.panes[index].permissionSelection
             )
@@ -772,10 +801,10 @@ public final class WorkbenchController: @unchecked Sendable {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
             }
             guard document.panes[index].kind.isAgent, !document.panes[index].isStarted else { return }
-            try requireDirectory(document.panes[index].cwd)
+            try requireDirectory(document.panes[index].launchWorkingDirectory)
             let profile = try effectivePermissionProfile(
                 for: document.panes[index].kind,
-                cwd: document.panes[index].cwd,
+                cwd: document.panes[index].launchWorkingDirectory,
                 supplied: permissionProfile,
                 selection: document.panes[index].permissionSelection
             )
@@ -786,7 +815,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 guard let prepared = preparedContainerIDs[paneID],
                       prepared.generation == document.panes[index].launchGeneration + 1,
                       prepared.configuration == containerConfiguration, prepared.mode == launchMode,
-                      prepared.profile == profile, prepared.folder == document.panes[index].cwd,
+                      prepared.profile == profile, prepared.folder == document.panes[index].launchWorkingDirectory,
                       prepared.workspaceID == document.panes[index].workspaceID,
                       prepared.automationPolicy == document.panes[index].automationPolicy else {
                     throw ContainerPaneError.refused("This container was not prepared for the exact reviewed pane, profile and launch mode.")
@@ -822,6 +851,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 )
             }
             document.panes[index].cwd = WorkspaceFolderIdentity.normalized(folder)
+            document.panes[index].launchFolder = document.panes[index].cwd
             document.panes[index].permissionSelection = nil
             document.panes[index].permissionEnforcement = nil
             try persistLocked()
@@ -1085,7 +1115,7 @@ public final class WorkbenchController: @unchecked Sendable {
                   !containerPreparations.contains(paneID), preparedContainerIDs[paneID] == nil else {
                 throw ContainerPaneError.refused("Container preparation requires an unchanged stopped agent pane and the active core.")
             }
-            guard permissionProfile.approvedRoots == [pane.cwd] else {
+            guard permissionProfile.approvedRoots == [pane.launchWorkingDirectory] else {
                 throw ContainerPaneError.refused("Container panes currently require exactly their working folder as the approved root.")
             }
             containerPreparations.insert(paneID)
@@ -1097,7 +1127,7 @@ public final class WorkbenchController: @unchecked Sendable {
         let protectedDirectories = controlDirectories
             + controlDirectories.map { RelayFileTransport.runtimeDirectory(applicationDirectory: $0) }
             + [runtime.transportDirectory]
-        try containerService.validateFolder(snapshot.cwd, protectedDirectories: protectedDirectories.map(\.path), gitAccess: configuration.gitAccess)
+        try containerService.validateFolder(snapshot.launchWorkingDirectory, protectedDirectories: protectedDirectories.map(\.path), gitAccess: configuration.gitAccess)
         let root = applicationDirectory.appendingPathComponent("container-runtime")
         let protocolFolder = try AgentProtocol.install(in: root)
         let shim = try RelayShim.installCommand(in: root.appendingPathComponent("bin"),
@@ -1105,6 +1135,7 @@ public final class WorkbenchController: @unchecked Sendable {
         let token = try runtime.credentials.rotate(paneID)
         let endpoint = try RelayFileTransport.prepareEndpoint(runtimeDirectory: runtime.transportDirectory, paneToken: token)
         var proposed = snapshot
+        proposed.cwd = snapshot.launchWorkingDirectory
         proposed.containerConfiguration = configuration
         proposed.launchGeneration += 1
         // Bypass is the person's explicit choice, and an ask rule outranks
@@ -1131,7 +1162,7 @@ public final class WorkbenchController: @unchecked Sendable {
         try lock.withLock {
             guard !isShutDown, let current = document.panes.first(where: { $0.id == paneID }),
                   !current.isStarted, current.launchGeneration == snapshot.launchGeneration,
-                  current.cwd == snapshot.cwd, current.workspaceID == snapshot.workspaceID,
+                  current.cwd == snapshot.cwd, current.launchFolder == snapshot.launchFolder, current.workspaceID == snapshot.workspaceID,
                   current.automationPolicy == snapshot.automationPolicy,
                   current.permissionSelection == snapshot.permissionSelection else {
                 throw ContainerPaneError.refused("The pane changed while its container was being prepared. Remove the recorded container in Status Center before retrying.")
@@ -1231,6 +1262,9 @@ public final class WorkbenchController: @unchecked Sendable {
             guard pane.isStarted, !pane.isDead else {
                 throw ParleyWorkbenchError.commandFailed("\(pane.displayName) is stopped.")
             }
+            let workingDirectory = hostPermissionLaunches[pane.id].flatMap {
+                pane.kind.isAgent && $0.generation == pane.launchGeneration ? $0.folder : nil
+            } ?? pane.launchWorkingDirectory
             var launchEnvironment: [String: String] = [
                 "PARLEY_PANE": "1",
                 "PARLEY_PANE_ID": pane.id,
@@ -1284,7 +1318,7 @@ public final class WorkbenchController: @unchecked Sendable {
                     launchEnvironment["HOME"] = NSHomeDirectory()
                     // Docker sets the container's TERM at create; the host
                     // client's own value is not what the vendor sees.
-                    return GhosttyPaneLaunch(paneID: pane.id, generation: pane.launchGeneration, workingDirectory: pane.cwd,
+                    return GhosttyPaneLaunch(paneID: pane.id, generation: pane.launchGeneration, workingDirectory: workingDirectory,
                         environment: launchEnvironment, command: GhosttyLaunchCommand.render(command), terminalType: .compatible)
                 }
                 launchEnvironment["PARLEY_RELAY_TOKEN"] = token
@@ -1337,7 +1371,7 @@ public final class WorkbenchController: @unchecked Sendable {
             return GhosttyPaneLaunch(
                 paneID: pane.id,
                 generation: pane.launchGeneration,
-                workingDirectory: pane.cwd,
+                workingDirectory: workingDirectory,
                 environment: launchEnvironment,
                 command: GhosttyLaunchCommand.render(argv),
                 terminalType: terminalType
@@ -1466,18 +1500,21 @@ public final class WorkbenchController: @unchecked Sendable {
         try updatePaneRuntime(paneID: paneID) { $0.inputAvailable = false }
     }
 
-    public func terminalDidClose(paneID: String, processAlive: Bool, exitStatus: Int? = nil) throws {
-        if !processAlive { lock.withLock { copilotTrustConfirmations[paneID] = nil } }
-        try updatePaneRuntime(paneID: paneID) {
-            $0.isDead = !processAlive
-            $0.exitStatus = processAlive ? nil : exitStatus
-            $0.relayEnabled = processAlive && $0.kind.isAgent
-            if !processAlive {
-                $0.inputAvailable = false
-                $0.currentCommand = "exited"
-                $0.vendorRuntimeState = nil
-                $0.vendorRuntimeSignal = nil
-                $0.vendorRuntimeSignaledAt = nil
+    public func terminalDidClose(paneID: String, generation: Int? = nil, processAlive: Bool, exitStatus: Int? = nil) throws {
+        try lock.withLock {
+            if let generation, document.panes.first(where: { $0.id == paneID })?.launchGeneration != generation { return }
+            if !processAlive { copilotTrustConfirmations[paneID] = nil }
+            try updatePaneRuntime(paneID: paneID) {
+                $0.isDead = !processAlive
+                $0.exitStatus = processAlive ? nil : exitStatus
+                $0.relayEnabled = processAlive && $0.kind.isAgent
+                if !processAlive {
+                    $0.inputAvailable = false
+                    $0.currentCommand = "exited"
+                    $0.vendorRuntimeState = nil
+                    $0.vendorRuntimeSignal = nil
+                    $0.vendorRuntimeSignaledAt = nil
+                }
             }
         }
     }
@@ -1492,6 +1529,12 @@ public final class WorkbenchController: @unchecked Sendable {
     }
 
     private func pastePrepared(_ text: String, into paneID: String, submit: Bool) throws {
+        try lock.withLock {
+            guard deliveringPaneIDs.insert(paneID).inserted else {
+                throw ParleyWorkbenchError.commandFailed("A delivery to this pane is already in progress. Wait for it to finish before sending again.")
+            }
+        }
+        defer { _ = lock.withLock { deliveringPaneIDs.remove(paneID) } }
         let pane = try requireRelayPane(paneID)
         guard let terminalTransport else {
             throw ParleyWorkbenchError.unsafeRelayTarget(pane.displayName)
@@ -1596,7 +1639,7 @@ public final class WorkbenchController: @unchecked Sendable {
         try requireNotReservedForRemoval(cwd)
         let plan = permissionProfile.map { PermissionProfileAdapter.launchPlan(for: kind, profile: $0) }
         let paneID = Self.paneID()
-        return WorkbenchPane(
+        let pane = WorkbenchPane(
             id: paneID,
             kind: kind,
             customName: nil,
@@ -1619,9 +1662,12 @@ public final class WorkbenchController: @unchecked Sendable {
             permissionEnforcement: plan?.enforcement,
             launchGeneration: 0
         )
+        if started { recordLaunchPermissionsLocked(pane, profile: permissionProfile) }
+        return pane
     }
 
     private func markStartedLocked(index: Int, profile: EffectivePermissionProfile?) {
+        document.panes[index].cwd = document.panes[index].launchWorkingDirectory
         copilotTrustConfirmations[document.panes[index].id] = nil
         document.panes[index].launchGeneration &+= 1
         document.panes[index].isStarted = true
@@ -1640,6 +1686,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 PermissionProfileAdapter.launchPlan(for: document.panes[index].kind, profile: $0).enforcement
             }
         document.activity[document.panes[index].id] = Date()
+        recordLaunchPermissionsLocked(document.panes[index], profile: profile)
     }
 
     private func effectivePermissionProfile(

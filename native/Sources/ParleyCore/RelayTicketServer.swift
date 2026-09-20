@@ -5,8 +5,8 @@ import Foundation
 /// How one request through the agent transport was authenticated.
 public enum RelayAttestation: String, Codable, Equatable, Sendable {
     /// The request carried a one-use ticket that the ticket socket issued to a
-    /// process the kernel reported, whose ancestry carries this pane's launch
-    /// marker. A copied capability alone cannot produce one.
+    /// process whose kernel ancestry reaches this application's launch root,
+    /// where the pane identity and generation were injected at launch.
     case peerVerified = "peer-verified"
     /// The pane capability alone, as before tickets existed.
     case tokenOnly = "token-only"
@@ -44,8 +44,8 @@ public struct RelayTicketPolicy: Equatable, Sendable {
     /// so a Codex pane on such a profile must present a ticket, and one
     /// without network is asked for one, since only an approved escalation
     /// could reach the socket. A container never has the socket mounted.
-    /// `claudeSandbox` is Claude's own sandbox setting for the pane's folder,
-    /// read by `ClaudeHostConfiguration`; a person who switched it on in their
+    /// `claudeSandbox` is Claude's own sandbox setting captured for this launch
+    /// by `ClaudeHostConfiguration`; a person who switched it on in their
     /// settings has put a sandbox around Claude's shell commands that denies
     /// Unix sockets unless its `allowUnixSockets` admits one, which Parley has
     /// not checked, so a ticket becomes welcome rather than demanded.
@@ -77,9 +77,8 @@ public struct RelayTicketPolicy: Equatable, Sendable {
 
     /// `networkAllowed` answers for the pane's exact launch generation; the
     /// broker supplies its launch snapshot, and nil means unknown.
-    public static func policy(for pane: WorkbenchPane, socketListening: Bool, networkAllowed: Bool? = nil) -> RelayTicketPolicy {
-        let claudeSandbox = pane.kind == .claude && pane.containerConfiguration == nil
-            ? ClaudeHostConfiguration.sandbox(folder: pane.cwd) : nil
+    public static func policy(for pane: WorkbenchPane, socketListening: Bool, networkAllowed: Bool? = nil,
+                              claudeSandbox: ClaudeSandboxFact? = nil) -> RelayTicketPolicy {
         return policy(kind: pane.kind, inContainer: pane.containerConfiguration != nil, socketListening: socketListening,
             claudeSandbox: claudeSandbox, codexNetworkAllowed: pane.kind == .codex ? networkAllowed : nil)
     }
@@ -111,6 +110,7 @@ public final class RelayTicketServer: @unchecked Sendable {
     /// One environment value (by key) of one process.
     public typealias MarkerValue = @Sendable (String, Int32) -> String?
     public typealias ParentPID = @Sendable (Int32) -> Int32?
+    public typealias LaunchIntermediate = @Sendable (Int32) -> Bool
     /// The pane's current launch generation, or nil when the pane is unknown.
     public typealias PaneGeneration = @Sendable (String) -> Int?
 
@@ -119,6 +119,7 @@ public final class RelayTicketServer: @unchecked Sendable {
     private let applicationPID: Int32
     private let markerValue: MarkerValue
     private let parentPID: ParentPID
+    private let isLaunchIntermediate: LaunchIntermediate
     private let paneGeneration: PaneGeneration
     private let clock: @Sendable () -> Date
     private let lock = NSLock()
@@ -152,6 +153,7 @@ public final class RelayTicketServer: @unchecked Sendable {
         paneGeneration: @escaping PaneGeneration,
         markerValue: @escaping MarkerValue = { key, pid in ProcessEnvironmentMarker.value(key, forProcess: pid) },
         parentPID: @escaping ParentPID = { pid in ProcessKernelFacts.parentPID(ofProcess: pid) },
+        isLaunchIntermediate: @escaping LaunchIntermediate = ProcessKernelFacts.isPrivilegedLogin,
         clock: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.socketFile = socketFile
@@ -160,6 +162,7 @@ public final class RelayTicketServer: @unchecked Sendable {
         self.paneGeneration = paneGeneration
         self.markerValue = markerValue
         self.parentPID = parentPID
+        self.isLaunchIntermediate = isLaunchIntermediate
         self.clock = clock
     }
 
@@ -243,22 +246,31 @@ public final class RelayTicketServer: @unchecked Sendable {
         }
     }
 
-    /// Whether `peerPID` descends from this launch of the pane: the nearest
-    /// marked ancestor, found before the walk reaches the application, pid 1,
-    /// an unreadable parent or the hop bound, carries this pane's id and this
-    /// launch's generation. The nearest marker decides, so a process of one
-    /// pane presenting another pane's capability is refused, and so is a
-    /// process left over from an earlier generation. Platform binaries hide
-    /// their environment, so the marker is usually found on the vendor's own
-    /// process, above the shim's shell.
+    /// First prove kernel ancestry to Parley. Only the direct launch root's
+    /// markers count, optionally below Ghostty's root-owned login process.
+    /// Descendants cannot impersonate another pane by replacing their own
+    /// environment. If the launch root cannot be read, refuse rather than
+    /// falling back to a child's assertion. Host vendor applications remain
+    /// trusted; this does not isolate an unrestricted same-user process.
     public func attest(peerPID: Int32, paneID: String, generation: Int) -> Bool {
         var pid = peerPID
+        var child: Int32?
+        var visited: Set<Int32> = []
         for _ in 0..<Self.maximumAncestryHops {
-            guard pid > 1 else { return false }
-            if let marker = markerValue(PaneProcessAnchorProjection.markerKey, pid) {
-                return marker == paneID && markerValue(Self.generationMarkerKey, pid) == String(generation)
+            guard pid > 1, pid != applicationPID, visited.insert(pid).inserted,
+                  let parent = parentPID(pid), parent > 1, parent != pid else { return false }
+            if parent == applicationPID {
+                let root: Int32
+                if isLaunchIntermediate(pid) {
+                    guard let child else { return false }
+                    root = child
+                } else {
+                    root = pid
+                }
+                return markerValue(PaneProcessAnchorProjection.markerKey, root) == paneID
+                    && markerValue(Self.generationMarkerKey, root) == String(generation)
             }
-            guard let parent = parentPID(pid), parent > 1, parent != pid, parent != applicationPID else { return false }
+            child = pid
             pid = parent
         }
         return false

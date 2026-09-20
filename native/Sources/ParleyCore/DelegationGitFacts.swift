@@ -348,7 +348,7 @@ public final class DelegationGitSnapshotCapture: @unchecked Sendable {
         guard let output = try? runner.run(executable: gitExecutable,
             arguments: ["-C", folder, "-c", "core.fsmonitor=false", "rev-parse", "--show-toplevel"], environment: environment, input: nil),
               output.status == 0 else { return nil }
-        let root = output.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let root = GitWorktreeResolver.singlePathOutput(output.stdoutText)
         return root.hasPrefix("/") ? GitWorktreeResolver.canonicalPath(root) : nil
     }
 }

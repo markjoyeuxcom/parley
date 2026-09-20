@@ -237,6 +237,16 @@ public enum ProcessEnvironmentMarker {
 /// root-owned `login` intermediate Ghostty places above them. No terminal text
 /// is involved.
 public enum ProcessKernelFacts {
+    /// Ghostty's sole privileged intermediate. An ordinary same-user child
+    /// named `login` must not create another place to assert a pane identity.
+    public static func isPrivilegedLogin(_ pid: Int32) -> Bool {
+        guard let info = kernelInfo(pid), info.kp_eproc.e_ucred.cr_uid == 0 else { return false }
+        let name = withUnsafeBytes(of: info.kp_proc.p_comm) { bytes in
+            String(decoding: bytes.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        return name == "login"
+    }
+
     public static func parentPID(ofProcess pid: Int32) -> Int32? {
         guard let info = kernelInfo(pid) else { return nil }
         let parent = info.kp_eproc.e_ppid

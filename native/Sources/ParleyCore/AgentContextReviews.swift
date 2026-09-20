@@ -342,9 +342,11 @@ public final class AgentContextReviewStore: @unchecked Sendable {
             if isNewPending, byID.values.count(where: { $0.state.needsHumanReview }) >= Self.maximumPending {
                 throw AgentContextReviewStoreError.tooManyPending
             }
-            byID[review.id] = review
-            pruneLocked()
-            try writeLocked()
+            var proposed = byID
+            proposed[review.id] = review
+            Self.prune(&proposed)
+            try writeLocked(proposed)
+            byID = proposed
         }
     }
 
@@ -370,16 +372,16 @@ public final class AgentContextReviewStore: @unchecked Sendable {
         return Dictionary(uniqueKeysWithValues: document.reviews.map { ($0.id, $0) })
     }
 
-    private func pruneLocked() {
-        guard byID.count > Self.maximumRecords else { return }
-        let removable = byID.values
+    private static func prune(_ records: inout [String: AgentContextReview]) {
+        guard records.count > maximumRecords else { return }
+        let removable = records.values
             .filter { !$0.state.needsHumanReview }
             .sorted {
                 if $0.updatedAt == $1.updatedAt { return $0.id < $1.id }
                 return $0.updatedAt < $1.updatedAt
             }
-        for review in removable.prefix(byID.count - Self.maximumRecords) {
-            byID.removeValue(forKey: review.id)
+        for review in removable.prefix(records.count - maximumRecords) {
+            records.removeValue(forKey: review.id)
         }
     }
 
@@ -394,8 +396,25 @@ public final class AgentContextReviewStore: @unchecked Sendable {
         }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(Document(version: 1, reviews: ordered)).write(to: file, options: .atomic)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        let data = try encoder.encode(Document(version: 1, reviews: ordered))
+        let temporary = directory.appendingPathComponent(".context-reviews-\(UUID().uuidString).tmp")
+        let descriptor = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        defer { close(descriptor); try? fileManager.removeItem(at: temporary) }
+        try data.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < bytes.count {
+                let count = Darwin.write(descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(count == 0 ? EIO : errno)) }
+                offset += count
+            }
+        }
+        guard fsync(descriptor) == 0, rename(temporary.path, file.path) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        // Rename is the commit point. Permissions and sync already succeeded;
+        // no fallible maintenance may report a failed save after this point.
     }
 
     private static func validate(file: URL) throws {

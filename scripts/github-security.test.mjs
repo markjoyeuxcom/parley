@@ -6,6 +6,13 @@ import test from 'node:test'
 const repositoryRoot = join(import.meta.dirname, '..')
 const workflowsDirectory = join(repositoryRoot, '.github', 'workflows')
 
+test('the native permission review uses the selected vendor bypass disclosure', () => {
+  const source = readFileSync(join(repositoryRoot, 'native/Sources/ParleyNative/PermissionProfilePickerView.swift'), 'utf8')
+  assert.match(source, /detail:\s*ContainerLaunchProjection\.bypassDisclosure\(for: kind\)/,
+    'the permission review must show the selected vendor flags, not a fixed vendor string')
+  assert.match(source, /_kind = State\(initialValue: request\.kind\)/)
+})
+
 test('Dependabot watches Swift packages and GitHub Actions weekly', () => {
   const configuration = join(repositoryRoot, '.github', 'dependabot.yml')
   assert.equal(existsSync(configuration), true, '.github/dependabot.yml is missing')
@@ -64,6 +71,30 @@ function assertRunsDeterministicChecks(job, label) {
   assert.match(job, /-\s*npm run scan:platform/, `${label} must run the platform dependency scan`)
   assert.doesNotMatch(job, /--skip (?!"\$DOCKER_ONLY_CHECKS")/, `${label} may skip only the declared Docker-only checks`)
 }
+
+test('GitLab production preparation requires a protected tag, signing and reviewed artifacts', () => {
+  const source = readFileSync(join(repositoryRoot, '.gitlab-ci.yml'), 'utf8')
+  const job = source.slice(source.indexOf('prepare-production-release:'), source.indexOf('# Cuts an unnotarized test beta'))
+  assert.match(job, /CI_COMMIT_REF_PROTECTED == "true"/)
+  assert.match(job, /when: manual/)
+  assertRunsDeterministicChecks(job, 'production preparation')
+  assert.match(job, /npm run test:soak -- --rounds 25/)
+  assert.match(job, /trap cleanup_signing EXIT/)
+  assert.match(job, /security delete-keychain/)
+  assert.match(job, /keychains\.json/)
+  assert.match(job, /json\.load\(open\(sys\.argv\[1\]\)\)/)
+  assert.ok(job.indexOf('test -f "$notes"') < job.indexOf('npm run release:mac'))
+  assert.match(job, /PARLEY_NOTARY_KEY=/)
+  assert.match(job, /PARLEY_SPARKLE_PRIVATE_ED_KEY=/)
+  assert.match(job, /npm run release:mac\n/)
+  assert.match(job, /npm run verify:launch:mac/)
+  assert.match(job, /when: on_success/)
+  assert.match(job, /dist\/appcast\.xml/)
+  assert.match(job, /dist\/parley\.rb/)
+  assert.doesNotMatch(job, /release:mac:beta|--unnotarized|(?:glab|gh) release create|git push/)
+  const artifacts = job.slice(job.indexOf('  artifacts:'))
+  assert.doesNotMatch(artifacts, /signing_dir|\.p12|\.p8|keychain/)
+})
 
 test('npm test is composed of the halves the pipeline runs', () => {
   const scripts = JSON.parse(readFileSync(join(repositoryRoot, 'package.json'), 'utf8')).scripts

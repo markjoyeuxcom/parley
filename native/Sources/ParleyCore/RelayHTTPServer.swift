@@ -311,10 +311,6 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 ), to: client)
                 return
             }
-            let authorization = request.headers["authorization"] ?? ""
-            let token = authorization.range(of: "Bearer ", options: [.anchored, .caseInsensitive])
-                .map { String(authorization[$0.upperBound...]).trimmingCharacters(in: .whitespaces) } ?? ""
-            let target = request.headers["x-parley-to"] ?? ""
             let idempotencyKey = request.headers["x-parley-idempotency-key"]
             let text = String(decoding: request.body, as: UTF8.self)
             switch request.path {
@@ -607,75 +603,6 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 }
                 let reviewID = String(path.dropFirst("/ui/context-reviews/reject/".count))
                 write(broker.rejectContextReview(reviewID: reviewID), to: client)
-            case "/relay":
-                write(broker.handle(
-                    token: token,
-                    target: target,
-                    text: text,
-                    idempotencyKey: idempotencyKey
-                ), to: client)
-            case "/paste":
-                write(broker.handlePaste(
-                    token: token,
-                    target: target,
-                    text: text,
-                    idempotencyKey: idempotencyKey
-                ), to: client)
-            case "/ask":
-                write(broker.handleAsk(
-                    token: token,
-                    target: target,
-                    text: text,
-                    idempotencyKey: idempotencyKey
-                ), to: client)
-            case "/ask-many":
-                write(broker.handleAskMany(
-                    token: token,
-                    targets: target,
-                    text: text,
-                    idempotencyKey: idempotencyKey
-                ), to: client)
-            case "/delegate":
-                write(broker.handleDelegate(
-                    token: token,
-                    target: target,
-                    text: text,
-                    idempotencyKey: idempotencyKey
-                ), to: client)
-            case "/status":
-                write(broker.delegationStatus(token: token), to: client)
-            case let path where path.hasPrefix("/wait/"):
-                let handoffID = String(path.dropFirst("/wait/".count))
-                write(broker.waitForTrackedWork(token: token, handoffID: handoffID), to: client)
-            case let path where path.hasPrefix("/progress/"):
-                let handoffID = String(path.dropFirst("/progress/".count))
-                write(broker.handleDelegationProgress(
-                    token: token,
-                    handoffID: handoffID,
-                    text: text
-                ), to: client)
-            case let path where path.hasPrefix("/done/"):
-                let handoffID = String(path.dropFirst("/done/".count))
-                write(broker.handleDelegationResult(
-                    token: token,
-                    handoffID: handoffID,
-                    text: text,
-                    succeeded: true
-                ), to: client)
-            case let path where path.hasPrefix("/fail/"):
-                let handoffID = String(path.dropFirst("/fail/".count))
-                write(broker.handleDelegationResult(
-                    token: token,
-                    handoffID: handoffID,
-                    text: text,
-                    succeeded: false
-                ), to: client)
-            case let path where path.hasPrefix("/cancel/"):
-                let handoffID = String(path.dropFirst("/cancel/".count))
-                write(broker.cancelHandoff(token: token, handoffID: handoffID), to: client)
-            case let path where path.hasPrefix("/answer/"):
-                let consultationID = String(path.dropFirst("/answer/".count))
-                write(broker.handleAnswer(token: token, consultationID: consultationID, text: text), to: client)
             default:
                 write(RelayResponse(
                     status: 404,

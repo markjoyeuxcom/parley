@@ -30,7 +30,7 @@ final class AppResidentCoordinationCore {
     /// share the Status Center health route; an activity compaction failure
     /// follows an already durable append and clears on the next success.
     var historyPersistenceError: String? {
-        let errors = [handoffJournal.lastError, activityJournal.lastError.map { "Activity journal maintenance: \($0)" }].compactMap { $0 }
+        let errors = [broker.contextPersistenceError, handoffJournal.lastError, activityJournal.lastError.map { "Activity journal maintenance: \($0)" }].compactMap { $0 }
         return errors.isEmpty ? nil : errors.joined(separator: " ")
     }
 
@@ -119,10 +119,13 @@ final class AppResidentCoordinationCore {
             controlToken: controlToken
         )
         broker.hostNetworkAllowed = { [controller] pane in controller.hostNetworkAllowed(for: pane) }
+        broker.hostClaudeSandbox = { [controller] pane in controller.hostClaudeSandbox(for: pane) }
         ticketServer = RelayTicketServer(
             socketFile: RelayTicketServer.socketURL(transportDirectory: transportDirectory),
             credentials: credentials,
-            paneGeneration: { [controller] paneID in (try? controller.listPanes())?.first { $0.id == paneID }?.launchGeneration }
+            paneGeneration: { [controller] paneID in
+                (try? controller.listPanes())?.first { $0.id == paneID && $0.isStarted && !$0.isDead && $0.relayEnabled }?.launchGeneration
+            }
         )
         agentTransport = RelayFileTransport(
             broker: broker,

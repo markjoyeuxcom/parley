@@ -138,7 +138,7 @@ func checkHostLaunchPermissionSnapshot() throws {
     let token = try credentials.token(for: pane.id)
     let broker = RelayBroker(credentials: credentials, panes: { try controller.listPanes() }, paste: { _, _ in }, submit: { _, _ in })
     broker.hostNetworkAllowed = { controller.hostNetworkAllowed(for: $0) }
-    try hostExpect(controller.hostNetworkAllowed(for: pane) == nil, "an unconfigured launch invented its network permission")
+    try hostExpect(controller.hostNetworkAllowed(for: pane) == false, "the reviewed launch permission was not captured before surface creation")
     let first = try controller.launchConfiguration(for: pane.id)
     try hostExpect(controller.hostNetworkAllowed(for: pane) == false
         && broker.ticketPolicy(token: token, socketListening: true)?.requirement == .optional,
@@ -151,7 +151,10 @@ func checkHostLaunchPermissionSnapshot() throws {
         "a profile edit changed the running pane's ticket requirement")
     try controller.restartPane(pane.id)
     let current = try controller.listPanes().first { $0.id == pane.id }!
-    try hostExpect(controller.hostNetworkAllowed(for: pane) == nil && controller.hostNetworkAllowed(for: current) == nil,
+    try controller.terminalDidClose(paneID: pane.id, generation: pane.launchGeneration, processAlive: false)
+    try hostExpect(try controller.listPanes().first { $0.id == pane.id }?.isDead == false,
+        "a close callback from the previous surface killed the replacement generation")
+    try hostExpect(controller.hostNetworkAllowed(for: pane) == nil && controller.hostNetworkAllowed(for: current) == true,
         "a restarted generation reused the old launch's network fact")
     let restarted = try controller.launchConfiguration(for: pane.id)
     try hostExpect(restarted.generation != first.generation && restarted.command.contains("network={enabled=true}"),

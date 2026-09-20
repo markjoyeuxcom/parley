@@ -72,8 +72,7 @@ public final class ReviewDraftBuilder {
             throw ReviewDraftError.invalidFolder(folder)
         }
 
-        let root = try git(in: folder, ["rev-parse", "--show-toplevel"])
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let root = GitWorktreeResolver.singlePathOutput(try git(in: folder, ["rev-parse", "--show-toplevel"]))
         guard !root.isEmpty else {
             throw ReviewDraftError.commandFailed("git returned no repository root")
         }

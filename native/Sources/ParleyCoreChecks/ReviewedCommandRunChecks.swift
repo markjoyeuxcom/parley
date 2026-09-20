@@ -833,7 +833,7 @@ func reviewedRunShimChecks() throws {
     try runExpect(result.stdout == edited[2] && result.exitStatus == 0 && result.outsideAgentBoundary && result.approvedCommand?.argv == edited && result.approvedCommand?.folder == root.path, "result lost output, status or provenance")
     let recovered = broker.waitForTrackedWork(token: token, handoffID: request.id)
     try runExpect(recovered.status == 200, "same-generation run recovery failed")
-    try runExpect(broker.waitForTrackedWork(token: "wrong", handoffID: request.id).status == 403, "another identity recovered the result")
+    try runExpect(broker.waitForTrackedWork(token: "wrong", handoffID: request.id).status == 401, "invalid credentials passed broker authentication")
 }
 
 func reviewedRunWorkerProcessChecks() throws {

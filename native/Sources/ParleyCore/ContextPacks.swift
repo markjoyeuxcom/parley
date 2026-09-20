@@ -272,85 +272,62 @@ public final class ContextProcessCommandRunner: ContextCommandRunning, @unchecke
         let process = Process()
         let stdout = Pipe()
         let stderr = Pipe()
-        let finished = DispatchSemaphore(value: 0)
-        let readers = DispatchGroup()
-        let output = BoundedContextData(limit: maximumOutputBytes)
-        let errors = BoundedContextData(limit: maximumOutputBytes)
-
         process.executableURL = executable
         process.arguments = arguments
         process.currentDirectoryURL = workingDirectory
         process.environment = environment
         process.standardOutput = stdout
         process.standardError = stderr
-        process.terminationHandler = { _ in finished.signal() }
-
-        readers.enter()
-        DispatchQueue.global(qos: .utility).async {
-            output.drain(stdout.fileHandleForReading)
-            readers.leave()
-        }
-        readers.enter()
-        DispatchQueue.global(qos: .utility).async {
-            errors.drain(stderr.fileHandleForReading)
-            readers.leave()
-        }
-
-        do {
-            try process.run()
-        } catch {
-            try? stdout.fileHandleForReading.close()
-            try? stderr.fileHandleForReading.close()
-            readers.wait()
-            throw error
-        }
-
-        let timedOut = finished.wait(timeout: .now() + timeout) == .timedOut
-        if timedOut {
-            process.terminate()
-            if finished.wait(timeout: .now() + 1) == .timedOut {
-                kill(process.processIdentifier, SIGKILL)
-                _ = finished.wait(timeout: .now() + 1)
+        let handles = [stdout.fileHandleForReading, stderr.fileHandleForReading]
+        for handle in handles {
+            let descriptor = handle.fileDescriptor
+            guard fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL) | O_NONBLOCK) == 0 else {
+                throw ContextPackError.commandFailed("Could not prepare bounded command capture.")
             }
-            try? stdout.fileHandleForReading.close()
-            try? stderr.fileHandleForReading.close()
         }
-        process.waitUntilExit()
-        readers.wait()
-
-        var errorData = errors.data
-        if timedOut {
-            if !errorData.isEmpty { errorData.append(Data("\n".utf8)) }
-            errorData.append(Data("Command timed out after \(timeout) seconds".utf8))
-        }
-        return CommandOutput(
-            stdout: output.data,
-            stderr: errorData,
-            status: timedOut ? 124 : process.terminationStatus
-        )
-    }
-}
-
-private final class BoundedContextData: @unchecked Sendable {
-    private let lock = NSLock()
-    private let limit: Int
-    private var storage = Data()
-
-    init(limit: Int) {
-        self.limit = limit
-    }
-
-    var data: Data { lock.withLock { storage } }
-
-    func drain(_ handle: FileHandle) {
+        try process.run()
+        defer { for handle in handles { try? handle.close() } }
+        let deadline = DispatchTime.now().uptimeNanoseconds &+ UInt64(timeout * 1_000_000_000)
+        var cancelledAt: UInt64?
+        var exitedAt: UInt64?
+        var killed = false
+        var buffers = [Data(), Data()]
+        var open = [true, true]
         while true {
-            let chunk = handle.readData(ofLength: 8_192)
-            if chunk.isEmpty { return }
-            lock.withLock {
-                let remaining = max(0, limit - storage.count)
-                if remaining > 0 { storage.append(chunk.prefix(remaining)) }
+            let now = DispatchTime.now().uptimeNanoseconds
+            if now >= deadline, cancelledAt == nil, process.isRunning {
+                cancelledAt = now
+                process.terminate()
             }
+            if let cancelledAt, now &- cancelledAt >= 1_000_000_000, !killed, process.isRunning {
+                _ = kill(process.processIdentifier, SIGKILL)
+                killed = true
+            }
+            if !process.isRunning, exitedAt == nil { exitedAt = now }
+            for index in 0..<2 where open[index] {
+                for _ in 0..<8 {
+                    var bytes = [UInt8](repeating: 0, count: 8_192)
+                    let count = Darwin.read(handles[index].fileDescriptor, &bytes, bytes.count)
+                    if count > 0 {
+                        buffers[index].append(contentsOf: bytes.prefix(min(count, max(0, maximumOutputBytes - buffers[index].count))))
+                    } else {
+                        if count == 0 || (errno != EAGAIN && errno != EINTR) { open[index] = false }
+                        break
+                    }
+                }
+            }
+            // No blocking wait or pipe drain follows these bounds. Foundation
+            // reaps its own process; inherited output pipes cannot hold us here.
+            if let cancelledAt, now &- cancelledAt >= 2_000_000_000 { break }
+            if let exitedAt, !open.contains(true) || now &- exitedAt >= 500_000_000 { break }
+            usleep(5_000)
         }
+        if cancelledAt != nil {
+            buffers[1].append(Data("\nCommand timed out after \(timeout) seconds".utf8))
+        }
+        return CommandOutput(stdout: buffers[0], stderr: buffers[1],
+            status: cancelledAt != nil ? CommandExitStatus.timedOut
+                : (process.isRunning ? CommandExitStatus.unobserved : process.terminationStatus))
     }
 }
 
@@ -446,8 +423,7 @@ public final class ContextPackBuilder: @unchecked Sendable {
         relativeFile: String? = nil
     ) throws -> ContextPackPart {
         try requireDirectory(folder)
-        let root = try git(in: folder, ["rev-parse", "--show-toplevel"])
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let root = GitWorktreeResolver.singlePathOutput(try git(in: folder, ["rev-parse", "--show-toplevel"]))
         guard !root.isEmpty else { throw ContextPackError.commandFailed("git returned no repository root") }
         let captureFolder = relativeFile == nil ? root : folder
         let pathspec = relativeFile.map { ["--", $0] } ?? ["--"]

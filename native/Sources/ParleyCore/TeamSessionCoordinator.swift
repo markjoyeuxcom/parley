@@ -43,7 +43,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                 throw TeamSessionError.invalid("Team members cannot request a nested team session; ask the requesting pane.")
             }
             try proposal.validate()
-            let folder = try Self.canonicalFolder(proposal.folder, within: source.cwd)
+            let folder = try Self.canonicalFolder(proposal.folder, within: source.launchWorkingDirectory)
             guard !idempotencyKey.isEmpty, idempotencyKey.utf8.count <= 128 else { throw TeamSessionError.invalid("Invalid request identity.") }
             if let previous = records.values.first(where: {
                 $0.source.id == id && $0.source.launchGeneration == source.launchGeneration && $0.idempotencyKey == idempotencyKey
@@ -56,7 +56,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             }
             let now = Date()
             let session = TeamSession(id: UUID().uuidString.lowercased(), idempotencyKey: idempotencyKey, revision: UUID().uuidString,
-                source: source, sourceFolder: WorkspaceFolderIdentity.matchingKey(source.cwd), proposal: proposal,
+                source: source, sourceFolder: WorkspaceFolderIdentity.matchingKey(source.launchWorkingDirectory), proposal: proposal,
                 objective: proposal.objective, folder: folder, allowedVendors: PaneKind.allCases.filter(\.isAgent),
                 permissionProfileID: nil, paneLimit: proposal.paneLimit, deadline: nil, state: .pending,
                 createdAt: now, updatedAt: now, detail: "Waiting for human approval")
@@ -134,7 +134,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             let edited = TeamSessionProposal(objective: cleanObjective, folder: folder, paneLimit: paneLimit, hours: hours,
                 worktreeBranch: session.proposal.worktreeBranch, worktreeBase: session.proposal.worktreeBase)
             try edited.validate()
-            let canonical = folderExists ? try Self.canonicalFolder(folder, within: source.cwd) : try Self.canonicalPlannedFolder(folder, within: source.cwd)
+            let canonical = folderExists ? try Self.canonicalFolder(folder, within: source.launchWorkingDirectory) : try Self.canonicalPlannedFolder(folder, within: source.launchWorkingDirectory)
             let vendors = allowedVendors.reduce(into: [PaneKind]()) { if !$0.contains($1) { $0.append($1) } }
             guard !vendors.isEmpty, vendors.allSatisfy(\.isAgent) else {
                 throw TeamSessionError.invalid("Choose at least one agent vendor; Shell panes are never team members.")
@@ -164,7 +164,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             let edited = TeamSessionProposal(objective: cleanObjective, folder: folder, paneLimit: paneLimit, hours: hours,
                 worktreeBranch: session.proposal.worktreeBranch, worktreeBase: session.proposal.worktreeBase)
             try edited.validate()
-            let matchedFolder = try Self.canonicalFolder(folder, within: source.cwd)
+            let matchedFolder = try Self.canonicalFolder(folder, within: source.launchWorkingDirectory)
             // Container mounts and permission roots use realpath spelling;
             // Foundation's matching key can shorten /private/tmp back to /tmp.
             let canonical = containerConfigurations?.isEmpty == false ? try ContainerGitAccess.canonical(matchedFolder) : matchedFolder
@@ -646,7 +646,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
         return live.first {
             eligible($0) && $0.id == session.source.id && $0.launchGeneration == session.source.launchGeneration
                 && $0.workspaceID == session.source.workspaceID && $0.automationPolicy == session.source.automationPolicy
-                && WorkspaceFolderIdentity.matchingKey($0.cwd) == session.sourceFolder
+                && WorkspaceFolderIdentity.matchingKey($0.launchWorkingDirectory) == session.sourceFolder
         }
     }
 

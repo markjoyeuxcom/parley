@@ -5,19 +5,14 @@ unnotarized test beta becomes a GitLab release only after deterministic checks,
 the real eight-pane Ghostty soak, packaging and launch verification succeed.
 The notarized release additionally requires Developer ID signing, Apple
 notarization, Gatekeeper assessment and Sparkle feed signing before it
-produces an unpublished draft.
+retains verified, unpublished assets for review.
 
 ## Locked release dependencies
 
-The repository currently pins Sparkle 2.9.6 and `libghostty-spm` 1.5.20260906 in both
-`native/Package.swift` and `native/Package.resolved`. These values were checked
-against their official GitHub release APIs on 7 September 2026. The wrapper
-release embeds Ghostty 1.3.2-dev at commit
-`c4e16970a803b170e352432424f44192cb59f3ac`.
-
-Do not copy these version numbers into a future update without querying the
-official release API again and reviewing the intervening release and security
-notes. Keep `THIRD_PARTY_NOTICES.md` consistent with every pin.
+The exact Sparkle and `libghostty-spm` pins live in `native/Package.swift`
+and `native/Package.resolved`. Check those files rather than relying on a
+second version list here. Review official release and security notes before
+updating either dependency, and keep `THIRD_PARTY_NOTICES.md` consistent.
 
 ## One-time signing setup
 
@@ -36,13 +31,14 @@ native/.build/artifacts/sparkle/Sparkle/bin/generate_keys --account com.markjoye
 ```
 
 The public output is safe to embed in the app. The exported private-key file is
-equivalent to a password: set mode 0600, place its exact contents in the GitHub
-secret below, keep an offline recovery copy and delete the temporary file.
+equivalent to a password: set mode 0600, place its exact contents in the protected GitLab
+variable below, keep an offline recovery copy and delete the temporary file.
 Never commit either release private key, a PKCS#12 archive or its password.
 
-Configure these repository Actions secrets:
+Configure these GitLab CI/CD variables as protected, with secret values masked
+and hidden. Protect the version tags allowed to run production preparation.
 
-| Secret | Exact value |
+| Variable | Exact value |
 | --- | --- |
 | `MACOS_DEVELOPER_ID_APPLICATION` | Full `Developer ID Application: …` identity shown by `security find-identity -v -p codesigning` |
 | `MACOS_DEVELOPER_ID_P12_BASE64` | Base64 encoding of the PKCS#12 file |
@@ -53,9 +49,11 @@ Configure these repository Actions secrets:
 | `SPARKLE_PUBLIC_ED_KEY` | Exact base64 public key printed by `generate_keys -p` |
 | `SPARKLE_PRIVATE_ED_KEY` | Exact contents of the file exported by `generate_keys -x` |
 
-The workflow writes private material only under the GitHub runner's temporary
-directory, imports the certificate into an ephemeral keychain and removes both
-after the job. The release script passes private material to fixed-argument
+The job writes private material only under the disposable macOS runner's
+temporary directory, imports the certificate into an ephemeral keychain and
+restores the previous keychain search list and removes both on exit. Release
+notes must exist before signing and notarization begin. Signing material is never an artifact. The job refuses
+missing variables and is unavailable on an unprotected tag. The release script passes private material to fixed-argument
 Apple and Sparkle tools; no key is written into an artifact.
 
 ## Where releases run since 7 September 2026
@@ -76,7 +74,7 @@ job gets a throwaway macOS VM cloned from the digest-pinned image named in
 `.gitlab-ci.yml`, installs the pinned Node build and `glab` itself, and is
 destroyed afterwards. The job signs in with its own CI job token through
 glab's CI auto-login, so no GitLab login or personal token exists anywhere
-on the runner. The VM has no Docker runtime, so both jobs leave the two
+on the runner. The VM has no Docker runtime, so the jobs leave the two
 Docker-only deterministic checks out with an explicit `--skip` that prints
 each skipped name; a local `npm test` on a Mac with Docker still runs them.
 To cut one:
@@ -96,11 +94,13 @@ To cut one:
    `glab release download vX.Y.Z -R markjoyeuxcom/apps/parley`.
 
 Pushing `main` and tags to the `github` remote keeps the public copy in step
-and is a person's manual choice. The GitHub unnotarized test-beta workflow is
-removed. The GitHub **Prepare macOS draft release** workflow stays in the
-repository as the documented notarized procedure below but is disabled on
-GitHub; it can move the same way once the signing and notarization material
-is stored as masked GitLab CI variables instead of GitHub Actions secrets.
+and is a person's explicit choice. The GitLab `prepare-production-release`
+job now prepares the notarized artifacts. The former GitHub preparation
+workflow remains as a reference; GitHub Actions stays disabled. Public
+Sparkle and Homebrew download URLs still point at GitHub, so the signed
+artifacts must be published there at their exact reviewed tag before the
+stable feed can deliver them. Do not point clients at the private GitLab
+package registry or embed a repository token in an update URL.
 
 ## Unnotarized test betas
 
@@ -125,20 +125,28 @@ installing. Install it only from the expected GitLab release and follow the
 documented
 Privacy & Security **Open Anyway** flow; never disable Gatekeeper globally.
 
-## Prepare a draft
+## Prepare production assets
 
-This is the notarized GitHub workflow. It is retained as the documented
-procedure but disabled on GitHub until it moves to GitLab (see above).
+1. Merge the intended version and matching `.github/release-notes/v<version>.md`,
+   then create the protected `v<version>` tag at that exact commit.
+2. Ensure the protected signing variables above are configured in GitLab.
+   Run the two Docker-only checks on a Mac with Docker; the Tart VM explicitly
+   skips them and does not claim they passed.
+3. Start the tag pipeline's manual **prepare-production-release** job. It runs
+   deterministic checks and the 25-round Ghostty soak, then signs, notarizes,
+   verifies Gatekeeper and proves that the packaged app reaches its event loop.
+4. Review the successful job's DMG, ZIP, release manifest, checksums, install
+   guide, `appcast.xml`, `parley.rb`, release notes and soak report. Failed jobs
+   do not upload production artifacts. The signing keychain and private files
+   are removed on exit and the runner VM is disposable.
+5. Verify installation and updating with the signed candidate. After explicit
+   publication approval, publish those exact artifacts to the public GitHub
+   version tag used in the appcast and cask. The preparation job does not
+   publish, push a tag, update the feed or merge a cask change.
 
-1. Ensure `package.json` has the intended version, the matching
-   `.github/release-notes/v<version>.md` exists, the tree is clean and the tag
-   `v<version>` points exactly at that commit.
-2. Run `npm test`, `npm run build` and the Ghostty soak from a normal macOS
-   terminal or Parley shell pane that permits real child PTYs.
-3. Dispatch **Prepare macOS draft release** with the existing tag.
-4. Do not publish unless every job is green and the draft contains the DMG,
-   ZIP, release manifest, checksums, install guide, `appcast.xml`, `parley.rb`
-   and Ghostty soak report.
+Production preparation cannot be validated without real Developer ID, notary
+and Sparkle signing credentials. A successful beta job is not evidence that
+these production gates passed.
 
 Both release workflows launch the final packaged executable on the clean macOS
 runner and require it to remain alive for the smoke-test window. This catches
