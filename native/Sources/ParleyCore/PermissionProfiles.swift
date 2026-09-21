@@ -418,7 +418,7 @@ public enum PermissionProfileAdapter {
             let agyMode = write == .allow ? "accept-edits" : "plan"
             arguments = ["--mode", agyMode, "--sandbox"] + rootArguments
             mode = "Agy mode, sandbox and exact additional directories are configured at launch."
-            reviewerText = reviewer ? "Agy has no automatic reviewer, only a skip-all-permissions flag Parley never passes on the host, so Agy still asks; to stop it asking for Parley's command, add command(parley) to the allow list in ~/.gemini/antigravity-cli/settings.json yourself." : nil
+            reviewerText = reviewer ? "Agy has no automatic reviewer, only a skip-all-permissions flag Parley never passes on the host, so Agy still asks; to stop it asking for Parley's command, add command(\"$PARLEY_COMMAND\") to the allow list in ~/.gemini/antigravity-cli/settings.json yourself. Allow that absolute form, not a bare parley: Agy runs commands through a login shell whose PATH can put ~/.local/bin first, and its sandbox refuses the router there while it admits the runtime shim." : nil
         case .copilot:
             arguments = (write == .deny ? ["--plan"] : [])
                 + (reviewer ? ["--assisted-approval"] : [])

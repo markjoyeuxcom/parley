@@ -604,7 +604,7 @@ struct PermissionProfilePickerView: View {
         case .copilot:
             return "Vendor's reviewer means Copilot assisted approval: its judge reviews tool permission requests. It needs Copilot's AUTO_APPROVAL feature flag; Copilot reports if that is off."
         case .agy:
-            return "Agy has no automatic reviewer, only a skip-all-permissions flag Parley never passes on the host, so Agy always asks. To stop it asking for Parley's command, add command(parley) to the allow list in ~/.gemini/antigravity-cli/settings.json yourself."
+            return "Agy has no automatic reviewer, only a skip-all-permissions flag Parley never passes on the host, so Agy always asks. To stop it asking for Parley's command, add command(\"$PARLEY_COMMAND\") to the allow list in ~/.gemini/antigravity-cli/settings.json yourself. Allow that absolute form, not a bare parley: Agy runs commands through a login shell whose PATH can put ~/.local/bin first, and its sandbox refuses the router there while it admits the runtime shim."
         case .shell:
             return "Shell panes have no vendor prompts."
         }

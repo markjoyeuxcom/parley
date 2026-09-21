@@ -763,6 +763,12 @@ private func teamSessionHostApprovalsChecks() throws {
     let agyPlan = PermissionProfileAdapter.launchPlan(for: .agy, profile: agyProfile)
     try teamExpect(!agyPlan.arguments.contains { $0.hasPrefix("--dangerously") } && agyPlan.detail.contains("no automatic reviewer"),
         "an Agy member gained a skip-all flag or lost the disclosure: \(agyPlan.arguments)")
+    // Agy's sandbox refuses the ~/.local/bin router that a login shell's PATH
+    // puts ahead of the runtime shim, so the allow-list advice has to name the
+    // absolute command; a bare parley allow was refused from a real pane on
+    // 21 September 2026.
+    try teamExpect(agyPlan.detail.contains("command(\"$PARLEY_COMMAND\")") && !agyPlan.detail.contains("command(parley)"),
+        "the Agy allow-list advice names a command its sandbox refuses: \(agyPlan.detail)")
 }
 
 /// The Team Sessions sheet lists only the session's own work: handoffs with a
