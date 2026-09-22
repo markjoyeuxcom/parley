@@ -26,9 +26,11 @@ func checkRelayTextCleaningNeverDropsTheBeginning() throws {
     try limitExpect(cleaned.hasPrefix("Review the current repository changes below."), "cleaning dropped the beginning of a long message")
 }
 
-/// Every agent and human route that carries text refuses it over the limit,
-/// with the real count, and delivers nothing; at the limit it is delivered
-/// whole.
+/// Every broker route that carries text refuses it over the limit, with the
+/// real count, and delivers or stores nothing; at the limit it is delivered
+/// whole. The native editor dialog (`AppModel.editRelay`) enforces the same
+/// limit for the routes that paste without the broker; it is modal and not
+/// exercised here.
 func checkOverLongRelayTextIsRefusedAndNothingIsDelivered() throws {
     let directory = URL(fileURLWithPath: "/tmp/parley-limit-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -58,7 +60,8 @@ func checkOverLongRelayTextIsRefusedAndNothingIsDelivered() throws {
         submit: { _, text in deliveries.append(text) },
         consultationTimeout: 10,
         livenessPollInterval: 0.01,
-        contextReviewStore: try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json"))
+        contextReviewStore: try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json")),
+        busyDraftStore: try ReviewedBusyDraftStore(file: directory.appendingPathComponent("reviewed-busy-drafts.json"))
     )
     let limit = RelayText.maximumCharacters
     let over = message("HEAD OF AN OVER-LONG MESSAGE", count: limit + 1)
@@ -80,6 +83,8 @@ func checkOverLongRelayTextIsRefusedAndNothingIsDelivered() throws {
     try refused(ask.status, ask.text, "ask")
     let delegated = broker.handleDelegate(token: sourceToken, target: target.id, text: over, idempotencyKey: "limit-over")
     try refused(delegated.status, delegated.body.error ?? delegated.body.note ?? "", "delegate")
+    let many = broker.handleAskMany(token: sourceToken, targets: target.id, text: over)
+    try refused(many.status, many.text, "ask-many")
 
     let whole = broker.handle(token: sourceToken, target: target.id, text: atLimit)
     try limitExpect(whole.status == 200, "a relay at the limit was refused: \(whole.body.error ?? "")")
@@ -115,6 +120,19 @@ func checkOverLongRelayTextIsRefusedAndNothingIsDelivered() throws {
     let longReport = broker.handleDelegationResult(token: targetToken, handoffID: workID, text: over, succeeded: true)
     try refused(longReport.status, longReport.text, "done")
     try limitExpect(broker.handoffs().first { $0.id == workID }?.state == .waiting, "a refused report changed the delegation's state")
+    try limitExpect(longReport.text.contains("parley done current --file"), "the refused report did not point at done --file: \(longReport.text)")
+
+    // A reviewed busy-queue draft sent with over-long edited text is refused
+    // before the edit is stored: the queue keeps what the person last saved.
+    let queued = broker.enqueueReviewedBusyAskFromUI(ReviewedBusyDraftCreateRequest(
+        sourcePaneID: source.id, targetPaneID: target.id, text: "A queued question."))
+    try limitExpect((200..<300).contains(queued.status), "a draft for a busy target was not queued: \(queued.status) \(queued.text)")
+    let saved = try limitRequire(broker.reviewedBusyDrafts().first, "the queued draft is missing")
+    let sent = broker.sendReviewedBusyAskFromUI(ReviewedBusyDraftSendRequest(draftID: saved.id, expectedUpdatedAt: saved.updatedAt, text: over))
+    try refused(sent.status, sent.text, "reviewed busy-draft send")
+    let kept = try limitRequire(broker.reviewedBusyDrafts().first { $0.id == saved.id }, "the refused send removed the queued draft")
+    try limitExpect(kept.text == "A queued question." && kept.state == saved.state && kept.updatedAt == saved.updatedAt,
+                    "the refused send changed the queued draft: \(kept)")
     try limitExpect(broker.handleDelegationResult(token: targetToken, handoffID: workID, text: "Done.", succeeded: true).status == 200,
                     "the delegation did not accept a real report after refusing a long one")
 }

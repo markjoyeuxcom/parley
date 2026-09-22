@@ -14,6 +14,10 @@ struct HandoffComposerView: View {
     @ViewBuilder
     var body: some View {
         if let draft = model.handoffComposerDraft {
+            // Cleaned once per render: the count, the over-limit colour, the
+            // accessibility label and Send's state all read it, and cleaning
+            // a long draft is not free now that nothing is truncated.
+            let cleanedCount = RelayText.clean(draft.text).count
             VStack(spacing: 8) {
                 HStack(spacing: 7) {
                     Text(
@@ -119,11 +123,11 @@ struct HandoffComposerView: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Text(characterCountLabel(for: draft.text))
+                    Text(characterCountLabel(cleanedCount))
                         .font(ChromeFont.meta)
-                        .foregroundStyle(exceedsLimit(draft.text) ? Color.red : Color.secondary)
+                        .foregroundStyle(exceedsLimit(cleanedCount) ? Color.red : Color.secondary)
                         .help("Relay messages are limited to \(RelayText.maximumCharacters.formatted()) characters after trimming")
-                        .accessibilityLabel(characterCountAccessibilityLabel(for: draft.text))
+                        .accessibilityLabel(characterCountAccessibilityLabel(cleanedCount))
                     Button("Insert Selection") { model.insertSelectionInHandoffComposer() }
                         .help("Insert only the text currently selected in \(draft.sourceName)")
                         .disabled(model.submittingHandoffComposer)
@@ -136,8 +140,8 @@ struct HandoffComposerView: View {
                     ) { model.submitHandoffComposer() }
                         .buttonStyle(.borderedProminent)
                         .disabled(
-                            RelayText.clean(draft.text).isEmpty
-                                || exceedsLimit(draft.text)
+                            cleanedCount == 0
+                                || exceedsLimit(cleanedCount)
                                 || model.submittingHandoffComposer
                         )
                         .keyboardShortcut(.return, modifiers: [.command])
@@ -166,18 +170,17 @@ struct HandoffComposerView: View {
         return min(max(wanted, Self.minimumEditorHeight), Self.maximumEditorHeight)
     }
 
-    private func exceedsLimit(_ text: String) -> Bool {
-        RelayText.clean(text).count > RelayText.maximumCharacters
+    private func exceedsLimit(_ cleanedCount: Int) -> Bool {
+        cleanedCount > RelayText.maximumCharacters
     }
 
-    private func characterCountLabel(for text: String) -> String {
-        "\(RelayText.clean(text).count.formatted()) / \(RelayText.maximumCharacters.formatted())"
+    private func characterCountLabel(_ cleanedCount: Int) -> String {
+        "\(cleanedCount.formatted()) / \(RelayText.maximumCharacters.formatted())"
     }
 
-    private func characterCountAccessibilityLabel(for text: String) -> String {
-        let count = RelayText.clean(text).count
-        let base = "\(count) of \(RelayText.maximumCharacters) characters"
-        return exceedsLimit(text) ? "\(base), over the relay limit" : base
+    private func characterCountAccessibilityLabel(_ cleanedCount: Int) -> String {
+        let base = "\(cleanedCount) of \(RelayText.maximumCharacters) characters"
+        return exceedsLimit(cleanedCount) ? "\(base), over the relay limit" : base
     }
 }
 

@@ -7849,18 +7849,32 @@ final class AppModel: ObservableObject {
         action: String,
         insertVisible: @escaping () throws -> String
     ) -> String? {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: action)
-        alert.addButton(withTitle: "Cancel")
+        // Several callers paste the result straight into a pane (Forward
+        // comparison, Run recipe), so the limit is enforced here rather than
+        // left to the broker. `RelayText.clean` no longer truncates; over the
+        // limit the editor reopens with the person's edits.
+        var current = text
+        while true {
+            let alert = NSAlert()
+            alert.messageText = title
+            alert.informativeText = message
+            alert.addButton(withTitle: action)
+            alert.addButton(withTitle: "Cancel")
 
-        let accessory = RelayEditorAccessory(text: text, insertVisible: insertVisible)
-        alert.accessoryView = accessory
+            let accessory = RelayEditorAccessory(text: current, insertVisible: insertVisible)
+            alert.accessoryView = accessory
 
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        let cleaned = RelayText.clean(accessory.text)
-        return cleaned.isEmpty ? nil : cleaned
+            guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+            current = accessory.text
+            let cleaned = RelayText.clean(current)
+            if cleaned.count > RelayText.maximumCharacters {
+                NSAlert(error: RelayUIError.message(
+                    "The text is \(cleaned.count.formatted()) characters. Reduce it to \(RelayText.maximumCharacters.formatted()) before sending; nothing was sent."
+                )).runModal()
+                continue
+            }
+            return cleaned.isEmpty ? nil : cleaned
+        }
     }
 
     private func editBoundedText(
@@ -8137,6 +8151,10 @@ private final class RelayEditorAccessory: NSView {
         do {
             let visible = normalizeInserted(try insertVisible())
             guard !visible.isEmpty else { return }
+            // Whole or not at all, as in the composer's Insert Selection.
+            guard visible.count <= RelayText.maximumCharacters else {
+                throw RelayUIError.message("The selection is \(visible.count.formatted()) characters, over the \(RelayText.maximumCharacters.formatted())-character limit. Select less; nothing was inserted.")
+            }
             editor.insertText(visible, replacementRange: editor.selectedRange())
         } catch {
             NSAlert(error: error).runModal()
