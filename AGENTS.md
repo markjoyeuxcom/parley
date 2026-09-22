@@ -314,6 +314,26 @@ a different source identity.
 - `parley status` returns the caller's initiated work as JSON.
 - `parley wait <id|current>` waits for one exact result.
 
+Relay requests never run on the shared dispatch pool (22 September 2026, H2
+of that day's review). Every agent transport request and every UI control
+connection runs on a thread of its own (`RelayWorkerThread`). The pool has a
+fixed number of threads per process (70 on the review's Mac); when parked
+waits filled it, the target's own `parley done`, the ticket socket and the UI
+socket stopped. The requests that can block for minutes (`wait`, `ask`,
+`ask-many`, `context-ask`, `request-run`, `team-request`, `team-add`) count
+against a `BlockingRequestGate` of 64. Past it a new one gets 503 at once, and
+short requests are never counted. `parley wait` is a bounded long-poll: the
+transport passes a 55-second window, the broker and both coordinators return
+`RelayBroker.stillWaiting` (status 102) when it passes, and the shim asks
+again without printing. A wait whose shell a vendor killed therefore holds its
+thread for one window at most. Native callers pass no window and wait as
+before. The initial `ask`, `request-run` and team calls still block, because
+their waiter enforces the consultation timeout and liveness; each is limited
+to one per target or pane, so they cannot accumulate. Replies nobody
+collected are removed after ten minutes. The shim polls every 50 ms for its
+first second, then every 250 ms. `BoundedWaitChecks` parks 80 waits and
+requires the worker's `done` to go through.
+
 Message text is limited to `RelayText.maximumCharacters` (100,000) after
 `RelayText.clean`, which never truncates. Every route (relay, paste, ask,
 ask-many, answer, delegate, done and the reviewed busy-draft send) refuses

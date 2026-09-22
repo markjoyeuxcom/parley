@@ -201,7 +201,9 @@ public final class RelayHTTPServer: @unchecked Sendable {
             }
             connections.enter()
             let connections = connections
-            DispatchQueue.global(qos: .utility).async { [weak self] in
+            // A thread of its own: tracked UI requests block until an answer
+            // arrives and must not hold the shared pool (RelayWorkerThread).
+            RelayWorkerThread.start(name: "parley.control.connection") { [weak self] in
                 defer { connections.leave() }
                 guard let self else {
                     Darwin.close(client)

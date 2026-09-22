@@ -2451,13 +2451,24 @@ public final class RelayBroker: @unchecked Sendable {
         }
     }
 
-    public func waitForTrackedWork(token: String, handoffID requestedHandoffID: String) -> RelayTextResponse {
+    /// `parley wait`'s status when its window passes with the work still
+    /// open. The shim hides it and asks again; it is never a result.
+    public static let stillWaitingStatus = 102
+    public static let stillWaiting = RelayTextResponse(status: stillWaitingStatus, text: "still waiting")
+
+    /// Waits for one tracked item. With a window it is a bounded long-poll:
+    /// when the window passes first it returns `stillWaiting`, so a waiter
+    /// whose caller has gone holds its thread for one window at most. Nothing
+    /// about the tracked work changes. Without a window it waits until the
+    /// work ends, as native callers expect.
+    public func waitForTrackedWork(token: String, handoffID requestedHandoffID: String, within window: TimeInterval? = nil) -> RelayTextResponse {
+        let deadline = window.map { DispatchTime.now() + $0 }
         let source: WorkbenchPane
         do { source = try authenticatedSender(token: token) }
         catch let error as BrokerFailure { return RelayTextResponse(status: error.status, text: error.message) }
         catch { return RelayTextResponse(status: 403, text: error.localizedDescription) }
-        if let commandRuns, commandRuns.owns(id: requestedHandoffID) { return commandRuns.wait(token: token, id: requestedHandoffID) }
-        if let teamSessions, teamSessions.owns(id: requestedHandoffID) { return teamSessions.wait(token: token, id: requestedHandoffID) }
+        if let commandRuns, commandRuns.owns(id: requestedHandoffID) { return commandRuns.wait(token: token, id: requestedHandoffID, until: deadline) }
+        if let teamSessions, teamSessions.owns(id: requestedHandoffID) { return teamSessions.wait(token: token, id: requestedHandoffID, until: deadline) }
         consultationCondition.lock()
         let handoffID: String
         if requestedHandoffID.caseInsensitiveCompare("current") == .orderedSame {
@@ -2516,6 +2527,10 @@ public final class RelayBroker: @unchecked Sendable {
             if let response = liveDelegationResponse ?? trackedWaitResponse(for: handoff) {
                 consultationCondition.unlock()
                 return response
+            }
+            if let deadline, DispatchTime.now() >= deadline {
+                consultationCondition.unlock()
+                return Self.stillWaiting
             }
             _ = consultationCondition.wait(until: Date().addingTimeInterval(livenessPollInterval))
             consultationCondition.unlock()
@@ -5158,6 +5173,13 @@ public enum RelayShim {
           && [ -f "$response_dir/status" ] && [ ! -L "$response_dir/status" ] \
           && [ -f "$response_dir/body" ] && [ ! -L "$response_dir/body" ]; then
           status="$(/bin/cat "$response_dir/status")"
+          if [ "$status" = "102" ]; then
+            # The broker's long-poll window passed with the work still open:
+            # nothing to print; the caller asks again.
+            cleanup
+            trap - EXIT
+            return 75
+          fi
           /bin/cat "$response_dir/body"
           cleanup
           trap - EXIT
@@ -5167,11 +5189,21 @@ public enum RelayShim {
           esac
         fi
         checks=$((checks + 1))
-        if [ $((checks % 20)) -eq 0 ] && ! heartbeat_is_fresh; then
+        # Every 50 ms for the first second, where nearly every reply lands,
+        # then every 250 ms: a long wait must not start twenty processes a
+        # second. The broker's heartbeat is checked about once a second.
+        if [ "$checks" -le 20 ]; then
+          heartbeat_every=20
+          pause=0.05
+        else
+          heartbeat_every=4
+          pause=0.25
+        fi
+        if [ $((checks % heartbeat_every)) -eq 0 ] && ! heartbeat_is_fresh; then
           echo "the Parley relay broker stopped before replying" >&2
           return 2
         fi
-        /bin/sleep 0.05
+        /bin/sleep "$pause"
       done
     }
 
@@ -5207,7 +5239,14 @@ public enum RelayShim {
         printf '' | post
         ;;
       wait)
-        printf '' | post
+        # A bounded long-poll: each post returns within the broker's window,
+        # and 75 means the work is still open, so ask again. A wait whose
+        # shell is killed therefore leaves no request blocked for long.
+        while :; do
+          wait_status=0
+          printf '' | post || wait_status=$?
+          [ "$wait_status" -eq 75 ] || exit "$wait_status"
+        done
         ;;
       cancel)
         printf '' | post

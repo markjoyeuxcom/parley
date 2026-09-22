@@ -354,6 +354,11 @@ func teamSessionWaitChecks() throws {
     let proposal = TeamSessionProposal(objective: "Build it", folder: fixture.project, paneLimit: 1, hours: 1)
     let session = try coordinator.request(token: "lead-token", proposal: proposal)
     try teamExpect(coordinator.waitForDecision(token: "other-token", id: session.id).status == 403, "another pane recovered a session decision")
+    // `parley wait` is a bounded long-poll: a pending decision returns "still
+    // waiting" when the deadline passes and changes nothing.
+    let polled = coordinator.wait(token: "lead-token", id: session.id, until: .now() + 0.2)
+    try teamExpect(polled == RelayBroker.stillWaiting && coordinator.sessions().first { $0.id == session.id }?.state == .pending,
+                   "a bounded wait on a pending decision did not return still waiting: \(polled)")
     let approver = Thread {
         Thread.sleep(forTimeInterval: 0.2)
         do {

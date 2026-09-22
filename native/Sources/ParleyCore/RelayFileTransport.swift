@@ -47,6 +47,18 @@ public final class RelayFileTransport: @unchecked Sendable {
     private var pendingSince: [String: Date] = [:]
     public static let pendingFollowUpWindow: TimeInterval = 0.25
     public let abandonedRequestAge: TimeInterval
+    /// Requests that can block for minutes. They count against
+    /// `blockingGate`; every other request is short and never counted.
+    public static let blockingCommands: Set<String> = ["wait", "ask", "ask-many", "context-ask", "request-run", "team-request", "team-add"]
+    public static let defaultMaximumBlockingRequests = 64
+    public static let defaultWaitWindow: TimeInterval = 55
+    /// A reply nobody collected within this age is removed: its shim is
+    /// gone. A live shim collects its reply within half a second.
+    public static let defaultStaleResponseAge: TimeInterval = 600
+    public let waitWindow: TimeInterval
+    public let staleResponseAge: TimeInterval
+    private let blockingGate: BlockingRequestGate
+    public var activeBlockingRequests: Int { blockingGate.activeCount }
     /// Ticks serviced so far (diagnostics and checks).
     public var tickCount: Int { lock.withLock { ticks } }
     private var ticks = 0
@@ -66,7 +78,10 @@ public final class RelayFileTransport: @unchecked Sendable {
         runtimeDirectory: URL,
         tickets: RelayTicketServer? = nil,
         fileManager: FileManager = .default,
-        abandonedRequestAge: TimeInterval = 30
+        abandonedRequestAge: TimeInterval = 30,
+        maximumBlockingRequests: Int = RelayFileTransport.defaultMaximumBlockingRequests,
+        waitWindow: TimeInterval = RelayFileTransport.defaultWaitWindow,
+        staleResponseAge: TimeInterval = RelayFileTransport.defaultStaleResponseAge
     ) {
         self.broker = broker
         self.credentials = credentials
@@ -74,6 +89,9 @@ public final class RelayFileTransport: @unchecked Sendable {
         self.runtimeDirectory = runtimeDirectory
         self.fileManager = fileManager
         self.abandonedRequestAge = max(0.1, abandonedRequestAge)
+        self.blockingGate = BlockingRequestGate(limit: maximumBlockingRequests)
+        self.waitWindow = max(0.1, waitWindow)
+        self.staleResponseAge = max(0.1, staleResponseAge)
     }
 
     public static func runtimeDirectory(
@@ -157,6 +175,7 @@ public final class RelayFileTransport: @unchecked Sendable {
         let now = Date()
         if now.timeIntervalSince(lastHeartbeat) >= 1 {
             try? writeHeartbeats()
+            removeStaleResponses(now: now)
         }
         var activity = false
         // A request directory that exists but has no `ready` marker yet: the
@@ -206,7 +225,8 @@ public final class RelayFileTransport: @unchecked Sendable {
                 activity = true
                 workers.enter()
                 let workers = workers
-                DispatchQueue.global(qos: .utility).async { [weak self] in
+                // A thread of its own, never the shared pool: see RelayWorkerThread.
+                RelayWorkerThread.start(name: "parley.relay.request") { [weak self] in
                     defer { workers.leave() }
                     self?.process(requestID: requestID, directory: claimed, endpoint: endpoint)
                 }
@@ -277,6 +297,16 @@ public final class RelayFileTransport: @unchecked Sendable {
         // Credentials and request text leave the filesystem before a blocking
         // Ask or wait begins. The worker retains only its in-memory value.
         try? fileManager.removeItem(at: directory)
+        let blocking = Self.blockingCommands.contains(request.command)
+        if blocking, !blockingGate.enter() {
+            try? writeResponse(
+                FileResponse(status: 503, body: "Parley already has \(blockingGate.limit) agent requests waiting on this Mac; nothing was sent. Try again in a minute."),
+                requestID: requestID,
+                endpoint: endpoint
+            )
+            return
+        }
+        defer { if blocking { blockingGate.leave() } }
         let response = route(request) { [weak self] handoffID in
             try? self?.writeAskAcceptance(
                 handoffID: handoffID,
@@ -383,7 +413,10 @@ public final class RelayFileTransport: @unchecked Sendable {
         case "status":
             return encode(broker.delegationStatus(token: request.token))
         case "wait":
-            return encode(broker.waitForTrackedWork(token: request.token, handoffID: request.item))
+            // A bounded long-poll: after `waitWindow` the shim is told to ask
+            // again, so a wait whose shim a vendor killed holds its thread
+            // for at most one window.
+            return encode(broker.waitForTrackedWork(token: request.token, handoffID: request.item, within: waitWindow))
         case "progress":
             return encode(broker.handleDelegationProgress(
                 token: request.token,
@@ -492,6 +525,23 @@ public final class RelayFileTransport: @unchecked Sendable {
         try writeProtected(String(response.status), to: directory.appendingPathComponent("status"))
         try writeProtected(response.body, to: directory.appendingPathComponent("body"))
         try writeProtected("ready", to: directory.appendingPathComponent("ready"))
+    }
+
+    /// Replies whose shim never collected them: a vendor killed the shim,
+    /// typically while a wait or Ask was in progress. Only a finished reply
+    /// (`ready` present) is removed; an Ask still in progress keeps its
+    /// acceptance files.
+    private func removeStaleResponses(now: Date) {
+        for endpoint in endpointDirectories() {
+            let outbox = endpoint.appendingPathComponent("outbox", isDirectory: true)
+            guard let replies = try? fileManager.contentsOfDirectory(at: outbox, includingPropertiesForKeys: nil, options: []) else { continue }
+            for reply in replies where Self.isRequestID(reply.lastPathComponent) {
+                let ready = reply.appendingPathComponent("ready")
+                guard let written = (try? fileManager.attributesOfItem(atPath: ready.path))?[.modificationDate] as? Date,
+                      now.timeIntervalSince(written) > staleResponseAge else { continue }
+                try? fileManager.removeItem(at: reply)
+            }
+        }
     }
 
     private func responseDirectory(requestID: String, endpoint: URL) throws -> URL {
