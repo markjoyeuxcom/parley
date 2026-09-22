@@ -365,7 +365,7 @@ public enum AgentProtocol {
             ["claude", "--append-system-prompt", text]
                 + VendorHookAdapter.launchArguments(for: kind, protocolDirectory: protocolDirectory, shellCommandRule: shellCommandRule)
         case .codex:
-            ["codex", "-c", "developer_instructions=\(tomlString(text))"]
+            ["codex", "-c", "developer_instructions=\(TOMLString.basic(text))"]
                 + VendorHookAdapter.launchArguments(for: kind, protocolDirectory: protocolDirectory, shellCommandRule: shellCommandRule)
         case .agy:
             ["agy", "--add-dir", protocolDirectory.path]
@@ -410,13 +410,5 @@ public enum AgentProtocol {
 
     public static func stalePaneIDs(in panes: [WorkbenchPane]) -> [String] {
         panes.filter { $0.kind.isAgent && $0.isStarted && !$0.hasCurrentProtocol }.map(\.id)
-    }
-
-    private static func tomlString(_ value: String) -> String {
-        guard let data = try? JSONEncoder().encode(value),
-              let encoded = String(data: data, encoding: .utf8) else {
-            return "\"Parley cross-vendor protocol v\(version)\""
-        }
-        return encoded
     }
 }
