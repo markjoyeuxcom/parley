@@ -2813,7 +2813,9 @@ public final class RelayBroker: @unchecked Sendable {
         let group = DispatchGroup()
         for (index, route) in routes.enumerated() {
             group.enter()
-            DispatchQueue.global(qos: .utility).async { [self] in
+            // Each child blocks until its target answers, so it gets a thread
+            // of its own rather than one from the shared pool (RelayWorkerThread).
+            RelayWorkerThread.start(name: "parley.relay.ask-many") { [self] in
                 defer { group.leave() }
                 let childKey = askManyChildKey(root: rootKey, targetPaneID: route.pane.id)
                 let response = handleAsk(

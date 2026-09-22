@@ -182,7 +182,86 @@ func checkStaleRepliesAreRemoved() throws {
     try waitExpect(FileManager.default.fileExists(atPath: inProgress.path), "a reply still in progress was removed")
 }
 
+/// Agy's review of 469621d: `ask-many` still started each child Ask on the
+/// shared pool, where it blocks until its target answers. With the pool full,
+/// the children never start and the ask-many never returns. The relay must
+/// not need the shared pool at all.
+func checkAskManyDoesNotNeedTheSharedPool() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-askmany-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    func pane(_ id: String, _ kind: PaneKind) -> WorkbenchPane {
+        WorkbenchPane(id: id, kind: kind, customName: id, terminalTitle: "", cwd: "/private/\(id)", currentCommand: "x", isActive: false,
+                      workspaceID: "@many", relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "Many", inputAvailable: true)
+    }
+    let source = pane("source", .claude), first = pane("first", .codex), second = pane("second", .agy)
+    let sourceToken = try credentials.token(for: source.id)
+    let targetTokens = [try credentials.token(for: first.id), try credentials.token(for: second.id)]
+    let broker = RelayBroker(credentials: credentials, panes: { [source, first, second] }, paste: { _, _ in }, submit: { _, _ in },
+                             consultationTimeout: 4, livenessPollInterval: 0.05)
+
+    // Fill the shared pool with work that blocks, the way parked Asks do.
+    let blocker = DispatchSemaphore(value: 0)
+    let blockers = 100
+    for _ in 0..<blockers { DispatchQueue.global(qos: .utility).async { blocker.wait() } }
+    var released = false
+    func release() { if !released { released = true; for _ in 0..<blockers { blocker.signal() } } }
+    defer { release() }
+    Thread.sleep(forTimeInterval: 0.3)
+
+    final class Result: @unchecked Sendable { var response: RelayTextResponse? }
+    let result = Result()
+    let finished = DispatchSemaphore(value: 0)
+    Thread {
+        result.response = broker.handleAskMany(token: sourceToken, targets: "first,second", text: "Which is better?")
+        finished.signal()
+    }.start()
+    // Each target answers from its own thread once its question is waiting.
+    Thread {
+        var answered = Set<Int>()
+        let deadline = Date().addingTimeInterval(3)
+        while answered.count < 2, Date() < deadline {
+            for (index, token) in targetTokens.enumerated() where !answered.contains(index) {
+                if broker.handleAnswer(token: token, consultationID: "current", text: "Answer \(index)").status == 200 { answered.insert(index) }
+            }
+            usleep(20_000)
+        }
+    }.start()
+    let returned = finished.wait(timeout: .now() + 3) == .success
+    release()
+    if !returned { _ = finished.wait(timeout: .now() + 10) }
+    try waitExpect(returned, "ask-many did not return while the shared pool was full")
+    let response = try waitRequire(result.response, "ask-many returned nothing")
+    try waitExpect(response.status == 200 && response.text.contains("Answer 0") && response.text.contains("Answer 1"),
+                   "ask-many did not carry both answers: \(response.status) \(response.text)")
+}
+
+/// A burst of short requests is served, but never by more threads at once
+/// than the transport's worker limit; the rest wait in the inbox.
+func checkShortRequestBurstsAreBoundedInThreads() throws {
+    let fixture = try TransportFixture("burst")
+    defer { fixture.cleanup() }
+    let broker = RelayBroker(credentials: fixture.credentials, panes: { [fixture.lead] }, paste: { _, _ in }, submit: { _, _ in })
+    let transport = RelayFileTransport(broker: broker, credentials: fixture.credentials, runtimeDirectory: fixture.transportDirectory,
+                                       maximumBlockingRequests: 2, maximumWorkerThreads: 4)
+    _ = try RelayFileTransport.prepareEndpoint(runtimeDirectory: fixture.transportDirectory, paneToken: fixture.leadToken)
+    try transport.start()
+    defer { transport.stop() }
+    let replies = try (0..<120).map { _ in try fixture.post("whoami", token: fixture.leadToken) }
+    try waitExpect(eventually(within: 20) { replies.allSatisfy(TransportFixture.replied) }, "a burst of short requests was not all answered")
+    try waitExpect(replies.allSatisfy { TransportFixture.status($0) == 200 }, "a request in the burst failed")
+    try waitExpect(transport.peakWorkerThreads <= 4, "the burst ran on \(transport.peakWorkerThreads) threads at once, over the limit of 4")
+    // The limit always stays above the blocking limit, so parked waits can
+    // never take every thread from a done.
+    let tight = RelayFileTransport(broker: broker, credentials: fixture.credentials, runtimeDirectory: fixture.transportDirectory,
+                                   maximumBlockingRequests: 8, maximumWorkerThreads: 4)
+    try waitExpect(tight.maximumWorkerThreadLimit == 9, "a thread limit at or below the blocking limit was accepted: \(tight.maximumWorkerThreadLimit)")
+}
+
 @MainActor let boundedWaitChecks: [(String, () throws -> Void)] = [
+    ("ask-many does not need the shared pool", checkAskManyDoesNotNeedTheSharedPool),
+    ("short request bursts are bounded in threads", checkShortRequestBurstsAreBoundedInThreads),
     ("parked waits never starve a done", checkParkedWaitsNeverStarveADone),
     ("wait is a bounded long-poll the shim repeats", checkWaitIsABoundedLongPollTheShimRepeats),
     ("stale replies are removed", checkStaleRepliesAreRemoved),

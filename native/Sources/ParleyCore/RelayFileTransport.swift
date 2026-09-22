@@ -57,6 +57,16 @@ public final class RelayFileTransport: @unchecked Sendable {
     public static let defaultStaleResponseAge: TimeInterval = 600
     public let waitWindow: TimeInterval
     public let staleResponseAge: TimeInterval
+    /// At most this many request threads at once. A burst past it waits in
+    /// the inbox and is claimed as threads finish, so a flood of short
+    /// requests cannot create threads without bound.
+    public static let defaultMaximumWorkerThreads = 128
+    private let maximumWorkerThreads: Int
+    private var runningWorkers = 0
+    private var peakWorkers = 0
+    /// The most request threads that have run at once (diagnostics and checks).
+    public var peakWorkerThreads: Int { lock.withLock { peakWorkers } }
+    public var maximumWorkerThreadLimit: Int { maximumWorkerThreads }
     private let blockingGate: BlockingRequestGate
     public var activeBlockingRequests: Int { blockingGate.activeCount }
     /// Ticks serviced so far (diagnostics and checks).
@@ -81,7 +91,8 @@ public final class RelayFileTransport: @unchecked Sendable {
         abandonedRequestAge: TimeInterval = 30,
         maximumBlockingRequests: Int = RelayFileTransport.defaultMaximumBlockingRequests,
         waitWindow: TimeInterval = RelayFileTransport.defaultWaitWindow,
-        staleResponseAge: TimeInterval = RelayFileTransport.defaultStaleResponseAge
+        staleResponseAge: TimeInterval = RelayFileTransport.defaultStaleResponseAge,
+        maximumWorkerThreads: Int = RelayFileTransport.defaultMaximumWorkerThreads
     ) {
         self.broker = broker
         self.credentials = credentials
@@ -92,6 +103,9 @@ public final class RelayFileTransport: @unchecked Sendable {
         self.blockingGate = BlockingRequestGate(limit: maximumBlockingRequests)
         self.waitWindow = max(0.1, waitWindow)
         self.staleResponseAge = max(0.1, staleResponseAge)
+        // Blocking requests hold their threads, so the limit always leaves
+        // at least one above them for done, answer and the other short ones.
+        self.maximumWorkerThreads = max(maximumWorkerThreads, blockingGate.limit + 1)
     }
 
     public static func runtimeDirectory(
@@ -187,7 +201,8 @@ public final class RelayFileTransport: @unchecked Sendable {
         var seenWithoutReady: Set<String> = []
         let endpoints = endpointDirectories()
         syncInboxWatchers(endpoints)
-        for endpoint in endpoints {
+        var saturated = false
+        for endpoint in endpoints where !saturated {
             let inbox = endpoint.appendingPathComponent("inbox", isDirectory: true)
             let processing = endpoint.appendingPathComponent("processing", isDirectory: true)
             guard let candidates = try? fileManager.contentsOfDirectory(
@@ -216,10 +231,23 @@ public final class RelayFileTransport: @unchecked Sendable {
                     }
                     continue
                 }
+                let reserved = lock.withLock { () -> Bool in
+                    guard runningWorkers < maximumWorkerThreads else { return false }
+                    runningWorkers += 1
+                    peakWorkers = max(peakWorkers, runningWorkers)
+                    return true
+                }
+                guard reserved else {
+                    // Left in the inbox; the fast cadence claims it as threads free up.
+                    saturated = true
+                    activity = true
+                    break
+                }
                 let claimed = processing.appendingPathComponent(requestID, isDirectory: true)
                 do {
                     try fileManager.moveItem(at: candidate, to: claimed)
                 } catch {
+                    lock.withLock { runningWorkers -= 1 }
                     continue
                 }
                 activity = true
@@ -227,7 +255,10 @@ public final class RelayFileTransport: @unchecked Sendable {
                 let workers = workers
                 // A thread of its own, never the shared pool: see RelayWorkerThread.
                 RelayWorkerThread.start(name: "parley.relay.request") { [weak self] in
-                    defer { workers.leave() }
+                    defer {
+                        self?.lock.withLock { self?.runningWorkers -= 1 }
+                        workers.leave()
+                    }
                     self?.process(requestID: requestID, directory: claimed, endpoint: endpoint)
                 }
             }

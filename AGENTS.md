@@ -315,8 +315,12 @@ a different source identity.
 - `parley wait <id|current>` waits for one exact result.
 
 Relay requests never run on the shared dispatch pool (22 September 2026, H2
-of that day's review). Every agent transport request and every UI control
-connection runs on a thread of its own (`RelayWorkerThread`). The pool has a
+of that day's review). Every agent transport request, every UI control
+connection and every `ask-many` child Ask runs on a thread of its own
+(`RelayWorkerThread`). The transport runs at most 128 request threads at once;
+a burst beyond that waits in the inbox, and the limit is always kept above the
+blocking limit so a `done` always finds a thread. Only short, bounded work
+stays on the pool: ticket connections and `CommandRunner`'s stdin write. The pool has a
 fixed number of threads per process (70 on the review's Mac); when parked
 waits filled it, the target's own `parley done`, the ticket socket and the UI
 socket stopped. The requests that can block for minutes (`wait`, `ask`,
