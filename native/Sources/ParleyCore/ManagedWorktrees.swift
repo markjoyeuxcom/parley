@@ -548,7 +548,11 @@ public struct ManagedWorktreeService: Sendable {
 
     private let store: ManagedWorktreeStore
     private let gitExecutable: URL
+    /// For the operations the person confirms (create, prune, remove,
+    /// delete a branch), which Git may need to run programs for.
     private let environment: [String: String]
+    /// For every read, which runs inside `GitReadBoundary`.
+    private let readEnvironment: [String: String]
     private let readTimeout: TimeInterval
     private let mutationTimeout: TimeInterval
 
@@ -566,6 +570,7 @@ public struct ManagedWorktreeService: Sendable {
         scrubbed["PAGER"] = "cat"
         scrubbed["LC_ALL"] = "C"
         self.environment = scrubbed
+        self.readEnvironment = GitReadBoundary.environment(scrubbed)
         self.readTimeout = max(0.5, readTimeout)
         self.mutationTimeout = max(1, mutationTimeout)
     }
@@ -994,7 +999,12 @@ public struct ManagedWorktreeService: Sendable {
             throw ManagedWorktreeError.refused(["the primary worktree of the recorded repository could not be found"])
         }
         let survivingIdentity = GitRepositoryIdentity(commonDirectory: identity.commonDirectory, toplevel: survivingFolder)
-        let removal = try runObserving(in: survivingFolder, ["worktree", "remove", "--end-of-options", record.path], timeout: mutationTimeout)
+        // `git worktree remove` checks the tree with its own `git status`,
+        // which would run the repository's clean filters. It needs to start
+        // that child, so it cannot run inside the read guard; the filter
+        // drivers configured now are turned off for it instead.
+        let removal = try runObserving(in: survivingFolder, ["worktree", "remove", "--end-of-options", record.path], timeout: mutationTimeout,
+                                       environment: filterFreeEnvironment(in: record.path, base: environment))
         let gitDetail = removal.status == 0 ? "Git returned success"
             : removal.status == 124 ? "git worktree remove timed out after \(Int(mutationTimeout)) seconds"
             : "git worktree remove reported exit status \(removal.status)" + (removal.stderrText.isEmpty ? "" : ": " + removal.stderrText.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -1211,8 +1221,12 @@ public struct ManagedWorktreeService: Sendable {
         try updated.write(to: exclude, atomically: true, encoding: .utf8)
     }
 
+    /// A filter-free status: every configured filter driver is turned off, so
+    /// a file under one is compared as raw bytes and may read as modified,
+    /// which only ever makes cleanup more cautious.
     private func statusEntries(in folder: String) throws -> (modified: [String], untracked: [String], ignored: [String]) {
-        let output = try run(in: folder, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching"], timeout: readTimeout)
+        let output = try run(in: folder, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching"] + GitReadBoundary.statusArguments,
+                             timeout: readTimeout, environment: filterFreeEnvironment(in: folder, base: readEnvironment))
         let tokens = output.stdout.split(separator: 0, omittingEmptySubsequences: false).map { String(decoding: $0, as: UTF8.self) }
         var modified: [String] = [], untracked: [String] = [], ignored: [String] = []
         var index = 0
@@ -1264,13 +1278,22 @@ public struct ManagedWorktreeService: Sendable {
     /// timeout, so the caller reconciles against Git's registry instead of
     /// skipping the partial-result handling. Throws only if the process could
     /// not start.
-    private func runObserving(in folder: String, _ arguments: [String], timeout: TimeInterval) throws -> CommandOutput {
+    private func runObserving(in folder: String, _ arguments: [String], timeout: TimeInterval,
+                              environment mutationEnvironment: [String: String]? = nil) throws -> CommandOutput {
         do {
             return try ProcessCommandRunner(timeout: timeout).run(executable: gitExecutable,
-                arguments: ["-C", folder, "-c", "core.fsmonitor=false"] + arguments, environment: environment, input: nil)
+                arguments: ["-C", folder, "-c", "core.fsmonitor=false"] + arguments, environment: mutationEnvironment ?? environment, input: nil)
         } catch {
             throw ManagedWorktreeError.git("git \(arguments.first ?? "") did not start: \(error.localizedDescription)")
         }
+    }
+
+    /// `base` with every filter driver configured for `folder` turned off,
+    /// listed by a guarded read. Both environments are free of inherited
+    /// `GIT_*`, so the overrides are the only command-scope configuration.
+    private func filterFreeEnvironment(in folder: String, base: [String: String]) -> [String: String] {
+        base.merging(GitReadBoundary.filterOverrides(in: folder, git: gitExecutable, environment: readEnvironment,
+                                                     runner: ProcessCommandRunner(timeout: readTimeout))) { _, override in override }
     }
 
     /// Returns Git's real exit status; throws only when the process could not
@@ -1278,8 +1301,8 @@ public struct ManagedWorktreeService: Sendable {
     private func runAllowingFailure(in folder: String, _ arguments: [String], timeout: TimeInterval) throws -> CommandOutput {
         let output: CommandOutput
         do {
-            output = try ProcessCommandRunner(timeout: timeout).run(executable: gitExecutable,
-                arguments: ["-C", folder, "-c", "core.fsmonitor=false"] + arguments, environment: environment, input: nil)
+            output = try GitReadBoundary.run(git: gitExecutable, arguments: ["-C", folder, "-c", "core.fsmonitor=false"] + arguments,
+                environment: readEnvironment, runner: ProcessCommandRunner(timeout: timeout))
         } catch {
             throw ManagedWorktreeError.git("git \(arguments.first ?? "") did not complete: \(error.localizedDescription)")
         }
@@ -1287,12 +1310,15 @@ public struct ManagedWorktreeService: Sendable {
         return output
     }
 
+    /// Every read goes through `GitReadBoundary`, so nothing a repository's
+    /// configuration names can start from it.
     @discardableResult
-    private func run(in folder: String, _ arguments: [String], timeout: TimeInterval) throws -> CommandOutput {
+    private func run(in folder: String, _ arguments: [String], timeout: TimeInterval,
+                     environment overridingEnvironment: [String: String]? = nil) throws -> CommandOutput {
         let output: CommandOutput
         do {
-            output = try ProcessCommandRunner(timeout: timeout).run(executable: gitExecutable,
-                arguments: ["-C", folder, "-c", "core.fsmonitor=false"] + arguments, environment: environment, input: nil)
+            output = try GitReadBoundary.run(git: gitExecutable, arguments: ["-C", folder, "-c", "core.fsmonitor=false"] + arguments,
+                environment: overridingEnvironment ?? readEnvironment, runner: ProcessCommandRunner(timeout: timeout))
         } catch {
             throw ManagedWorktreeError.git("git \(arguments.first ?? "") did not complete: \(error.localizedDescription)")
         }

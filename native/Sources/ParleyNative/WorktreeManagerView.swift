@@ -136,8 +136,12 @@ struct WorktreeManagerView: View {
                 }
                 Divider()
                 HStack(alignment: .center) {
-                    Text("Git's registry is the list; Parley's records add base, team and requester. Facts are read while this window is on screen and never stored.")
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Git's registry is the list; Parley's records add base, team and requester. Facts are read while this window is on screen and never stored.")
+                        Text(GitReadBoundary.worktreesDisclosure)
+                    }
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                     Spacer()
                     Button("Remove integrated and unused…") { model.removeIntegratedWorktrees(in: entry) }.controlSize(.small)
                         .disabled(entry.isMissing || busy || model.managedWorktreeMutation != nil || !entry.linked.contains { [.integrated, .unused].contains(model.worktreeManagerRow(for: $0).state) })

@@ -4488,7 +4488,7 @@ private func checkRelayDraftStartsWithSelectionOrNothing() throws {
     try expect(RelayDraft.initialText(selection: "  selected question  ") == "selected question", "relay did not use only the selection")
 }
 
-private func checkReviewDraftsAreBoundedShellFreeAndExplicit() throws {
+private func checkReviewDraftsAreBoundedGuardedAndExplicit() throws {
     let repository = try temporaryDirectory()
     let runner = RecordingRunner { arguments, _ in
         if arguments.contains("rev-parse") {
@@ -4514,10 +4514,17 @@ private func checkReviewDraftsAreBoundedShellFreeAndExplicit() throws {
     try expect(changes.text.contains("Repository: \(repository.path)"), "changes draft omitted its repository")
     try expect(changes.text.contains(" M Sources/App.swift") && changes.text.contains("?? PLAN.md"), "changes draft omitted explicit status")
     try expect(changes.text.contains("+staged change") && changes.text.contains("+working change"), "changes draft did not include both diff surfaces")
-    try expect(runner.calls.count == 4, "changes draft ran an unexpected number of git commands")
-    try expect(runner.calls.allSatisfy { $0.executable.path == "/usr/bin/git" }, "changes draft invoked something other than git directly")
-    try expect(runner.calls.allSatisfy { Array($0.arguments.prefix(2)) == ["-C", repository.path] }, "changes draft did not scope every git command with argv")
-    try expect(runner.calls.allSatisfy { $0.arguments.contains("core.fsmonitor=false") }, "changes draft allowed a configured filesystem monitor command")
+    // Root, filter-driver listing, status and two diffs, each Git itself
+    // exec'd by the fixed read guard; the guard is the only shell involved.
+    try expect(runner.calls.count == 5, "changes draft ran an unexpected number of git commands")
+    try expect(runner.calls.allSatisfy { $0.executable == GitReadBoundary.shell && $0.arguments[3] == "/usr/bin/git" },
+               "changes draft ran something other than git inside the read guard")
+    let reviewGitCalls = runner.calls.compactMap { GitReadBoundary.gitArguments(inInvocation: $0.arguments) }
+    try expect(reviewGitCalls.count == 5, "changes draft ran a command outside the read guard")
+    try expect(reviewGitCalls.allSatisfy { Array($0.prefix(2)) == ["-C", repository.path] }, "changes draft did not scope every git command with argv")
+    try expect(reviewGitCalls.allSatisfy { $0.contains("core.fsmonitor=false") }, "changes draft allowed a configured filesystem monitor command")
+    try expect(reviewGitCalls.filter { $0.contains("diff") }.allSatisfy { $0.contains("--no-textconv") && $0.contains("--no-ext-diff") },
+               "changes draft allowed a textconv or external diff driver")
     try expect(runner.calls.allSatisfy { $0.environment["GIT_OPTIONAL_LOCKS"] == "0" }, "changes draft allowed git to take optional write locks")
 
     let plan = repository.appendingPathComponent("PLAN.md")
@@ -4623,8 +4630,13 @@ private func checkContextPacksAreExplicitBoundedAndAttributed() throws {
     try expect(changes.text.contains("+staged context") && changes.text.contains("+working context"), "Git context omitted a diff surface")
     try expect(changes.text.contains("?? PRIVATE-NOTE.txt"), "Git context omitted the explicit untracked filename")
     try expect(!changes.text.contains("secret contents"), "Git context silently read untracked file contents")
-    try expect(gitRunner.calls.count == 4, "Git context ran an unexpected command")
-    try expect(gitRunner.calls.allSatisfy { $0.executable.path == "/usr/bin/git" }, "Git context invoked a shell or foreign executable")
+    try expect(gitRunner.calls.count == 5, "Git context ran an unexpected command")
+    try expect(gitRunner.calls.allSatisfy { $0.executable == GitReadBoundary.shell && $0.arguments[3] == "/usr/bin/git"
+                   && GitReadBoundary.gitArguments(inInvocation: $0.arguments) != nil },
+               "Git context invoked a foreign executable or ran Git outside the read guard")
+    try expect(gitRunner.calls.compactMap { GitReadBoundary.gitArguments(inInvocation: $0.arguments) }.filter { $0.contains("diff") }
+                   .allSatisfy { $0.contains("--no-textconv") && $0.contains("--no-ext-diff") },
+               "Git context allowed a textconv or external diff driver")
     try expect(gitRunner.calls.allSatisfy { $0.environment["GIT_OPTIONAL_LOCKS"] == "0" }, "Git context allowed optional index locks")
 
     let terminal = try builder.terminalSelection(
@@ -10092,7 +10104,7 @@ let checks: [(String, () throws -> Void)] = [
     ("tracked delegation shim round trip", checkDelegationShimRoundTrip),
     ("relay cleaning", checkRelayCleaning),
     ("selection-or-empty relay draft", checkRelayDraftStartsWithSelectionOrNothing),
-    ("bounded shell-free review drafts", checkReviewDraftsAreBoundedShellFreeAndExplicit),
+    ("bounded review drafts run git only inside the read guard", checkReviewDraftsAreBoundedGuardedAndExplicit),
     ("explicit bounded attributed context packs", checkContextPacksAreExplicitBoundedAndAttributed),
     ("vendor tool evidence is capability-gated and attributed", checkVendorToolEvidenceIsCapabilityGatedAndAttributed),
     ("agent context drafts require human approval", checkAgentContextDraftsRequireHumanApprovalBeforeAsk),
@@ -10312,7 +10324,7 @@ if let image = argument(named: "--container-transport-spike") {
 let onlyFilter = argument(named: "--only")?.lowercased()
 let skipFilters = (argument(named: "--skip") ?? "").lowercased()
     .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-let allChecks = (voiceChecks + containerPaneChecks + checks + reviewRegressionChecks + repositoryReviewChecks + approvalHandlingChecks + folderListChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + worktreeBoardChecks + worktreeRepositoryChecks + emptyWorkspaceChecks + relayTicketChecks + protocolDriftChecks + auxiliaryWindowChecks + helpAuditChecks + terminalTypeChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + askCorrelationChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
+let allChecks = (voiceChecks + containerPaneChecks + checks + reviewRegressionChecks + repositoryReviewChecks + approvalHandlingChecks + folderListChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + worktreeBoardChecks + worktreeRepositoryChecks + emptyWorkspaceChecks + relayTicketChecks + protocolDriftChecks + auxiliaryWindowChecks + helpAuditChecks + terminalTypeChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + askCorrelationChecks + gitReadBoundaryChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
     onlyFilter.map { name.lowercased().contains($0) } ?? true
 }
 var skippedCount = 0
