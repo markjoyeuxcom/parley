@@ -456,22 +456,24 @@ private struct VendorToolEvidenceCaptureView: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Add to Editable Pack") {
-                    do {
-                        try model.addVendorToolEvidence(
-                            kind: kind,
-                            paneID: selectedPaneID,
-                            sourceURL: sourceURL,
-                            selectedText: selectedText,
-                            artifactPath: artifactPath
-                        )
-                        dismiss()
-                    } catch {
-                        errorMessage = error.localizedDescription
+                Button(model.trustedCaptureInFlight ? "Adding…" : "Add to Editable Pack") {
+                    Task {
+                        do {
+                            try await model.addVendorToolEvidence(
+                                kind: kind,
+                                paneID: selectedPaneID,
+                                sourceURL: sourceURL,
+                                selectedText: selectedText,
+                                artifactPath: artifactPath
+                            )
+                            dismiss()
+                        } catch {
+                            errorMessage = error.localizedDescription
+                        }
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(!canAdd)
+                .disabled(!canAdd || model.trustedCaptureInFlight)
             }
         }
         .padding(20)

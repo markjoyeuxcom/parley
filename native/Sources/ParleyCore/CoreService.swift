@@ -6,6 +6,12 @@ import Security
 public enum RelayCoreTransportLimits {
     public static let maximumBodyBytes = 200_000
     public static let trackedResponseTimeout: TimeInterval = 31 * 60
+    /// Retry Delivery and trusted capture reach a pane inside the core (a
+    /// paste, or a selection read through `DispatchQueue.main.sync`), and a
+    /// capture can run a 15 s command or several Git reads. Above the core's
+    /// worst case, so the reply is the real outcome, never a timeout that
+    /// hides a delivery or capture that happened.
+    public static let paneReachingResponseTimeout: TimeInterval = 45
 }
 
 struct RelayWorkspaceHistoryDeletionRequest: Codable {
@@ -179,7 +185,9 @@ public struct RelayCoreClient: Sendable {
                 "X-Parley-Control": controlToken,
                 "Content-Type": "application/json",
             ],
-            body: body
+            body: body,
+            receiveTimeout: RelayCoreTransportLimits.paneReachingResponseTimeout,
+            reachesPane: true
         )
         return RelayTextResponse(
             status: response.status,
@@ -525,7 +533,9 @@ public struct RelayCoreClient: Sendable {
             method: "POST",
             path: "/ui/retry/\(handoffID)",
             headers: ["X-Parley-Control": controlToken],
-            body: Data()
+            body: Data(),
+            receiveTimeout: RelayCoreTransportLimits.paneReachingResponseTimeout,
+            reachesPane: true
         )
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
     }
@@ -607,15 +617,20 @@ public struct RelayCoreClient: Sendable {
         path: String,
         headers: [String: String] = [:],
         body: Data,
-        receiveTimeout: TimeInterval = 3
+        receiveTimeout: TimeInterval = 3,
+        reachesPane: Bool = false
     ) throws -> CoreHTTPResponse {
         // A tracked request returns only after the core has delivered into a
         // pane or an answer has arrived, and the core delivers through
         // DispatchQueue.main.sync. A main thread parked in recv below can never
         // service that hop: v0.1.40 froze on a context-pack Ask until it was
-        // force-quit. Refuse before touching the socket, so a call site that
-        // forgets gets an alert rather than a frozen app.
-        if receiveTimeout >= RelayCoreTransportLimits.trackedResponseTimeout, Thread.isMainThread,
+        // force-quit. The same holds for any route that reaches a pane (Retry
+        // Delivery, trusted capture of a selection), however short: those
+        // froze for their timeout and then reported a failure while the
+        // delivery or capture happened anyway. Refuse before touching the
+        // socket, so a call site that forgets gets an alert rather than a
+        // frozen app.
+        if receiveTimeout >= RelayCoreTransportLimits.trackedResponseTimeout || reachesPane, Thread.isMainThread,
            !allowsTrackedRequestsOnMainThread {
             throw RelayCoreError.mainThreadBlockingRequest(path)
         }

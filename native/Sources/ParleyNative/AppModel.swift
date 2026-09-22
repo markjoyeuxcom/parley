@@ -240,6 +240,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var contextPackDraft: ActiveContextPack?
     @Published private(set) var contextReviews: [AgentContextReview] = []
     @Published private(set) var contextCommandCapturing = false
+    /// One trusted capture into an agent draft at a time: the core records
+    /// the part as soon as it runs, so a second click while one is in flight
+    /// would add a duplicate.
+    @Published private(set) var trustedCaptureInFlight = false
     @Published private(set) var coreAvailable = false
     /// Whether the peer-verified ticket socket is listening; the launch
     /// review's attestation line reads this at review time.
@@ -5837,7 +5841,7 @@ final class AppModel: ObservableObject {
 
         perform {
             if let reviewID = draft.reviewID {
-                try captureTrustedContext(
+                captureTrustedContext(
                     AgentContextTrustedCaptureRequest(
                         reviewID: reviewID,
                         kind: .files,
@@ -5857,7 +5861,7 @@ final class AppModel: ObservableObject {
         perform {
             guard let draft = contextPackDraft else { return }
             if let reviewID = draft.reviewID {
-                try captureTrustedContext(
+                captureTrustedContext(
                     AgentContextTrustedCaptureRequest(reviewID: reviewID, kind: .gitDiff),
                     draftID: draft.id
                 )
@@ -5892,13 +5896,15 @@ final class AppModel: ObservableObject {
         guard let draft = contextPackDraft else { return }
         perform {
             if let reviewID = draft.reviewID {
-                try captureTrustedContext(
+                // The core reads the selection; clear it only once it has.
+                captureTrustedContext(
                     AgentContextTrustedCaptureRequest(
                         reviewID: reviewID,
                         kind: .visibleTerminal,
                         paneID: pane.id
                     ),
-                    draftID: draft.id
+                    draftID: draft.id,
+                    then: { [weak self] in self?.terminalHandle.clearSelection() }
                 )
             } else {
                 guard let controller, let contextPackBuilder else { return }
@@ -5909,8 +5915,8 @@ final class AppModel: ObservableObject {
                     text: visible
                 )
                 try appendContextPackParts([part], draftID: draft.id)
+                terminalHandle.clearSelection()
             }
-            terminalHandle.clearSelection()
         }
     }
 
@@ -5920,7 +5926,7 @@ final class AppModel: ObservableObject {
         sourceURL: String,
         selectedText: String,
         artifactPath: String
-    ) throws {
+    ) async throws {
         guard let draft = contextPackDraft else {
             throw RelayUIError.message("Open a context pack before adding browser or tool evidence.")
         }
@@ -5936,7 +5942,7 @@ final class AppModel: ObservableObject {
             case .browserScreenshot: .browserScreenshot
             case .savedArtifact: .toolArtifact
             }
-            try captureTrustedContext(
+            try await captureTrustedContextOffMain(
                 AgentContextTrustedCaptureRequest(
                     reviewID: reviewID,
                     kind: captureKind,
@@ -5983,19 +5989,15 @@ final class AppModel: ObservableObject {
         contextCommandCapturing = true
         defer { contextCommandCapturing = false }
         if let reviewID = draft.reviewID {
-            guard let relayClient else {
-                throw RelayUIError.message("The app-resident core is unavailable, so Parley cannot establish trusted capture provenance.")
-            }
-            let request = AgentContextTrustedCaptureRequest(
-                reviewID: reviewID,
-                kind: .commandResult,
-                executablePath: path,
-                arguments: arguments
+            try await captureTrustedContextOffMain(
+                AgentContextTrustedCaptureRequest(
+                    reviewID: reviewID,
+                    kind: .commandResult,
+                    executablePath: path,
+                    arguments: arguments
+                ),
+                draftID: draft.id
             )
-            let response = try await Task.detached(priority: .userInitiated) {
-                try relayClient.captureTrustedContext(request)
-            }.value
-            try appendTrustedContextResponse(response, draftID: draft.id)
             return
         }
         guard let contextPackBuilder else {
@@ -6582,19 +6584,46 @@ final class AppModel: ObservableObject {
         contextPackDraft = draft
     }
 
+    /// Trusted capture into an agent draft runs off the main thread: the
+    /// core reads a selection through `DispatchQueue.main.sync` and can run a
+    /// command or several Git reads, so a main thread waiting on it froze and
+    /// then reported a failure while the part had been recorded. `then` runs
+    /// on the main actor after the part is in the draft.
     private func captureTrustedContext(
         _ request: AgentContextTrustedCaptureRequest,
+        draftID: String,
+        then: (() -> Void)? = nil
+    ) {
+        Task { @MainActor [weak self] in
+            do {
+                try await self?.captureTrustedContextOffMain(request, draftID: draftID)
+                then?()
+            } catch is CancellationError {
+                return
+            } catch {
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
+    private func captureTrustedContextOffMain(
+        _ request: AgentContextTrustedCaptureRequest,
         draftID: String
-    ) throws {
+    ) async throws {
         guard let relayClient else {
             throw RelayUIError.message(
                 "The app-resident core is unavailable, so Parley cannot establish trusted capture provenance."
             )
         }
-        try appendTrustedContextResponse(
-            relayClient.captureTrustedContext(request),
-            draftID: draftID
-        )
+        guard !trustedCaptureInFlight else {
+            throw RelayUIError.message("A capture into this pack is still running. Wait for it to finish before adding another source.")
+        }
+        trustedCaptureInFlight = true
+        defer { trustedCaptureInFlight = false }
+        let response = try await Task.detached(priority: .userInitiated) {
+            try relayClient.captureTrustedContext(request)
+        }.value
+        try appendTrustedContextResponse(response, draftID: draftID)
     }
 
     private func appendTrustedContextResponse(
@@ -6741,12 +6770,22 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Retry Delivery")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        perform {
-            guard let relayClient else { return }
-            let response = try relayClient.retryHandoff(handoff.id)
-            guard response.status == 200 else { throw RelayUIError.message(response.text) }
-            try refresh()
-            terminalHandle.focus()
+        guard let relayClient else { return }
+        let handoffID = handoff.id
+        // Off the main thread: the core delivers into the target pane through
+        // DispatchQueue.main.sync, so a main thread waiting here froze and
+        // then reported "retry failed" while the delivery went through.
+        Task { @MainActor [weak self] in
+            do {
+                let response = try await Task.detached(priority: .userInitiated) {
+                    try relayClient.retryHandoff(handoffID)
+                }.value
+                guard response.status == 200 else { throw RelayUIError.message(response.text) }
+                try self?.refresh()
+                self?.terminalHandle.focus()
+            } catch {
+                NSAlert(error: error).runModal()
+            }
         }
     }
 

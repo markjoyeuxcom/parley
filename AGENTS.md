@@ -1422,7 +1422,17 @@ in `recv` can never service that hop. v0.1.40 froze on a context-pack Ask for
 exactly this reason, until the person force-quit it. `RelayCoreClient` now
 refuses a tracked request made from the main thread before it touches the
 socket, so a call site that forgets gets an alert instead of a frozen app;
-short reads such as the refresh tick stay allowed on the main thread.
+short reads such as the refresh tick stay allowed on the main thread. The
+same refusal covers every short route whose core side reaches a pane (22
+September 2026, M3): Retry Delivery (`retryHandoff`, a paste) and trusted
+capture into an agent draft (`captureTrustedContext`, a selection read
+through `main.sync`, a 15-second command or several Git reads). Both
+previously froze the UI for their 3-second timeout and reported a failure
+while the delivery or capture happened anyway. They pass `reachesPane: true`
+and `paneReachingResponseTimeout` (45 s), and AppModel runs them detached;
+capture holds `trustedCaptureInFlight` so a second click cannot add a
+duplicate part, and a selection is cleared only after the core has read it.
+A new UI route that pastes into or reads from a pane must set `reachesPane`.
 
 ## Roles and mobility
 
