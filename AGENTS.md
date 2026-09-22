@@ -314,6 +314,16 @@ a different source identity.
 - `parley status` returns the caller's initiated work as JSON.
 - `parley wait <id|current>` waits for one exact result.
 
+Message text is limited to `RelayText.maximumCharacters` (100,000) after
+`RelayText.clean`, which never truncates. Every route (relay, paste, ask,
+ask-many, answer, delegate, done and the reviewed busy-draft send) refuses
+longer text with 400 and `RelayText.tooLong`, which states the real length
+and that nothing was sent; the composer shows the real count and disables
+Send, and Insert Selection refuses a selection over the limit rather than
+inserting part of it. Until 22 September 2026 `clean` kept only the last
+100,000 characters, so these guards never fired and a long review, answer or
+report lost its beginning while Parley reported success.
+
 Discovery is read-only and uses the same pane capability boundary as delivery.
 `whoami` and `panes` never expose credentials, folders, commands, prompts or
 terminal text. `events` returns at most 100 monotonically ordered handoff transitions

@@ -29,8 +29,29 @@ public enum RelayText {
         while compact.first?.isEmpty == true { compact.removeFirst() }
         while compact.last?.isEmpty == true { compact.removeLast() }
 
-        let cleaned = compact.joined(separator: "\n")
-        if cleaned.count <= maximumCharacters { return cleaned }
-        return String(cleaned.suffix(maximumCharacters))
+        // Never truncated here. Until 22 September 2026 this kept only the
+        // last `maximumCharacters`, so every route's length guard was dead and
+        // a long review, answer or report lost its beginning while delivery
+        // reported success. Each route now refuses over-long text instead.
+        return compact.joined(separator: "\n")
+    }
+
+    /// The refusal every route returns for text over `maximumCharacters`
+    /// after cleaning: what it was, its real length, and that nothing left.
+    public static func tooLong(_ subject: String, count: Int, hint: String? = nil) -> String {
+        "\(subject) too long: \(grouped(count)) characters after cleaning, over the \(grouped(maximumCharacters))-character limit; nothing was sent"
+            + (hint.map { ". " + $0 } ?? "")
+    }
+
+    /// Digits in groups of three with a comma, whatever the locale, because
+    /// agents read these messages.
+    static func grouped(_ value: Int) -> String {
+        var digits = Array(String(value))
+        var index = digits.count - 3
+        while index > 0 {
+            digits.insert(",", at: index)
+            index -= 3
+        }
+        return String(digits)
     }
 }

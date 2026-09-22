@@ -5191,6 +5191,11 @@ final class AppModel: ObservableObject {
             guard !selection.isEmpty else {
                 throw RelayUIError.message("Select text in \(draft.sourceName) first; Parley never captures scrollback implicitly.")
             }
+            // Whole or not at all: inserting only part of a selection would
+            // silently drop its beginning.
+            guard selection.count <= RelayText.maximumCharacters else {
+                throw RelayUIError.message("The selection in \(draft.sourceName) is \(selection.count.formatted()) characters, over the \(RelayText.maximumCharacters.formatted())-character limit. Select less; nothing was inserted.")
+            }
             if !draft.text.isEmpty { draft.text += "\n\n" }
             draft.text += selection
             draft.includesTerminalSelection = true

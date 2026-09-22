@@ -1538,7 +1538,7 @@ public final class RelayBroker: @unchecked Sendable {
             let cleaned = RelayText.clean(text)
             guard !cleaned.isEmpty else { return failure(400, "nothing to relay") }
             guard cleaned.count <= RelayText.maximumCharacters else {
-                return failure(400, "text too long")
+                return failure(400, RelayText.tooLong("text", count: cleaned.count))
             }
             let (sender, target) = try route(token: token, requestedTarget: requestedTarget)
             try authorize(kind, for: sender)
@@ -1676,7 +1676,7 @@ public final class RelayBroker: @unchecked Sendable {
         let cleaned = preserveFormatting ? ContextPackText.normalize(text) : RelayText.clean(text)
         guard !cleaned.isEmpty else { return failure(400, "nothing to delegate") }
         guard cleaned.count <= RelayText.maximumCharacters else {
-            return failure(400, "delegated task too long")
+            return failure(400, RelayText.tooLong("delegated task", count: cleaned.count))
         }
 
         let scope = IdempotencyScope(senderPaneID: sender.id, key: idempotencyKey)
@@ -1850,7 +1850,8 @@ public final class RelayBroker: @unchecked Sendable {
             return RelayTextResponse(status: 400, text: succeeded ? "nothing to report as done" : "nothing to report as failed")
         }
         guard cleaned.count <= RelayText.maximumCharacters else {
-            return RelayTextResponse(status: 400, text: "delegation result too long")
+            return RelayTextResponse(status: 400, text: RelayText.tooLong("delegation result", count: cleaned.count,
+                hint: "Put a long report in a file inside your working folder and return it with parley done current --file <path>"))
         }
 
         // Phase one, unlocked: informational Git facts for the reporting
@@ -2583,7 +2584,7 @@ public final class RelayBroker: @unchecked Sendable {
             : RelayText.clean(text)
         guard !cleaned.isEmpty else { return RelayTextResponse(status: 400, text: "nothing to ask") }
         guard cleaned.count <= RelayText.maximumCharacters else {
-            return RelayTextResponse(status: 400, text: "question too long")
+            return RelayTextResponse(status: 400, text: RelayText.tooLong("question", count: cleaned.count))
         }
 
         let scope = IdempotencyScope(senderPaneID: sender.id, key: idempotencyKey)
@@ -2751,7 +2752,7 @@ public final class RelayBroker: @unchecked Sendable {
             : RelayText.clean(text)
         guard !cleaned.isEmpty else { return RelayTextResponse(status: 400, text: "nothing to ask") }
         guard cleaned.count <= RelayText.maximumCharacters else {
-            return RelayTextResponse(status: 400, text: "question too long")
+            return RelayTextResponse(status: 400, text: RelayText.tooLong("question", count: cleaned.count))
         }
 
         let targets = requestedTargets
@@ -3137,6 +3138,11 @@ public final class RelayBroker: @unchecked Sendable {
         let normalized = request.preserveFormatting
             ? ContextPackText.normalize(request.text)
             : RelayText.clean(request.text)
+        // Refused before the edited text is stored, so the queued draft keeps
+        // what the person last saved.
+        guard normalized.count <= RelayText.maximumCharacters else {
+            return RelayTextResponse(status: 400, text: RelayText.tooLong("reviewed draft", count: normalized.count))
+        }
         let dispatching: ReviewedBusyDraft
         consultationCondition.lock()
         if targetHasTrackedWorkLocked(existing.targetPaneID) {
@@ -3973,7 +3979,7 @@ public final class RelayBroker: @unchecked Sendable {
         let cleaned = RelayText.clean(text)
         guard !cleaned.isEmpty else { return RelayTextResponse(status: 400, text: "nothing to return") }
         guard cleaned.count <= RelayText.maximumCharacters else {
-            return RelayTextResponse(status: 400, text: "answer too long")
+            return RelayTextResponse(status: 400, text: RelayText.tooLong("answer", count: cleaned.count))
         }
 
         consultationCondition.lock()
