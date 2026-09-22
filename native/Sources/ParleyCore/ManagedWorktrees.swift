@@ -1407,7 +1407,10 @@ extension ManagedWorktreeService {
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("parley-merge-preview-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: scratch) }
-        var env = environment
+        // Inside `GitReadBoundary` like every other read, although this
+        // scratch repository reads neither the project's configuration nor
+        // its attributes: the guard holds even if that ever changes.
+        var env = readEnvironment
         env["GIT_CONFIG_NOSYSTEM"] = "1"
         env["GIT_CONFIG_GLOBAL"] = "/dev/null"
         env["GIT_ATTR_NOSYSTEM"] = "1"
@@ -1419,12 +1422,12 @@ extension ManagedWorktreeService {
             .replacingOccurrences(of: "\"", with: "\\\"").replacingOccurrences(of: "\n", with: "\\n")
             .replacingOccurrences(of: "\r", with: "\\r").replacingOccurrences(of: "\t", with: "\\t") + "\""
         let runner = ProcessCommandRunner(timeout: 15, maximumCapturedBytes: 200_001)
-        let initialized = try runner.run(executable: gitExecutable,
-            arguments: ["-C", scratch.path, "init", "--bare", "--template=", "--quiet"], environment: env)
+        let initialized = try GitReadBoundary.run(git: gitExecutable,
+            arguments: ["-C", scratch.path, "init", "--bare", "--template=", "--quiet"], environment: env, runner: runner)
         guard initialized.status == 0 else { throw ManagedWorktreeError.git("Could not initialize temporary merge storage.") }
-        let output = try runner.run(executable: gitExecutable,
+        let output = try GitReadBoundary.run(git: gitExecutable,
             arguments: ["-C", scratch.path, "-c", "core.attributesFile=/dev/null", "-c", "core.fsmonitor=false",
-                        "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", target, source], environment: env)
+                        "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", target, source], environment: env, runner: runner)
         guard output.status == 0 || output.status == 1 else {
             throw ManagedWorktreeError.git("Merge preview unavailable (exit \(output.status)). Git may lack merge-tree support, objects may be missing or the branches may have no common history. " + String(output.stderrText.prefix(1000)))
         }

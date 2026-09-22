@@ -495,8 +495,8 @@ be interpolated into a shell command.
 
 Every Git command Parley runs on the host to *read* a repository goes through
 `GitReadBoundary` (22 September 2026, H1 of that day's review): delegation Git
-facts, the pane Git context, worktree discovery, board facts, cleanup
-previews, context Git Diff, review drafts and `ContainerGitAccess`. A
+facts, the pane Git context, worktree discovery, board facts, cleanup and
+merge previews, context Git Diff, review drafts and `ContainerGitAccess`. A
 repository's configuration and attributes can name programs for Git to start
 (clean, smudge and process filters, textconv, external diff, fsmonitor, a lazy
 fetch, a status child per submodule), an agent can write that configuration
@@ -1108,8 +1108,8 @@ person-owned with no base; removal is offered through the same preview and
 refusals, identified by Git's registry entry at the recorded path.
 
 Merge previews resolve the chosen integration ref and the tree's HEAD to
-immutable commits, then use fixed-argv Git merge-tree in a private bare
-temporary repository. An alternate object directory is read-only input;
+immutable commits, then use fixed-argv Git merge-tree, inside
+`GitReadBoundary`, in a private bare temporary repository. An alternate object directory is read-only input;
 new objects are written only to temporary storage, which is removed after
 the command. Global/system configuration, templates and external project
 merge drivers are excluded; lazy fetching and replacement objects are

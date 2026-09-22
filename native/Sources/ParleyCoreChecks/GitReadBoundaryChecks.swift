@@ -13,7 +13,8 @@ private func grRequire<T>(_ value: T?, _ message: String) throws -> T {
 /// A repository whose own configuration names programs for Git to start,
 /// the way a container pane or an agent could leave it: clean filters from
 /// `.git/info/attributes` (one run through the shell, one executed directly,
-/// one whose name contains `=` and is marked required), a textconv driver,
+/// one whose name contains `=` and is marked required, one long-running
+/// `process` filter), a textconv driver,
 /// an external diff, an fsmonitor hook and a filter inside a populated
 /// submodule. Every program only creates a marker file, so a Parley read
 /// that ran one leaves the marker behind.
@@ -48,10 +49,10 @@ private struct PlantedRepository {
         try Self.git(["commit", "-q", "-m", "submodule"], in: submoduleSource, home: home)
 
         try Self.git(["init", "-q", "-b", "main"], in: repo, home: home)
-        for (name, contents) in [("a.txt", "hello\n"), ("b.txt", "b\n"), ("c.txt", "direct\n")] {
+        for (name, contents) in [("a.txt", "hello\n"), ("b.txt", "b\n"), ("c.txt", "direct\n"), ("d.txt", "proc\n")] {
             try contents.write(to: repo.appendingPathComponent(name), atomically: true, encoding: .utf8)
         }
-        try Self.git(["add", "a.txt", "b.txt", "c.txt"], in: repo, home: home)
+        try Self.git(["add", "a.txt", "b.txt", "c.txt", "d.txt"], in: repo, home: home)
         try Self.git(["-c", "protocol.file.allow=always", "submodule", "add", "-q", submoduleSource.path, "sub"], in: repo, home: home)
         try Self.git(["commit", "-q", "-m", "initial"], in: repo, home: home)
         // The linked tree is created before anything is planted, so its own
@@ -72,6 +73,7 @@ private struct PlantedRepository {
             ("filter.a=b.clean", "/usr/bin/touch \(markers.path)/equals-filter; /bin/cat"),
             ("filter.a=b.required", "true"),
             ("filter.direct.clean", try script("direct-filter")),
+            ("filter.proc.process", "/usr/bin/touch \(markers.path)/process-filter; /bin/cat"),
             ("diff.evil.textconv", "/usr/bin/touch \(markers.path)/textconv; /bin/cat"),
             ("diff.external", try script("external-diff")),
             ("core.fsmonitor", try script("fsmonitor")),
@@ -80,7 +82,7 @@ private struct PlantedRepository {
         }
         let info = repo.appendingPathComponent(".git/info", isDirectory: true)
         try FileManager.default.createDirectory(at: info, withIntermediateDirectories: true)
-        try "a.txt filter=evil diff=evil\nb.txt filter=a=b\nc.txt filter=direct\n"
+        try "a.txt filter=evil diff=evil\nb.txt filter=a=b\nc.txt filter=direct\nd.txt filter=proc\n"
             .write(to: info.appendingPathComponent("attributes"), atomically: true, encoding: .utf8)
         let submodule = repo.appendingPathComponent("sub", isDirectory: true)
         try Self.git(["config", "filter.subevil.clean", "/usr/bin/touch \(markers.path)/submodule-filter; /bin/cat"], in: submodule, home: home)
@@ -95,6 +97,7 @@ private struct PlantedRepository {
             (repo.appendingPathComponent("a.txt"), "jello\n"),
             (repo.appendingPathComponent("b.txt"), "c\n"),
             (repo.appendingPathComponent("c.txt"), "dir3ct\n"),
+            (repo.appendingPathComponent("d.txt"), "prok\n"),
             (submodule.appendingPathComponent("s.txt"), "t\n"),
         ] {
             try contents.write(to: file, atomically: false, encoding: .utf8)
@@ -103,7 +106,7 @@ private struct PlantedRepository {
         // The linked tree keeps its content but not its recorded stat data,
         // so its status (and git worktree remove's own status) compares
         // content too.
-        for name in ["a.txt", "b.txt", "c.txt"] {
+        for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
             try FileManager.default.setAttributes([.modificationDate: later], ofItemAtPath: linked.appendingPathComponent(name).path)
         }
         try clearMarkers()
@@ -152,7 +155,7 @@ func checkHostGitReadsNeverRunPlantedRepositoryCommands() throws {
         let facts = try grRequire(DelegationGitSnapshotCapture(environment: fixture.environment).snapshot(in: fixture.repo.path),
                                   "delegation facts produced no snapshot for a repository")
         try grExpect(facts.isAvailable, "delegation facts were unavailable: \(facts.summary)")
-        try grExpect(["a.txt", "b.txt", "c.txt"].allSatisfy(facts.dirtyPaths.contains), "delegation facts missed an edited path: \(facts.dirtyPaths)")
+        try grExpect(["a.txt", "b.txt", "c.txt", "d.txt"].allSatisfy(facts.dirtyPaths.contains), "delegation facts missed an edited path: \(facts.dirtyPaths)")
     }
     try read("pane Git context") {
         let context = try grRequire(GitProjectContextResolver(environment: fixture.environment).context(in: fixture.repo.path),
@@ -174,6 +177,13 @@ func checkHostGitReadsNeverRunPlantedRepositoryCommands() throws {
     try read("review draft") {
         let draft = try ReviewDraftBuilder(environment: fixture.environment).changes(in: fixture.repo.path)
         try grExpect(draft.text.contains("+jello"), "the review draft lost the edits:\n\(draft.text)")
+    }
+    try read("container Git access") {
+        _ = try grRequire(ContainerGitAccess.inspect(folder: fixture.linked.path), "container Git access did not recognise the linked tree")
+    }
+    try read("merge preview") {
+        let preview = try fixture.service.mergePreview(fixture.record, targetRef: "main")
+        try grExpect(!preview.hasConflicts, "an unchanged tree predicted conflicts")
     }
     try read("worktree cleanup preview and removal") {
         let preview = try fixture.service.cleanupPreview(fixture.record, livePaneFolders: [], otherRuntimeStateFiles: [])

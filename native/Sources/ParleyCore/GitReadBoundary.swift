@@ -2,8 +2,8 @@ import Foundation
 
 /// Every Git command Parley runs on this Mac to read a repository goes
 /// through here: delegation Git facts, the pane Git context, worktree
-/// discovery, board facts and cleanup previews, context Git Diff and review
-/// drafts.
+/// discovery, board facts, cleanup and merge previews, context Git Diff,
+/// review drafts and container Git access.
 ///
 /// A repository's own configuration and attributes can name programs for
 /// Git to start: clean, smudge and process filters, textconv and external
