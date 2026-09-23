@@ -21,7 +21,7 @@ func checkPaneCreationShortcutsReachParley() throws {
         try shortcutExpect(WorkbenchKeyboardShortcut.resolve(key: String(shortcut.key), command: true, shift: false, option: true, control: false) == nil,
                            "\(shortcut.displayName) is taken by Parley's own key monitor before the menu")
     }
-    // The table of reserved chords holds the ones that bit.
+    // The table holds the chords that took the old shortcuts.
     for key: Character in ["3", "4", "5"] {
         try shortcutExpect(SystemReservedShortcut.macOSDefaults.contains(.init(key: key, command: true, shift: true, option: false, control: false)),
                            "Shift-Command-\(key) is missing from the macOS defaults")

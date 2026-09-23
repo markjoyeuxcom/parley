@@ -75,9 +75,13 @@ public struct PaneCreationShortcut: Equatable, Sendable {
     public var displayName: String { "Option-Command-\(key)" }
 }
 
-/// Chords macOS takes system-wide in its default configuration, before the
-/// frontmost application receives them. A Parley menu shortcut must avoid
-/// every one of these.
+/// Chords macOS is known to take before the frontmost application receives
+/// them: its default system-wide hotkeys, the standard text Look Up and full
+/// screen chords, and the Accessibility Zoom chords when they are switched
+/// on. A Parley menu shortcut must avoid every one of these. This is not a
+/// complete catalogue of every macOS hotkey; add a chord here when one is
+/// found taken, and a person can still reassign any of them in System
+/// Settings.
 public enum SystemReservedShortcut {
     public struct Chord: Hashable, Sendable {
         public let key: Character
@@ -107,6 +111,14 @@ public enum SystemReservedShortcut {
         .init(key: " ", command: true, shift: false, option: true, control: false),
         .init(key: " ", command: false, shift: false, option: false, control: true),
         .init(key: " ", command: true, shift: false, option: false, control: true),
+        .init(key: " ", command: false, shift: false, option: true, control: true),
+        // Look Up and full screen.
+        .init(key: "d", command: true, shift: false, option: false, control: true),
+        .init(key: "f", command: true, shift: false, option: false, control: true),
+        // Accessibility Zoom, when its keyboard shortcuts are on.
+        .init(key: "8", command: true, shift: false, option: true, control: false),
+        .init(key: "=", command: true, shift: false, option: true, control: false),
+        .init(key: "-", command: true, shift: false, option: true, control: false),
         // Lock Screen, Dock hiding and Force Quit Applications.
         .init(key: "q", command: true, shift: false, option: false, control: true),
         .init(key: "d", command: true, shift: false, option: true, control: false),
