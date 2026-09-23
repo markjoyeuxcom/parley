@@ -1430,8 +1430,13 @@ through `main.sync`, a 15-second command or several Git reads). Both
 previously froze the UI for their 3-second timeout and reported a failure
 while the delivery or capture happened anyway. They pass `reachesPane: true`
 and `paneReachingResponseTimeout` (45 s), and AppModel runs them detached;
-capture holds `trustedCaptureInFlight` so a second click cannot add a
+capture holds `contextCaptureInFlight` so a second click cannot add a
 duplicate part, and a selection is cleared only after the core has read it.
+While any capture into the open pack runs (`contextPackCaptureRunning`,
+including the person's own Git Diff, now also detached, and Command Result),
+Ask, Compare, Decline or Discard and every add-source button wait, because
+an agent draft's revision changes when the capture lands. A second Retry of
+the same handoff is ignored while the first is in flight.
 A new UI route that pastes into or reads from a pane must set `reachesPane`.
 
 ## Roles and mobility

@@ -240,10 +240,19 @@ final class AppModel: ObservableObject {
     @Published private(set) var contextPackDraft: ActiveContextPack?
     @Published private(set) var contextReviews: [AgentContextReview] = []
     @Published private(set) var contextCommandCapturing = false
-    /// One trusted capture into an agent draft at a time: the core records
-    /// the part as soon as it runs, so a second click while one is in flight
-    /// would add a duplicate.
-    @Published private(set) var trustedCaptureInFlight = false
+    /// One capture into the open context pack at a time: trusted capture into
+    /// an agent draft (the core records the part as soon as it runs, so a
+    /// second click would add a duplicate) or the person's own Git Diff.
+    @Published private(set) var contextCaptureInFlight = false
+    /// Retry Delivery requests still waiting on the core; a second retry of
+    /// the same handoff would only be refused.
+    private var retryingHandoffIDs: Set<String> = []
+
+    /// Any capture into the open pack is still running. Sending, comparing,
+    /// declining or adding another source waits for it: an agent draft's
+    /// revision changes when the capture lands, and a pack sent now would
+    /// miss the source being added.
+    var contextPackCaptureRunning: Bool { contextCaptureInFlight || contextCommandCapturing }
     @Published private(set) var coreAvailable = false
     /// Whether the peer-verified ticket socket is listening; the launch
     /// review's attestation line reads this at review time.
@@ -2948,7 +2957,8 @@ final class AppModel: ObservableObject {
     }
 
     var contextPackIsSendable: Bool {
-        guard let draft = contextPackDraft,
+        guard !contextPackCaptureRunning,
+              let draft = contextPackDraft,
               !draft.pack.parts.isEmpty,
               !draft.pack.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               contextPackSourcePane != nil else { return false }
@@ -5866,9 +5876,22 @@ final class AppModel: ObservableObject {
                     draftID: draft.id
                 )
             } else {
-                guard let contextPackBuilder else { return }
-                let part = try contextPackBuilder.gitDiff(in: draft.sourceFolder)
-                try appendContextPackParts([part], draftID: draft.id)
+                guard let contextPackBuilder, !contextCaptureInFlight else { return }
+                // Up to four Git commands with 5 s timeouts: never on the main thread.
+                let folder = draft.sourceFolder
+                let draftID = draft.id
+                contextCaptureInFlight = true
+                Task { @MainActor [weak self] in
+                    defer { self?.contextCaptureInFlight = false }
+                    do {
+                        let part = try await Task.detached(priority: .userInitiated) {
+                            try contextPackBuilder.gitDiff(in: folder)
+                        }.value
+                        try self?.appendContextPackParts([part], draftID: draftID)
+                    } catch {
+                        NSAlert(error: error).runModal()
+                    }
+                }
             }
         }
     }
@@ -6034,6 +6057,9 @@ final class AppModel: ObservableObject {
 
     private func askWithContextPack(target: WorkbenchPane) {
         perform {
+            guard !contextPackCaptureRunning else {
+                throw RelayUIError.message("A source is still being captured into this pack. Send it once the capture finishes.")
+            }
             guard let draft = contextPackDraft,
                   let source = contextPackSourcePane,
                   let contextPackBuilder else {
@@ -6575,7 +6601,7 @@ final class AppModel: ObservableObject {
     private func appendContextPackParts(_ parts: [ContextPackPart], draftID: String) throws {
         guard !parts.isEmpty else { throw ContextPackError.emptyPart }
         guard var draft = contextPackDraft, draft.id == draftID, let contextPackBuilder else {
-            throw RelayUIError.message("That context pack was replaced while its source was being captured.")
+            throw RelayUIError.message("That context pack was closed or replaced while its source was being captured, so the source was not added.")
         }
         draft.pack.parts.append(contentsOf: parts)
         let rendered = try contextPackBuilder.render(draft.pack)
@@ -6615,11 +6641,11 @@ final class AppModel: ObservableObject {
                 "The app-resident core is unavailable, so Parley cannot establish trusted capture provenance."
             )
         }
-        guard !trustedCaptureInFlight else {
+        guard !contextCaptureInFlight else {
             throw RelayUIError.message("A capture into this pack is still running. Wait for it to finish before adding another source.")
         }
-        trustedCaptureInFlight = true
-        defer { trustedCaptureInFlight = false }
+        contextCaptureInFlight = true
+        defer { contextCaptureInFlight = false }
         let response = try await Task.detached(priority: .userInitiated) {
             try relayClient.captureTrustedContext(request)
         }.value
@@ -6641,7 +6667,7 @@ final class AppModel: ObservableObject {
             throw RelayUIError.message("The app-resident core captured no context sources.")
         }
         guard var draft = contextPackDraft, draft.id == draftID else {
-            throw RelayUIError.message("That context pack was replaced while its source was being captured.")
+            throw RelayUIError.message("That context pack was closed or replaced while its source was being captured. The captured source is kept with the agent's draft; reopen the draft to see it.")
         }
         // The core has already bounded and durably recorded these exact parts.
         // Keep an oversized local edit visible and unsendable instead of hiding
@@ -6770,12 +6796,14 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Retry Delivery")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        guard let relayClient else { return }
+        guard let relayClient, !retryingHandoffIDs.contains(handoff.id) else { return }
         let handoffID = handoff.id
+        retryingHandoffIDs.insert(handoffID)
         // Off the main thread: the core delivers into the target pane through
         // DispatchQueue.main.sync, so a main thread waiting here froze and
         // then reported "retry failed" while the delivery went through.
         Task { @MainActor [weak self] in
+            defer { self?.retryingHandoffIDs.remove(handoffID) }
             do {
                 let response = try await Task.detached(priority: .userInitiated) {
                     try relayClient.retryHandoff(handoffID)
