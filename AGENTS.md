@@ -1043,7 +1043,9 @@ mutation) and the other Production/Development runtime's `workbench-state.json`
 `rev-list --count @{upstream}..HEAD`, and `merge-base --is-ancestor` against
 the primary worktree. `WorktreeCleanupPolicy.decision` is the pure table:
 a nested registered or known worktree, any live or placeholder pane inside
-the tree, modified or untracked files, commits ahead of the upstream's local
+the tree, modified or untracked files, a present file marked assume-unchanged
+or skip-worktree (`git ls-files -v`; status cannot see an edit to it, and a
+sparse checkout's absent file holds nothing), commits ahead of the upstream's local
 remote-tracking state (a pushed but unmerged branch is allowed; the remote
 is never contacted), no upstream and not contained in the primary's HEAD,
 locked, prunable, unregistered, the repository's primary checkout (a
@@ -1060,7 +1062,10 @@ command. Every ignored entry Git would delete is shown in full in a
 scrollable native list with control characters escaped (`displayPath`), a
 directory entry meaning its whole contents. Ignored directories are also
 inspected for independent repositories, including bare repositories, before
-cleanup can proceed; an unreadable or over-budget traversal refuses removal.
+cleanup can proceed; an unreadable or over-budget traversal refuses removal
+as a refusal in the preview, never a failed preview. The budget counts
+directories (20,000, plus the read timeout), not files, so a tree holding
+node_modules or .build can be checked.
 Attaching a path with a Parley creation record whose marker no longer matches
 refuses rather than replacing the record with an unowned tree. More than 200
 ignored entries refuses; the
@@ -1124,14 +1129,23 @@ and **Delete branch…** instead. A gone folder cannot be realpath-resolved, so
 Git spells a stale entry with the `/private` prefix the record lacks;
 the manager matches records to stale rows by resolved path, and checks
 compare resolved forms rather than strings. Prune is Git's own global prune: there is no
-per-entry form, so the preview lists every prunable entry of the repository
-and the person acknowledges that list, the acknowledged list must still
-match the registry when it runs, no folder or branch changes, and Parley
-clears its records for the forgotten entries. Delete branch runs one
-`git branch -d --end-of-options <branch>` from the primary checkout after a
-preview that states the commit, whether it is contained in the primary's
-HEAD and whether a registered worktree still has it checked out; Git's own
-refusal is shown as it is and `-D` never appears in Parley's argv. The
+per-entry form, so the preview is Git's own dry run (`worktree prune -n -v`),
+not the registry's prunable list, because `worktree list` omits an entry
+whose gitdir file is missing and prune removes it anyway (a live tree then
+reads "not a git repository"). Each entry shows Git's reason, the folder its
+gitdir file records and its branch; Parley refuses the whole prune when any
+entry's folder still exists, has no recorded location, or is still linked
+from a Parley record or `.worktrees` folder. The person acknowledges the
+admin names, which must still match Git's dry run when it runs, no folder or
+branch changes, and Parley clears its records for the forgotten entries.
+Delete branch runs one `git branch -d --end-of-options <branch>` from the
+primary checkout after a preview worded from Git's own rule: with an
+upstream whose remote-tracking ref exists, `-d` checks that upstream, not
+HEAD, so a pushed branch is deleted even when the primary's HEAD lacks it
+(the preview says it is then kept only by the upstream); without one it
+checks the primary's HEAD. The deletion is bound to the commit the preview
+showed and refuses if the branch moved. Git's own refusal is shown as it is
+and `-D` never appears in Parley's argv. The
 branch step is offered as a second button on a successful removal's result
 and again after a prune, for the branches the forgotten entries held (one
 confirmation each); it is not on a STALE row, because Git counts a prunable

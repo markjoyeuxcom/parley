@@ -728,6 +728,7 @@ func workbenchFolderReservationChecks() throws {
 
 @MainActor
 let managedWorktreeChecks: [(String, () throws -> Void)] = [
+    ("worktree cleanup closes the paths that lost unshown work", worktreeCleanupGapChecks),
     ("worktree lifecycle malformed runtime state is unknown", worktreeUnknownRuntimeChecks),
     ("worktree lifecycle permission guidance respects vendor boundaries", worktreePermissionGuidanceChecks),
     ("worktree lifecycle history scope follows the recorded target only", worktreeHistoryScopeChecks),
@@ -978,17 +979,19 @@ func managedWorktreePruneChecks() throws {
     let gone = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "feat/gone", baseRef: "main"))
     let kept = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "feat/kept", baseRef: "main"))
     try wtExpect(try f.service.prunePreview(in: f.repo.path).entries.isEmpty, "a repository with folders present listed prunable entries")
-    _ = try wtRejects("prune ran with nothing prunable") { _ = try f.service.prune(in: f.repo.path, acknowledgedPaths: []) }
+    _ = try wtRejects("prune ran with nothing prunable") { _ = try f.service.prune(in: f.repo.path, acknowledgedNames: []) }
     try FileManager.default.removeItem(atPath: gone.path)
     // A gone folder cannot be realpath-resolved, so Git and the record may
     // disagree about the /private prefix; compare with it stripped.
     let strip: (String) -> String = { $0.hasPrefix("/private/") ? String($0.dropFirst("/private".count)) : $0 }
     let same: (String, String) -> Bool = { strip($0) == strip($1) }
     let preview = try f.service.prunePreview(in: f.repo.path)
-    try wtExpect(preview.paths.count == 1 && same(preview.paths[0], gone.path), "the prunable list was wrong: \(preview.paths) vs record \(gone.path)")
-    _ = try wtRejects("prune ran over a list that does not match the registry") { _ = try f.service.prune(in: f.repo.path, acknowledgedPaths: [kept.path]) }
-    let outcome = try f.service.prune(in: f.repo.path, acknowledgedPaths: preview.paths)
-    try wtExpect(outcome.forgotten.count == 1 && same(outcome.forgotten[0], gone.path) && outcome.remaining.isEmpty, "prune did not forget the entry: \(outcome)")
+    try wtExpect(preview.entries.count == 1 && same(preview.entries[0].folder ?? "", gone.path) && preview.refusals.isEmpty
+                 && preview.entries[0].branch == "feat/gone", "the prunable list was wrong: \(preview.entries) vs record \(gone.path)")
+    _ = try wtRejects("prune ran over a list that does not match Git's dry run") { _ = try f.service.prune(in: f.repo.path, acknowledgedNames: ["feat-kept"]) }
+    let outcome = try f.service.prune(in: f.repo.path, acknowledgedNames: preview.adminNames)
+    try wtExpect(outcome.forgottenFolders.count == 1 && same(outcome.forgottenFolders[0], gone.path) && outcome.remaining.isEmpty
+                 && outcome.forgottenBranches == ["feat/gone"], "prune did not forget the entry: \(outcome)")
     let identity = try f.service.identity(of: f.repo.path)
     let registry = try f.service.registeredWorktrees(of: identity)
     try wtExpect(!registry.contains { same($0.path, gone.path) } && registry.contains { $0.path == kept.path && !$0.isPrunable }, "prune touched the wrong entry")
@@ -1005,13 +1008,13 @@ func managedWorktreeBranchDeletionChecks() throws {
     try f.git(["branch", "merged/one"], in: f.repo)
     let merged = try f.service.branchDeletionPreview("merged/one", in: f.repo.path)
     try wtExpect(merged.mergedIntoPrimaryHead && merged.checkedOutAt == nil && merged.commit == (try f.git(["rev-parse", "HEAD"], in: f.repo)), "a merged branch was misread: \(merged)")
-    guard case let .deleted(commit) = try f.service.deleteBranch("merged/one", in: f.repo.path) else { throw NSError(domain: "ManagedWorktree", code: 1, userInfo: [NSLocalizedDescriptionKey: "a merged branch was not deleted"]) }
+    guard case let .deleted(commit) = try f.service.deleteBranch("merged/one", expectedCommit: try f.service.branchDeletionPreview("merged/one", in: f.repo.path).commit, in: f.repo.path) else { throw NSError(domain: "ManagedWorktree", code: 1, userInfo: [NSLocalizedDescriptionKey: "a merged branch was not deleted"]) }
     try wtExpect(commit == merged.commit && !(try f.git(["branch", "--list", "merged/one"], in: f.repo)).contains("merged/one"), "the merged branch remains")
     let tree = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "feat/unmerged", baseRef: "main"))
     _ = try f.commit("work", in: URL(fileURLWithPath: tree.path), file: "src/w.swift", contents: "let w = 1\n")
     let checkedOut = try f.service.branchDeletionPreview("feat/unmerged", in: f.repo.path)
     try wtExpect(!checkedOut.mergedIntoPrimaryHead && checkedOut.checkedOutAt == tree.path, "a checked-out unmerged branch was misread: \(checkedOut)")
-    guard case let .refused(reason) = try f.service.deleteBranch("feat/unmerged", in: f.repo.path) else { throw NSError(domain: "ManagedWorktree", code: 1, userInfo: [NSLocalizedDescriptionKey: "a checked-out branch was deleted"]) }
+    guard case let .refused(reason) = try f.service.deleteBranch("feat/unmerged", expectedCommit: try f.service.branchDeletionPreview("feat/unmerged", in: f.repo.path).commit, in: f.repo.path) else { throw NSError(domain: "ManagedWorktree", code: 1, userInfo: [NSLocalizedDescriptionKey: "a checked-out branch was deleted"]) }
     try wtExpect(reason.contains("feat/unmerged"), "Git's refusal was not shown: \(reason)")
     _ = try wtRejects("Parley removed a tree with an unmerged commit") {
         _ = try f.service.remove(tree, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
@@ -1021,13 +1024,13 @@ func managedWorktreeBranchDeletionChecks() throws {
     try FileManager.default.removeItem(atPath: held.path)
     let stale = try f.service.branchDeletionPreview("feat/held", in: f.repo.path)
     try wtExpect(stale.heldByStaleEntry && stale.checkedOutAt != nil && stale.mergedIntoPrimaryHead, "a stale holder was not reported: \(stale)")
-    guard case .refused = try f.service.deleteBranch("feat/held", in: f.repo.path) else { throw NSError(domain: "ManagedWorktree", code: 1, userInfo: [NSLocalizedDescriptionKey: "a branch held by a stale entry was deleted"]) }
-    _ = try f.service.prune(in: f.repo.path, acknowledgedPaths: try f.service.prunePreview(in: f.repo.path).paths)
+    guard case .refused = try f.service.deleteBranch("feat/held", expectedCommit: try f.service.branchDeletionPreview("feat/held", in: f.repo.path).commit, in: f.repo.path) else { throw NSError(domain: "ManagedWorktree", code: 1, userInfo: [NSLocalizedDescriptionKey: "a branch held by a stale entry was deleted"]) }
+    _ = try f.service.prune(in: f.repo.path, acknowledgedNames: try f.service.prunePreview(in: f.repo.path).adminNames)
     let released = try f.service.branchDeletionPreview("feat/held", in: f.repo.path)
     try wtExpect(!released.heldByStaleEntry && released.checkedOutAt == nil, "prune did not release the branch: \(released)")
-    guard case .deleted = try f.service.deleteBranch("feat/held", in: f.repo.path) else { throw NSError(domain: "ManagedWorktree", code: 1, userInfo: [NSLocalizedDescriptionKey: "a merged branch was refused after prune"]) }
+    guard case .deleted = try f.service.deleteBranch("feat/held", expectedCommit: try f.service.branchDeletionPreview("feat/held", in: f.repo.path).commit, in: f.repo.path) else { throw NSError(domain: "ManagedWorktree", code: 1, userInfo: [NSLocalizedDescriptionKey: "a merged branch was refused after prune"]) }
     try f.git(["worktree", "remove", "--force", tree.path], in: f.repo) // the fixture's Git, never Parley's
-    guard case let .refused(unmerged) = try f.service.deleteBranch("feat/unmerged", in: f.repo.path) else { throw NSError(domain: "ManagedWorktree", code: 1, userInfo: [NSLocalizedDescriptionKey: "an unmerged branch was deleted"]) }
+    guard case let .refused(unmerged) = try f.service.deleteBranch("feat/unmerged", expectedCommit: try f.service.branchDeletionPreview("feat/unmerged", in: f.repo.path).commit, in: f.repo.path) else { throw NSError(domain: "ManagedWorktree", code: 1, userInfo: [NSLocalizedDescriptionKey: "an unmerged branch was deleted"]) }
     try wtExpect(unmerged.contains("not fully merged"), "the unmerged refusal was not Git's: \(unmerged)")
     try wtExpect(try f.git(["branch", "--list", "feat/unmerged"], in: f.repo).contains("feat/unmerged"), "an unmerged branch was deleted despite the refusal")
     _ = try wtRejects("an option-shaped branch name reached git") { _ = try f.service.branchDeletionPreview("--delete=main", in: f.repo.path) }
@@ -1059,4 +1062,105 @@ func worktreeBulkRemovalPlanChecks() throws {
     try wtExpect(WorktreeBulkRemovalPlan.shouldContinue(after: removed.state), "a confirmed removal stopped the run")
     try wtExpect(!WorktreeBulkRemovalPlan.shouldContinue(after: .uncertain), "an uncertain outcome did not stop the run")
     try wtExpect(!WorktreeBulkRemovalPlan.shouldContinue(after: .retained), "a retained tree did not stop the run")
+}
+
+/// Review of 22 September 2026, ad160850: four cleanup paths that could lose
+/// work the preview did not show, each reproduced here with real Git.
+func worktreeCleanupGapChecks() throws {
+    let f = try WorktreeFixture()
+    defer { f.cleanup() }
+
+    // (1) Edits to files Git is told not to check are invisible to status.
+    for (branch, flag) in [("gap/skip", "--skip-worktree"), ("gap/assume", "--assume-unchanged")] {
+        let tree = try f.service.create(.init(repositoryFolder: f.repo.path, branch: branch, baseRef: "main"))
+        let folder = URL(fileURLWithPath: tree.path)
+        try f.git(["update-index", flag, "src/main.swift"], in: folder)
+        try "print(2) // local edit\n".write(to: folder.appendingPathComponent("src/main.swift"), atomically: true, encoding: .utf8)
+        try wtExpect(try f.git(["status", "--porcelain"], in: folder).isEmpty, "\(flag) did not hide the edit from status in this Git")
+        let preview = try f.service.cleanupPreview(tree, livePaneFolders: [], otherRuntimeStateFiles: [])
+        try wtExpect(preview.refusals.contains { $0.contains("not to check for changes") && $0.contains("src/main.swift") },
+                     "an edit hidden by \(flag) did not refuse removal: \(preview.refusals)")
+    }
+    // A sparse checkout's skip-worktree file that is not on disk holds nothing to lose.
+    let sparse = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "gap/sparse", baseRef: "main"))
+    try f.git(["update-index", "--skip-worktree", "src/main.swift"], in: URL(fileURLWithPath: sparse.path))
+    try FileManager.default.removeItem(atPath: sparse.path + "/src/main.swift")
+    let sparsePreview = try f.service.cleanupPreview(sparse, livePaneFolders: [], otherRuntimeStateFiles: [])
+    try wtExpect(!sparsePreview.refusals.contains { $0.contains("not to check for changes") },
+                 "an absent skip-worktree file refused removal: \(sparsePreview.refusals)")
+
+    // (2) branch -d follows the upstream when there is one, else HEAD.
+    let remote = f.root.appendingPathComponent("remote.git")
+    try f.git(["init", "-q", "--bare", remote.path], in: f.root)
+    try f.git(["remote", "add", "origin", remote.path], in: f.repo)
+    try f.git(["checkout", "-q", "-b", "gap/pushed"], in: f.repo)
+    _ = try f.commit("pushed", in: f.repo, contents: "print(3)\n")
+    try f.git(["push", "-q", "-u", "origin", "gap/pushed"], in: f.repo)
+    try f.git(["checkout", "-q", "-b", "gap/local"], in: f.repo)
+    let localCommit = try f.commit("local", in: f.repo, contents: "print(4)\n")
+    try f.git(["checkout", "-q", "main"], in: f.repo)
+    let pushed = try f.service.branchDeletionPreview("gap/pushed", in: f.repo.path)
+    try wtExpect(!pushed.mergedIntoPrimaryHead && pushed.upstream == "refs/remotes/origin/gap/pushed" && pushed.mergedIntoUpstream == true
+                 && pushed.gitWillDelete, "a branch on its upstream but not in HEAD was not predicted deletable: \(pushed)")
+    let local = try f.service.branchDeletionPreview("gap/local", in: f.repo.path)
+    try wtExpect(local.upstream == nil && !local.gitWillDelete, "an unmerged branch without upstream was predicted deletable: \(local)")
+    // The deletion is bound to the commit the person saw.
+    try f.git(["branch", "-f", "gap/local", "main"], in: f.repo)
+    _ = try wtRejects("a branch that moved since its preview was deleted") {
+        _ = try f.service.deleteBranch("gap/local", expectedCommit: localCommit, in: f.repo.path)
+    }
+    try wtExpect(!(try f.git(["rev-parse", "--verify", "refs/heads/gap/local"], in: f.repo)).isEmpty, "the moved branch is gone")
+    if case let .deleted(commit) = try f.service.deleteBranch("gap/pushed", expectedCommit: pushed.commit, in: f.repo.path) {
+        try wtExpect(commit == pushed.commit, "the deleted commit was not the previewed one")
+    } else {
+        throw NSError(domain: "ManagedWorktree", code: 1, userInfo: [NSLocalizedDescriptionKey: "a branch Git deletes was not deleted"])
+    }
+
+    // (3) Prune forgets what `git worktree prune` removes, not only what
+    // `worktree list` marks prunable, and never a tree whose folder remains.
+    let gone = f.root.appendingPathComponent("gone-tree")
+    try f.git(["worktree", "add", "-q", "--detach", gone.path, "main"], in: f.repo)
+    try FileManager.default.removeItem(at: gone)
+    let live = f.root.appendingPathComponent("live-tree")
+    try f.git(["worktree", "add", "-q", "--detach", live.path, "main"], in: f.repo)
+    try "unsaved\n".write(to: live.appendingPathComponent("notes.txt"), atomically: true, encoding: .utf8)
+    let liveAdmin = try f.git(["rev-parse", "--path-format=absolute", "--git-dir"], in: live)
+    let liveGitdir = try String(contentsOfFile: liveAdmin + "/gitdir", encoding: .utf8)
+    try FileManager.default.removeItem(atPath: liveAdmin + "/gitdir")
+    try wtExpect(!(try f.git(["worktree", "list", "--porcelain"], in: f.repo)).contains(live.lastPathComponent),
+                 "this Git lists an entry whose gitdir file is missing")
+    let blocked = try f.service.prunePreview(in: f.repo.path)
+    try wtExpect(blocked.entries.contains { $0.adminName == live.lastPathComponent } && !blocked.refusals.isEmpty,
+                 "an entry worktree list omits was not in the prune preview, or did not refuse: \(blocked)")
+    _ = try wtRejects("prune ran with an entry whose folder is unknown") {
+        _ = try f.service.prune(in: f.repo.path, acknowledgedNames: blocked.adminNames)
+    }
+    try wtExpect(FileManager.default.fileExists(atPath: liveAdmin), "the refused prune removed the live tree's admin directory")
+    // A tree whose .git link is gone but whose folder remains is refused too.
+    try liveGitdir.write(toFile: liveAdmin + "/gitdir", atomically: true, encoding: .utf8)
+    try FileManager.default.moveItem(atPath: live.path + "/.git", toPath: f.root.path + "/live-dot-git")
+    let unlinked = try f.service.prunePreview(in: f.repo.path)
+    try wtExpect(unlinked.refusals.contains { $0.contains("still exists") }, "a folder that still exists did not refuse prune: \(unlinked.refusals)")
+    try FileManager.default.moveItem(atPath: f.root.path + "/live-dot-git", toPath: live.path + "/.git")
+    let ready = try f.service.prunePreview(in: f.repo.path)
+    try wtExpect(ready.refusals.isEmpty && ready.adminNames == [gone.lastPathComponent], "the stale entry alone was not ready to prune: \(ready)")
+    let pruned = try f.service.prune(in: f.repo.path, acknowledgedNames: ready.adminNames)
+    try wtExpect(pruned.forgottenNames == [gone.lastPathComponent], "prune did not forget the stale entry: \(pruned)")
+    try wtExpect(try f.git(["status", "--porcelain"], in: live).contains("notes.txt"), "the live tree stopped being a worktree")
+
+    // (4) The nested-repository walk counts directories, and running out of
+    // budget is a refusal in the preview, never a failed preview.
+    let heavy = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "gap/heavy", baseRef: "main"))
+    try "deps/\n".write(to: URL(fileURLWithPath: heavy.path).appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
+    try f.git(["add", ".gitignore"], in: URL(fileURLWithPath: heavy.path))
+    try f.git(["commit", "-q", "-m", "ignore deps"], in: URL(fileURLWithPath: heavy.path))
+    let deps = URL(fileURLWithPath: heavy.path).appendingPathComponent("deps")
+    try FileManager.default.createDirectory(at: deps, withIntermediateDirectories: true)
+    for index in 0..<60 { FileManager.default.createFile(atPath: deps.appendingPathComponent("file-\(index)").path, contents: Data()) }
+    let small = ManagedWorktreeService(store: f.store, environment: ["PATH": "/usr/bin:/bin", "HOME": f.root.path], nestedDirectoryBudget: 40)
+    let manyFiles = try small.cleanupPreview(heavy, livePaneFolders: [], otherRuntimeStateFiles: [])
+    try wtExpect(!manyFiles.refusals.contains { $0.contains("too large") }, "files counted against the directory budget: \(manyFiles.refusals)")
+    for index in 0..<60 { try FileManager.default.createDirectory(at: deps.appendingPathComponent("dir-\(index)"), withIntermediateDirectories: true) }
+    let manyDirectories = try small.cleanupPreview(heavy, livePaneFolders: [], otherRuntimeStateFiles: [])
+    try wtExpect(manyDirectories.refusals.contains { $0.contains("too large") }, "an over-budget walk was not a refusal in the preview: \(manyDirectories.refusals)")
 }
