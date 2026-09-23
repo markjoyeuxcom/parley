@@ -1765,11 +1765,10 @@ final class AppModel: ObservableObject {
             guard !branch.isEmpty, branch != "HEAD", branch != "(detached)" else {
                 throw ReviewedCommandRunError.invalid("This worktree is on a detached HEAD, so there is no branch to merge. Check out or create a branch in it first.")
             }
-            try WorktreeNaming.validateBranch(branch)
+            let argv = try WorktreeIntegration.mergeArgv(branch: branch)
             guard let workspace = activeWorkspace ?? workspaces.first else {
                 throw ReviewedCommandRunError.invalid("Open a workspace first; the run's Shell pane needs one.")
             }
-            let argv = ["/usr/bin/git", "merge", "--no-ff", "--no-edit", "--end-of-options", branch]
             let run = try core.commandRuns.propose(argv: argv, folder: primaryPath, workspaceID: workspace.workspaceID, workspaceName: workspace.name)
             commandRuns = core.commandRuns.runs()
             DispatchQueue.main.async { [weak self] in
@@ -2039,11 +2038,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Prune…: Git forgets every registration whose folder is gone. Git has
-    /// no per-entry prune, so the preview lists them all and the person
-    /// acknowledges that list; nothing on disk and no branch changes. Parley
-    /// records for forgotten entries are cleared, since Git no longer knows
-    /// the tree and the person just acknowledged that.
+    /// Prune…: Git forgets every registration its own dry run
+    /// (`worktree prune -n -v`) names. Git has no per-entry prune, so the
+    /// preview lists them all with Git's reasons and the person acknowledges
+    /// that list; nothing on disk and no branch changes. Parley refuses when
+    /// any entry's folder still exists or cannot be known, because pruning
+    /// would leave that folder's files outside the repository. Parley records
+    /// for forgotten entries are cleared.
     func pruneWorktrees(in entry: WorktreeRepositoryEntry) {
         guard let service = managedWorktreeService, let store = managedWorktreeStore else { return }
         Task { @MainActor [weak self] in
@@ -2065,32 +2066,45 @@ final class AppModel: ObservableObject {
             guard !preview.entries.isEmpty else {
                 let none = NSAlert()
                 none.messageText = "Nothing to prune"
-                none.informativeText = "Git lists no worktree entry of \(entry.name) as prunable. Nothing was changed."
+                none.informativeText = "Git would prune no worktree entry of \(entry.name). Nothing was changed."
                 none.runModal()
+                return
+            }
+            let listed = preview.entries.map { item in
+                "• \(item.adminName): \(item.reason)"
+                    + (item.folder.map { " — \(DelegationGitFacts.displayPath($0))" } ?? "")
+                    + (item.branch.map { " (\($0))" } ?? "")
+            }.joined(separator: "\n")
+            guard preview.refusals.isEmpty else {
+                let refused = NSAlert()
+                refused.messageText = "Parley will not prune \(entry.name)"
+                refused.informativeText = "Git has no per-entry prune, and it would also remove entries a worktree may still use:\n\n"
+                    + preview.refusals.map { "• " + $0 }.joined(separator: "\n") + "\n\nEverything Git would prune:\n" + listed + "\n\nNothing was changed."
+                refused.alertStyle = .warning
+                refused.runModal()
                 return
             }
             let alert = NSAlert()
             alert.messageText = "Forget \(preview.entries.count) stale worktree entr\(preview.entries.count == 1 ? "y" : "ies") of \(entry.name)?"
-            alert.informativeText = "Git will forget these registrations, whose folders are gone. Git has no per-entry prune, so every prunable entry of the repository is included. No folder is touched and no branch is deleted; Parley clears its own records for them.\n\n"
-                + preview.entries.map { "• \(DelegationGitFacts.displayPath($0.path))" + ($0.branch.map { " (\($0.hasPrefix("refs/heads/") ? String($0.dropFirst(11)) : $0))" } ?? "") }.joined(separator: "\n")
+            alert.informativeText = "Git will forget these registrations, whose folders are gone, as its own dry run lists them. Git has no per-entry prune, so every entry it would prune is included. No folder is touched and no branch is deleted; Parley clears its own records for them.\n\n"
+                + listed
             alert.alertStyle = .warning
             alert.addButton(withTitle: "Prune")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
-            let acknowledged = preview.paths
-            let outcome = await Task.detached(priority: .userInitiated) { [service, folder, acknowledged] in Result { try service.prune(in: folder, acknowledgedPaths: acknowledged) } }.value
+            let acknowledged = preview.adminNames
+            let outcome = await Task.detached(priority: .userInitiated) { [service, folder, acknowledged] in Result { try service.prune(in: folder, acknowledgedNames: acknowledged) } }.value
             let result = NSAlert()
             switch outcome {
             case let .success(pruned):
-                for path in pruned.forgotten {
+                for path in pruned.forgottenFolders {
                     for record in self.managedWorktrees where Self.samePathSpelling(record.path, path) { try? store.remove(id: record.id) }
                 }
                 result.messageText = pruned.remaining.isEmpty ? "Stale entries forgotten" : "Some entries remain"
                 result.informativeText = pruned.detail
                 result.alertStyle = pruned.remaining.isEmpty ? .informational : .warning
                 // The branches those entries held are now deletable; offer that step separately, one confirmation each.
-                let releasedBranches = preview.entries.filter { pruned.forgotten.contains($0.path) }
-                    .compactMap { $0.branch.map { $0.hasPrefix("refs/heads/") ? String($0.dropFirst(11)) : $0 } }
+                let releasedBranches = pruned.forgottenBranches
                 if !releasedBranches.isEmpty {
                     result.informativeText += "\n\nThe branch\(releasedBranches.count == 1 ? "" : "es") \(releasedBranches.joined(separator: ", ")) \(releasedBranches.count == 1 ? "is" : "are") kept. Delete Branch\(releasedBranches.count == 1 ? "" : "es")… runs git branch -d for each, one confirmation at a time; Git refuses any that is unmerged."
                     result.addButton(withTitle: "OK")
@@ -2141,10 +2155,19 @@ final class AppModel: ObservableObject {
                 lines.append("A stale worktree entry at \(DelegationGitFacts.displayPath(checkedOut)) still holds it, so Git will refuse. Prune that entry first; the branch step is offered again afterwards.")
             } else if let checkedOut = preview.checkedOutAt {
                 lines.append("It is checked out at \(DelegationGitFacts.displayPath(checkedOut)); Git will refuse to delete it. Remove or switch that worktree first.")
+            } else if let upstream = preview.upstream {
+                // Git's rule: with an upstream, -d checks the upstream, not HEAD.
+                let name = upstream.hasPrefix("refs/remotes/") ? String(upstream.dropFirst("refs/remotes/".count)) : upstream
+                if preview.mergedIntoUpstream == true {
+                    lines.append("Its commit is on its upstream \(name), by this repository's last fetch, so Git will delete the name"
+                        + (preview.mergedIntoPrimaryHead ? " and the primary checkout's HEAD contains it too." : ". The primary checkout's HEAD does NOT contain it: afterwards it is kept only by \(name) and the remote it tracks."))
+                } else {
+                    lines.append("Its commit is NOT on its upstream \(name), so Git will refuse with -d, and Parley never uses -D; push or merge it first if you want to keep it.")
+                }
             } else if preview.mergedIntoPrimaryHead {
-                lines.append("Its commit is contained in the primary checkout's HEAD, so nothing is lost by deleting the name.")
+                lines.append("It has no upstream, and its commit is contained in the primary checkout's HEAD, so nothing is lost by deleting the name.")
             } else {
-                lines.append("Its commit is NOT contained in the primary checkout's HEAD. Git will refuse with -d, and Parley never uses -D; merge or push it first if you want to keep it.")
+                lines.append("It has no upstream, and its commit is NOT contained in the primary checkout's HEAD. Git will refuse with -d, and Parley never uses -D; merge or push it first if you want to keep it.")
             }
             lines.append("Parley runs one git branch -d. No folder, object or other ref changes.")
             alert.informativeText = lines.joined(separator: "\n\n")
@@ -2152,7 +2175,8 @@ final class AppModel: ObservableObject {
             alert.addButton(withTitle: "Delete Branch")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
-            let outcome = await Task.detached(priority: .userInitiated) { [service, branch, primaryPath] in Result { try service.deleteBranch(branch, in: primaryPath) } }.value
+            let expected = preview.commit
+            let outcome = await Task.detached(priority: .userInitiated) { [service, branch, primaryPath, expected] in Result { try service.deleteBranch(branch, expectedCommit: expected, in: primaryPath) } }.value
             let result = NSAlert()
             switch outcome {
             case let .success(.deleted(commit)):
@@ -2186,7 +2210,6 @@ final class AppModel: ObservableObject {
             let candidates = entry.linked.filter { tree in
                 tree.pruneReason == nil && [.integrated, .unused].contains(self.worktreeManagerRow(for: tree).state)
             }
-            let statesByPath = Dictionary(uniqueKeysWithValues: candidates.map { ($0.path, self.worktreeManagerRow(for: $0).state) })
             guard !candidates.isEmpty else {
                 let none = NSAlert()
                 none.messageText = "Nothing to remove"
@@ -2212,16 +2235,25 @@ final class AppModel: ObservableObject {
             }
             let folders: [String]
             do { folders = try self.livePaneFoldersForCleanup() } catch { NSAlert(error: error).runModal(); return }
+            // Labels come from facts read now, beside each preview, not from
+            // the board's cached reading: a tree that gained work since the
+            // board last read it is skipped rather than called Unused.
             let previews = await Task.detached(priority: .userInitiated) { [service, records, folders, stateFiles] in
-                records.map { record in Result { try service.cleanupPreview(record, livePaneFolders: folders, otherRuntimeStateFiles: stateFiles) }.map { WorktreeBulkRemovalPlan.Item(record: record, preview: $0) } }
+                records.map { record in
+                    Result { try service.cleanupPreview(record, livePaneFolders: folders, otherRuntimeStateFiles: stateFiles) }
+                        .map { (preview: $0, state: WorktreeBulkRemovalPlan.freshState(record: record, facts: service.facts(for: record))) }
+                }
             }.value
             var items: [WorktreeBulkRemovalPlan.Item] = []
             var unreadable: [String] = []
             for (record, result) in zip(records, previews) {
                 switch result {
-                case let .success(item):
-                    items.append(WorktreeBulkRemovalPlan.Item(record: item.record, preview: item.preview,
-                        state: statesByPath[item.record.path] ?? statesByPath.first { Self.samePathSpelling($0.key, item.record.path) }?.value ?? .integrated))
+                case let .success(read):
+                    guard let state = read.state else {
+                        unreadable.append("\(record.branch): no longer reads Integrated or Unused")
+                        continue
+                    }
+                    items.append(WorktreeBulkRemovalPlan.Item(record: record, preview: read.preview, state: state))
                 case let .failure(error): unreadable.append("\(record.branch): \(error.localizedDescription)")
                 }
             }
@@ -2265,7 +2297,7 @@ final class AppModel: ObservableObject {
                 let record = item.record
                 let acknowledged = item.preview.ignoredPaths
                 let outcome = await Task.detached(priority: .userInitiated) { [service, record, acknowledged, currentFolders, stateFiles] in
-                    Result { try service.remove(record, acknowledgedIgnoredPaths: acknowledged, livePaneFolders: currentFolders, otherRuntimeStateFiles: stateFiles) }
+                    Result { try service.remove(record, confirmed: .removeTree, acknowledgedIgnoredPaths: acknowledged, livePaneFolders: currentFolders, otherRuntimeStateFiles: stateFiles) }
                 }.value
                 switch outcome {
                 case let .success(removal):
@@ -2610,8 +2642,9 @@ final class AppModel: ObservableObject {
                 return
             }
             let acknowledged = preview.ignoredPaths
-            let outcome = await Task.detached(priority: .userInitiated) { [service, record, acknowledged, currentFolders, stateFiles] in
-                Result { try service.remove(record, acknowledgedIgnoredPaths: acknowledged, livePaneFolders: currentFolders, otherRuntimeStateFiles: stateFiles) }
+            let confirmed: WorktreeCleanupAction = preview.decision == .clearRecordOnly ? .clearRecordOnly : .removeTree
+            let outcome = await Task.detached(priority: .userInitiated) { [service, record, confirmed, acknowledged, currentFolders, stateFiles] in
+                Result { try service.remove(record, confirmed: confirmed, acknowledgedIgnoredPaths: acknowledged, livePaneFolders: currentFolders, otherRuntimeStateFiles: stateFiles) }
             }.value
             let result = NSAlert()
             switch outcome {
