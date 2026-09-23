@@ -36,8 +36,10 @@ public enum ReviewDraftError: LocalizedError, Equatable {
     }
 }
 
-/// Produces editable review prompts without a shell, hooks, pagers or optional
-/// index locks. The resulting handoff is bounded before it reaches a terminal.
+/// Produces editable review prompts without hooks, filters, textconv,
+/// external diffs, pagers or optional index locks: every Git command runs
+/// inside `GitReadBoundary`, whose fixed guard is the only shell involved.
+/// The resulting handoff is bounded before it reaches a terminal.
 public final class ReviewDraftBuilder {
     public static let defaultMaximumBytes = 160_000
 
@@ -55,12 +57,7 @@ public final class ReviewDraftBuilder {
         fileManager: FileManager = .default
     ) {
         self.gitExecutable = gitExecutable
-        var reviewEnvironment = environment
-        reviewEnvironment["GIT_OPTIONAL_LOCKS"] = "0"
-        reviewEnvironment["GIT_PAGER"] = "cat"
-        reviewEnvironment["PAGER"] = "cat"
-        reviewEnvironment["LC_ALL"] = "C"
-        self.environment = reviewEnvironment
+        self.environment = GitReadBoundary.environment(environment)
         self.runner = runner
         self.maximumBytes = max(1, maximumBytes)
         self.fileManager = fileManager
@@ -76,11 +73,15 @@ public final class ReviewDraftBuilder {
         guard !root.isEmpty else {
             throw ReviewDraftError.commandFailed("git returned no repository root")
         }
-        let status = try git(in: root, ["status", "--short", "--untracked-files=all"])
+        let readEnvironment = GitReadBoundary.neutralizingFilters(in: root, git: gitExecutable, environment: environment, runner: runner)
+        let status = try git(in: root, ["status", "--short", "--untracked-files=all"] + GitReadBoundary.statusArguments,
+                             environment: readEnvironment)
             .trimmingCharacters(in: .newlines)
-        let staged = try git(in: root, ["diff", "--cached", "--no-ext-diff", "--no-color", "--"])
+        let staged = try git(in: root, ["diff", "--cached", "--no-color"] + GitReadBoundary.diffArguments + ["--"],
+                             environment: readEnvironment)
             .trimmingCharacters(in: .newlines)
-        let working = try git(in: root, ["diff", "--no-ext-diff", "--no-color", "--"])
+        let working = try git(in: root, ["diff", "--no-color"] + GitReadBoundary.diffArguments + ["--"],
+                              environment: readEnvironment)
             .trimmingCharacters(in: .newlines)
         guard !status.isEmpty || !staged.isEmpty || !working.isEmpty else {
             throw ReviewDraftError.noChanges
@@ -154,12 +155,12 @@ public final class ReviewDraftBuilder {
         return ReviewDraft(title: "Review \(selected.lastPathComponent)", text: text)
     }
 
-    private func git(in folder: String, _ arguments: [String]) throws -> String {
-        let output = try runner.run(
-            executable: gitExecutable,
+    private func git(in folder: String, _ arguments: [String], environment readEnvironment: [String: String]? = nil) throws -> String {
+        let output = try GitReadBoundary.run(
+            git: gitExecutable,
             arguments: ["-C", folder, "-c", "core.fsmonitor=false"] + arguments,
-            environment: environment,
-            input: nil
+            environment: readEnvironment ?? environment,
+            runner: runner
         )
         guard output.status == 0 else {
             let stdout = output.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)

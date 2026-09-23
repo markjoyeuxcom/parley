@@ -872,7 +872,8 @@ func worktreeMergeIsolationChecks() throws {
         case " $* " in
           *" merge-tree "*)
             if [ "\(mode)" = "failed" ]; then exit 128; fi
-            /usr/bin/head -c 210000 /dev/zero
+            # A builtin: the read guard lets this wrapper run but not fork.
+            printf '%0210000d' 0
             exit 0 ;;
         esac
         exec /usr/bin/git "$@"

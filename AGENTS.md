@@ -493,6 +493,47 @@ green build or a missing-asset probe.
 Spawn fixed executables with argument arrays. Agent-authored content must never
 be interpolated into a shell command.
 
+Every Git command Parley runs on the host to *read* a repository goes through
+`GitReadBoundary` (22 September 2026, H1 of that day's review): delegation Git
+facts, the pane Git context, worktree discovery, board facts, cleanup and
+merge previews, context Git Diff, review drafts and `ContainerGitAccess`. A
+repository's configuration and attributes can name programs for Git to start
+(clean, smudge and process filters, textconv, external diff, fsmonitor, a lazy
+fetch, a status child per submodule), an agent can write that configuration
+and a container always can, and these reads run with nobody's approval, some
+on a timer and some on an agent's `parley done`. The review reproduced a
+container agent's clean filter running on the Mac that way. Two layers:
+
+- The read runs as `/bin/bash -c 'ulimit -H -S -u 1 && exec "$@"'
+  parley-git-read <git> <args…>`. That fixed script is the one shell on this
+  path; Git's path and arguments are positional parameters it never parses.
+  With the process limit at one, Git runs but every fork it attempts fails, so
+  no configured program can start, including one added between the listing
+  below and the read. This is the race-free layer; `posix_spawn` cannot set a
+  resource limit, and `sandbox-exec` cannot nest inside a vendor's own
+  sandbox, which is why it is a shell.
+- Before status and diff, `git config --list --name-only -z` (itself guarded)
+  names every filter driver in every scope, and `GIT_CONFIG_*` sets each one's
+  clean, smudge and process to empty and `required` to false for that read.
+  Without it a required filter (git-lfs installs one) makes the guarded read
+  fail. An edited file under a filter is then compared as raw bytes and may
+  read as modified. `-c` cannot carry a driver named `a=b`; the environment
+  form can. An empty textconv is an error rather than off, so diffs pass
+  `GitReadBoundary.diffArguments` (`--no-textconv --no-ext-diff
+  --ignore-submodules=dirty --submodule=short`) and status passes
+  `--ignore-submodules=dirty`, which compares a submodule by recorded commit
+  without a child Git.
+
+The read environment drops every inherited `GIT_*`, `BASH_*`, `ENV`,
+`SHELLOPTS`, `BASHOPTS` and `CDPATH` and sets optional locks, prompts, pagers
+and lazy fetch off. The person's own command capture keeps its environment.
+Operations the person confirms (worktree add, remove, prune, `branch -d`,
+Integrate) are Git itself and run outside the guard; `worktree remove` alone
+takes the filter overrides, for the `git status` it runs inside. `--attr-source`
+does not help: it replaces the in-tree `.gitattributes` but not
+`.git/info/attributes`. `GitReadBoundaryChecks` plants every one of these in a
+real repository and requires that no read runs any of them.
+
 A spawned tool must start from a clean signal state. `posix_spawn` otherwise
 hands the child the calling thread's blocked mask, and Swift concurrency and
 the terminal stack run threads with signals blocked. A child that inherits a
@@ -822,7 +863,8 @@ separately from current ownership, and machine timestamps are ISO 8601 while
 
 Parley manages one Git worktree per feature or team, never one per pane, and
 only as lifecycle, evidence and safety around Git. `ManagedWorktrees.swift`
-owns it: `ManagedWorktreeService` runs a fixed `/usr/bin/git` with argv only,
+owns it: `ManagedWorktreeService` runs a fixed `/usr/bin/git` with argv only
+(every read inside `GitReadBoundary`, described under the capability boundary),
 an environment scrubbed of every inherited `GIT_*` variable (locks, prompts
 and pagers disabled), `--end-of-options` before any person-supplied value,
 bounded timeouts and no `--force` anywhere. Branch names and refs are
@@ -1066,8 +1108,8 @@ person-owned with no base; removal is offered through the same preview and
 refusals, identified by Git's registry entry at the recorded path.
 
 Merge previews resolve the chosen integration ref and the tree's HEAD to
-immutable commits, then use fixed-argv Git merge-tree in a private bare
-temporary repository. An alternate object directory is read-only input;
+immutable commits, then use fixed-argv Git merge-tree, inside
+`GitReadBoundary`, in a private bare temporary repository. An alternate object directory is read-only input;
 new objects are written only to temporary storage, which is removed after
 the command. Global/system configuration, templates and external project
 merge drivers are excluded; lazy fetching and replacement objects are
@@ -1168,6 +1210,17 @@ the canonical common directory and its device/inode, all checked again before
 preparation. The native review names that writable mount and its shared refs,
 objects, hooks and configuration; the primary checkout is never mounted.
 Changes to shared hooks or executable Git configuration can cause commands to run on your Mac, outside the container, during later host Git operations. Parley does not review those changes again.
+The same holds for an ordinary container pane whose project mount contains its
+repository's `.git`: the container can rewrite that configuration, hooks and
+attributes. Parley therefore runs no Git for a container pane's delegation or
+return: the broker records `DelegationGitSnapshot.notCaptured` with
+`containerPaneReason` ("Git facts not captured" in Status Center and the
+export; `notCapturedReason` decodes absent as nil), and `compare` gives no path
+comparison. Every other read of such a repository (pane context, board facts,
+cleanup preview, context Git Diff) goes through `GitReadBoundary`. Every
+container review states this (`GitReadBoundary.containerDisclosure`), and the
+Worktrees window footer says that its confirmed actions are Git itself
+(`worktreesDisclosure`).
 Planned folders resolve through their nearest existing parent, so aliases match
 the later inspected tree. Submodule gitdirs are refused with a named reason.
 Working folders cannot contain or sit inside either runtime's control or relay

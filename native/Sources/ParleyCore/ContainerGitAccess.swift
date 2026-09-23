@@ -76,9 +76,9 @@ extension ContainerGitAccess {
                 }
                 let result = try planned(folder: canonicalFolder, commonDirectory: common)
                 let runner = ProcessCommandRunner(timeout: 5, maximumCapturedBytes: 200_001)
-                let output = try runner.run(executable: URL(fileURLWithPath: "/usr/bin/git"),
-                    arguments: ["-C", canonicalFolder, "worktree", "list", "--porcelain", "-z"],
-                    environment: ["PATH": "/usr/bin:/bin", "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat"])
+                let output = try GitReadBoundary.run(git: URL(fileURLWithPath: "/usr/bin/git"),
+                    arguments: ["-C", canonicalFolder, "-c", "core.fsmonitor=false", "worktree", "list", "--porcelain", "-z"],
+                    environment: GitReadBoundary.environment(["PATH": "/usr/bin:/bin"]), runner: runner)
                 guard output.status == 0, output.stdout.count <= 200_000,
                       RegisteredWorktree.parse(output.stdout).contains(where: { (try? canonical($0.path)) == canonicalFolder }) else {
                     throw ContainerPaneError.refused("Git no longer lists this linked worktree.")
