@@ -380,6 +380,22 @@ missing, same-pane, shell and busy targets. Permit same-vendor routing only
 between distinct panes. Allow at most one unanswered consultation or active
 delegation per target.
 
+A person's reviewed Ask (composer, their own context pack, Review) keeps
+its draft until the broker accepts it (22 September 2026, M9): the draft is
+cleared only when the Ask is launched or queued, Cancel on the busy-queue offer
+keeps it. When the Ask ends without an answer, including a transport error,
+the app reads fresh history and `ReviewedAskHistory.outcome` (by the
+idempotency key the app minted) decides: no record means the broker refused
+before creating one, so the draft comes back and a busy target is offered the
+busy queue; a record that never got past created may already have its text in
+the target's input line (the paste can land and Enter fail), and a delivered
+one stays sent; history that cannot be read is unknown. Only the first gives
+the draft back; every other outcome says what may have happened and offers
+Copy Draft Text, so a question is never offered for sending twice. Busy and existence decisions read
+`latestKnownHandoffs`, the newest record per handoff across Status Center's
+history and the tick's list, because Status Center's list stops refreshing when
+its window closes.
+
 Human Ask and Answer submit only after an editable preview. Answer is the manual completion of an Ask the active pane was asked, for a target that printed its reply without running `parley answer`; the toolbar shows it only while such an Ask is waiting, and it completes the waiting command directly without pasting into either pane. A real current
 Ghostty selection may prefill it; otherwise it starts empty. Never capture
 scrollback or a whole conversation implicitly. The composer is inline chrome,

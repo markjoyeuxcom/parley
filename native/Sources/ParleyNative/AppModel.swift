@@ -222,6 +222,12 @@ final class AppModel: ObservableObject {
     @Published private(set) var unreadHandoffs: [RelayHandoff] = [] {
         didSet { attentionInputGeneration &+= 1 }
     }
+    /// Status Center's history and the tick's short list, newest record per
+    /// handoff. Status Center's list stops refreshing when its window closes,
+    /// so reading either one alone could show stale busy state or miss a
+    /// handoff that just finished (review of 22 Sep 2026, M9).
+    var latestKnownHandoffs: [RelayHandoff] { ReviewedAskHistory.newestPerHandoff(statusHandoffs, handoffs) }
+
     @Published private(set) var statusHandoffs: [RelayHandoff] = [] {
         didSet { attentionInputGeneration &+= 1 }
     }
@@ -1406,7 +1412,7 @@ final class AppModel: ObservableObject {
             releaseLifecycleMessage = "Run the quota-free compatibility check before reviewing a feedback bundle."
             return
         }
-        var history = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        var history = latestKnownHandoffs
         var activity = statusActivityEvents
         if let relayClient, let refreshed = try? relayClient.handoffs(limit: 500) {
             history = refreshed
@@ -1477,7 +1483,7 @@ final class AppModel: ObservableObject {
         panel.nameFieldStringValue = Self.diagnosticsFilename()
         guard panel.runModal() == .OK, let destination = panel.url else { return }
 
-        var history = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        var history = latestKnownHandoffs
         var activity = statusActivityEvents
         if let relayClient, let refreshed = try? relayClient.handoffs(limit: 500) {
             history = refreshed
@@ -2761,7 +2767,7 @@ final class AppModel: ObservableObject {
             )
         }
 
-        let activity = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        let activity = latestKnownHandoffs
         commands += activity.prefix(30).map { handoff in
             let subject = Self.paletteSubject(handoff.text)
             return PaletteCommand(
@@ -3150,7 +3156,7 @@ final class AppModel: ObservableObject {
             return false
         case let .handoff(handoffID):
             refreshStatusCenterQuietly()
-            let history = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+            let history = latestKnownHandoffs
             guard history.contains(where: { $0.id == handoffID }) else {
                 NSAlert(error: RelayUIError.message("That Parley handoff is no longer in the local Status Center record.")).runModal()
                 return false
@@ -4220,7 +4226,7 @@ final class AppModel: ObservableObject {
     func statusSnapshot(workspaceID: String?, includeDismissed: Bool = false) -> StatusCenterSnapshot {
         StatusCenterProjection.snapshot(
             panes: panes,
-            handoffs: statusHandoffs.isEmpty ? handoffs : statusHandoffs,
+            handoffs: latestKnownHandoffs,
             activityEvents: statusActivityEvents,
             workspaceID: workspaceID,
             coreAvailable: coreAvailable,
@@ -4240,11 +4246,7 @@ final class AppModel: ObservableObject {
     }
 
     func reviewedBusyDraftTargetIsBusy(_ draft: ReviewedBusyDraft) -> Bool {
-        let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
-        let knownHistory = statusHandoffs.isEmpty ? handoffs : statusHandoffs
-        return knownHistory.contains {
-            $0.targetPaneID == draft.targetPaneID && activeStates.contains($0.state)
-        }
+        ReviewedAskHistory.targetHasTrackedWork(draft.targetPaneID, in: latestKnownHandoffs)
     }
 
     func canFocusReviewedBusyDraftPane(_ paneID: String) -> Bool {
@@ -4442,7 +4444,7 @@ final class AppModel: ObservableObject {
     }
 
     func exportWorkspaceHistory(for workspace: WorkbenchWorkspace) {
-        let source = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        let source = latestKnownHandoffs
         let records = CollaborationHistoryProjection.records(
             source,
             involvingWorkspaceID: workspace.workspaceID
@@ -5240,11 +5242,7 @@ final class AppModel: ObservableObject {
     }
 
     func handoffReviewTargetIsBusy(_ pane: WorkbenchPane) -> Bool {
-        let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
-        let knownHistory = statusHandoffs.isEmpty ? handoffs : statusHandoffs
-        return knownHistory.contains {
-            $0.targetPaneID == pane.id && activeStates.contains($0.state)
-        }
+        ReviewedAskHistory.targetHasTrackedWork(pane.id, in: latestKnownHandoffs)
     }
 
     func canOfferHandoffReview(_ handoff: RelayHandoff) -> Bool {
@@ -5360,12 +5358,25 @@ final class AppModel: ObservableObject {
             }) else {
                 throw RelayUIError.message("The reviewed source or target pane is no longer available. Nothing was sent.")
             }
-            try submitOrOfferBusyQueue(
+            let submission = try submitOrOfferBusyQueue(
                 edited,
                 from: source,
                 to: target,
-                preserveFormatting: false
+                preserveFormatting: false,
+                onUnanswered: { [weak self] failure in
+                    self?.handleUnansweredAsk(
+                        failure, text: edited, from: source, to: target, preserveFormatting: false,
+                        restore: { [weak self] in
+                            // An empty composer opened since then is not a draft to protect.
+                            guard let self, self.handoffComposerDraft.map({ RelayText.clean($0.text).isEmpty }) ?? true else { return false }
+                            self.handoffComposerDraft = draft
+                            return true
+                        }
+                    )
+                }
             )
+            // Cancel on the busy-queue offer keeps the draft in the composer.
+            guard submission != .cancelled else { return }
             handoffComposerDraft = nil
             try refresh()
             terminalHandle.clearSelection()
@@ -6101,12 +6112,26 @@ final class AppModel: ObservableObject {
                 )
                 return
             }
-            try submitOrOfferBusyQueue(
+            let submission = try submitOrOfferBusyQueue(
                 rendered,
                 from: source,
                 to: target,
-                preserveFormatting: true
+                preserveFormatting: true,
+                onUnanswered: { [weak self] failure in
+                    self?.handleUnansweredAsk(
+                        failure, text: rendered, from: source, to: target, preserveFormatting: true,
+                        restore: { [weak self] in
+                            // An empty pack opened since then is not a draft to protect.
+                            guard let self, self.contextPackDraft.map({ $0.pack.parts.isEmpty }) ?? true else { return false }
+                            self.contextPackDraft = draft
+                            self.contextPackPresented = true
+                            return true
+                        }
+                    )
+                }
             )
+            // Cancel on the busy-queue offer keeps the pack open.
+            guard submission != .cancelled else { return }
             contextPackPresented = false
             contextPackDraft = nil
             try refresh()
@@ -7991,45 +8016,66 @@ final class AppModel: ObservableObject {
             action: "Ask for Review",
             insertVisible: { try controller.capturePane(source.id) }
         ) else { return }
-        try submitOrOfferBusyQueue(
+        let submission = try submitOrOfferBusyQueue(
             edited,
             from: source,
             to: target,
-            preserveFormatting: false
+            preserveFormatting: false,
+            onUnanswered: { [weak self] failure in
+                // The review was edited in a dialog, so there is no draft to
+                // reopen; its text can be copied.
+                self?.handleUnansweredAsk(
+                    failure, text: edited, from: source, to: target, preserveFormatting: false,
+                    restore: { false },
+                    notRestoredNote: "The review text was edited in a dialog that has closed; copy it to keep it, or start the review again."
+                )
+            }
         )
+        guard submission != .cancelled else { return }
         try refresh()
         terminalHandle.clearSelection()
         terminalHandle.focus()
     }
 
+    /// What became of a reviewed Ask the person sent: only `launched` and
+    /// `queued` may clear the draft it came from.
+    private enum ReviewedAskSubmission { case launched, queued, cancelled }
+
     private func submitOrOfferBusyQueue(
         _ text: String,
         from source: WorkbenchPane,
         to target: WorkbenchPane,
-        preserveFormatting: Bool
-    ) throws {
-        let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
-        let knownHistory = statusHandoffs.isEmpty ? handoffs : statusHandoffs
-        let targetIsBusy = knownHistory.contains {
-            $0.targetPaneID == target.id && activeStates.contains($0.state)
-        }
-        guard targetIsBusy else {
+        preserveFormatting: Bool,
+        onUnanswered: @escaping @MainActor (ReviewedAskFailure) -> Void
+    ) throws -> ReviewedAskSubmission {
+        guard ReviewedAskHistory.targetHasTrackedWork(target.id, in: latestKnownHandoffs) else {
             try launchTrackedAsk(
                 text,
                 from: source,
                 to: target,
-                preserveFormatting: preserveFormatting
+                preserveFormatting: preserveFormatting,
+                onUnanswered: onUnanswered
             )
-            return
+            return .launched
         }
+        return try offerBusyQueue(text, from: source, to: target, preserveFormatting: preserveFormatting) ? .queued : .cancelled
+    }
 
+    /// Offers the local busy queue for a reviewed Ask to a target that
+    /// already has tracked work. Returns whether the draft was queued.
+    private func offerBusyQueue(
+        _ text: String,
+        from source: WorkbenchPane,
+        to target: WorkbenchPane,
+        preserveFormatting: Bool
+    ) throws -> Bool {
         let alert = NSAlert()
         alert.messageText = "\(target.displayName) Already Has Tracked Work"
         alert.informativeText = "Keep this exact reviewed Ask in Parley's local busy queue? It remains visible and unsent. When \(target.displayName) becomes idle, Parley will still wait for you to reopen, review and explicitly send it."
         alert.alertStyle = .informational
         alert.addButton(withTitle: "Keep Reviewed Draft")
         alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
         guard let relayClient else {
             throw RelayUIError.message("The app-resident core is unavailable, so Parley cannot keep this draft safely.")
         }
@@ -8039,42 +8085,140 @@ final class AppModel: ObservableObject {
             text: text,
             preserveFormatting: preserveFormatting
         ))
+        return true
     }
 
+    /// Why a person's reviewed Ask ended without an answer, as far as the app
+    /// can tell. Only `refused` gives the draft back; every other case keeps
+    /// it sent (or possibly sent) and offers its text for copying, so the
+    /// same question is never offered for sending twice.
+    enum ReviewedAskFailure {
+        case refused(reason: String, targetBusy: Bool)
+        case deliveryMayHaveStarted(reason: String)
+        case deliveredThenFailed(reason: String)
+        case unknown(reason: String)
+    }
+
+    /// Launches the person's reviewed Ask off the main actor. On any outcome
+    /// other than an answer, including a transport error, it reads fresh
+    /// history and reports what became of the Ask through `onUnanswered` on
+    /// the main actor.
     private func launchTrackedAsk(
         _ text: String,
         from source: WorkbenchPane,
         to target: WorkbenchPane,
-        preserveFormatting: Bool
+        preserveFormatting: Bool,
+        onUnanswered: @escaping @MainActor (ReviewedAskFailure) -> Void
     ) throws {
         guard let relayClient else {
             throw RelayUIError.message("The app-resident core is unavailable, so this reviewed Ask was not sent.")
         }
         let idempotencyKey = UUID().uuidString.lowercased()
+        let sourceID = source.id
+        let targetID = target.id
         Task { [weak self] in
-            do {
-                let response = try await Task.detached(priority: .userInitiated) {
+            let (result, history) = await Task.detached(priority: .userInitiated) { () -> (Result<RelayTextResponse, Error>, [RelayHandoff]?) in
+                let result = Result {
                     try relayClient.askFromUI(
-                        sourcePaneID: source.id,
-                        targetPaneID: target.id,
+                        sourcePaneID: sourceID,
+                        targetPaneID: targetID,
                         text: text,
                         idempotencyKey: idempotencyKey,
                         preserveFormatting: preserveFormatting
                     )
-                }.value
-                self?.refreshStatusCenterQuietly()
-                guard response.status == 200 else {
-                    throw RelayUIError.message(response.text)
                 }
+                if case let .success(response) = result, response.status == 200 { return (result, nil) }
+                // Unanswered: what became of it? Nil when history cannot be read.
+                return (result, try? relayClient.handoffs(limit: 500))
+            }.value
+            self?.refreshStatusCenterQuietly()
+            if case let .success(response) = result, response.status == 200 {
                 // The answer is durable by now, but a person who asked from this
                 // pane saw nothing: it was only a Result badge and an unread
                 // count. Reveal the exact completed handoff, found by the key
                 // this app minted, so the answer is on screen when it arrives.
                 self?.revealCompletedUIAsk(idempotencyKey: idempotencyKey)
-            } catch {
-                self?.refreshStatusCenterQuietly()
-                NSAlert(error: error).runModal()
+                return
             }
+            let reason = switch result {
+            case let .success(response): response.text
+            case let .failure(error): error.localizedDescription
+            }
+            guard let history else {
+                onUnanswered(.unknown(reason: reason))
+                return
+            }
+            switch ReviewedAskHistory.outcome(idempotencyKey: idempotencyKey, in: history) {
+            case .refusedBeforeDelivery:
+                onUnanswered(.refused(reason: reason, targetBusy: ReviewedAskHistory.targetHasTrackedWork(targetID, in: history)))
+            case .deliveryMayHaveStarted:
+                onUnanswered(.deliveryMayHaveStarted(reason: reason))
+            case .delivered:
+                onUnanswered(.deliveredThenFailed(reason: reason))
+            }
+        }
+    }
+
+    /// Tells the person what became of an unanswered reviewed Ask. A refused
+    /// one gives its draft back (`restore` reopens it where nothing else took
+    /// its place) and offers the busy queue for a busy target; every other
+    /// outcome says what may have happened and offers the text for copying.
+    private func handleUnansweredAsk(
+        _ failure: ReviewedAskFailure,
+        text: String,
+        from source: WorkbenchPane,
+        to target: WorkbenchPane,
+        preserveFormatting: Bool,
+        restore: () -> Bool,
+        notRestoredNote: String = "Another draft is open in its place, so this one was not reopened; copy its text to keep it."
+    ) {
+        let title: String
+        let detail: String
+        switch failure {
+        case let .refused(reason, targetBusy):
+            // A busy target is offered the queue first, so a queued draft never
+            // needs reopening; declined, the draft comes back quietly because
+            // the offer already said why it was not sent.
+            var offeredQueue = false
+            if targetBusy {
+                do {
+                    if try offerBusyQueue(text, from: source, to: target, preserveFormatting: preserveFormatting) { return }
+                    offeredQueue = true
+                } catch {
+                    NSAlert(error: error).runModal()
+                }
+            }
+            let restored = restore()
+            if restored && offeredQueue { return }
+            title = "Nothing was sent to \(target.displayName)"
+            detail = reason + "\n\n" + (restored ? "Your reviewed draft is back where you wrote it." : notRestoredNote)
+            if restored {
+                let alert = NSAlert()
+                alert.messageText = title
+                alert.informativeText = detail
+                alert.alertStyle = .warning
+                alert.runModal()
+                return
+            }
+        case let .deliveryMayHaveStarted(reason):
+            title = "Parley could not finish sending this Ask to \(target.displayName)"
+            detail = reason + "\n\nIts text may already be in \(target.displayName)'s input line. Check that pane before sending it again."
+        case let .deliveredThenFailed(reason):
+            title = "\(target.displayName) received this Ask but did not answer"
+            detail = reason + "\n\nThe question was delivered, so it was not reopened; copy its text if you want to ask again."
+        case let .unknown(reason):
+            title = "Parley could not confirm whether this Ask reached \(target.displayName)"
+            detail = reason + "\n\nCheck Status Center before sending it again."
+        }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Copy Draft Text")
+        if alert.runModal() == .alertSecondButtonReturn {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
         }
     }
 
@@ -8084,7 +8228,7 @@ final class AppModel: ObservableObject {
     /// written to unrequested. Delivering the answer onward stays an explicit
     /// person action with its own editable preview.
     private func revealCompletedUIAsk(idempotencyKey: String) {
-        let history = statusHandoffs.isEmpty ? handoffs : statusHandoffs
+        let history = latestKnownHandoffs
         guard let handoff = history.first(where: { $0.idempotencyKey == idempotencyKey && $0.kind == .ask }) else { return }
         guard openAttentionNavigation(.handoff(handoff.id)) else { return }
         statusCenterOpenRequestID = UUID()
