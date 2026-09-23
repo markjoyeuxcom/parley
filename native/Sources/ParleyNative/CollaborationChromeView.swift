@@ -1,5 +1,6 @@
 import AppKit
 import ParleyCore
+import ParleyUI
 import SwiftUI
 
 struct HandoffComposerView: View {
@@ -9,7 +10,6 @@ struct HandoffComposerView: View {
     /// alone, their first keystrokes go to that terminal and the box looks
     /// dead until clicked. Focus is requested when the composer appears and
     /// again for each new draft.
-    @FocusState private var editorFocused: Bool
 
     @ViewBuilder
     var body: some View {
@@ -88,12 +88,20 @@ struct HandoffComposerView: View {
                     }
                 }
 
-                TextEditor(text: Binding(
-                    get: { model.handoffComposerDraft?.text ?? "" },
-                    set: { text in model.updateHandoffComposerText(text) }
-                ))
-                .font(.system(size: 11, design: .monospaced))
-                .scrollContentBackground(.hidden)
+                // A plain editor: a message to an agent often carries a command
+                // or code, and macOS smart quotes and dashes would change it.
+                PlainTextEditor(
+                    text: Binding(
+                        get: { model.handoffComposerDraft?.text ?? "" },
+                        set: { text in model.updateHandoffComposerText(text) }
+                    ),
+                    isEditable: !model.submittingHandoffComposer,
+                    accessibilityLabel: "Message to \(draft.targetName)",
+                    font: .monospacedSystemFont(ofSize: 11, weight: .regular),
+                    drawsBackground: false,
+                    // Asks for focus when it appears and again for each new draft.
+                    focusRequest: draft.id
+                )
                 .padding(5)
                 .frame(height: composerHeight(for: draft.text))
                 .background(Color(nsColor: .textBackgroundColor))
@@ -101,9 +109,6 @@ struct HandoffComposerView: View {
                     RoundedRectangle(cornerRadius: 4, style: .continuous)
                         .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
                 }
-                .disabled(model.submittingHandoffComposer)
-                .focused($editorFocused)
-                .accessibilityLabel("Message to \(draft.targetName)")
 
                 HStack(spacing: 8) {
                     if draft.includesTerminalSelection {
@@ -153,10 +158,6 @@ struct HandoffComposerView: View {
             .padding(.vertical, 9)
             .background(Color.accentColor.opacity(0.045))
             .accessibilityElement(children: .contain)
-            // Deferred one turn: the editor is not yet in the window when
-            // onAppear fires, and a focus request made before that is dropped.
-            .onAppear { DispatchQueue.main.async { editorFocused = true } }
-            .onChange(of: draft.id) { _, _ in DispatchQueue.main.async { editorFocused = true } }
         }
     }
 

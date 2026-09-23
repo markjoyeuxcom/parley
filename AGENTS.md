@@ -844,13 +844,21 @@ fails and says so, so the person runs it themselves in a Shell.
 
 The approval preview's argument editor is `PlainTextEditor` (ParleyUI), an
 AppKit text view with every automatic substitution, correction and detector
-off; the Command Result capture's argument lines and the context pack's
-part and selection editors use it too. A SwiftUI `TextEditor` leaves macOS
+off. Every box whose text is approved or sent uses it: the Command Result
+capture's argument lines, the context pack's part, selection and
+instruction editors, the team objective and the handoff composer (which
+asks for focus through `focusRequest`, set to the draft id, in place of
+`@FocusState`). Only the voice transcript and Status Center's verdict note
+remain SwiftUI editors. Each `PlainTextEditor` keeps its own undo manager,
+cleared whenever its text is replaced from outside, and each context pack
+part has its own editor (`.id(part.id)`): a reused text view otherwise
+replayed the previous content's undo at offsets past the new text's end. A SwiftUI `TextEditor` leaves macOS
 smart quotes on, so on 23 September 2026 (v0.1.61) a closing `"` became `”`
 and approval failed with "The data couldn't be read because it isn't in the
 correct format". `ReviewedCommand.display` writes slashes as they are rather
 than `\/`, and `ReviewedCommand.parseDisplay` names a typographic quote in
-its error instead of rewriting it, because an argument may contain one.
+its error only when straightening the quotes makes the array parse, never
+rewriting it, because an argument may contain one.
 `CommandRunArgvEditorChecks` pins all three.
 
 Per-run approval is the default. Optional exact-command session trust is native,

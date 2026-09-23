@@ -189,9 +189,15 @@ public struct ReviewedCommand: Codable, Equatable, Hashable, Sendable {
         do {
             return try JSONDecoder().decode([String].self, from: data)
         } catch {
-            let typographic: [Character] = ["\u{201C}", "\u{201D}", "\u{201E}", "\u{201F}", "\u{2033}", "\u{FF02}"]
+            // Blamed only when straightening them is what makes the array
+            // parse; a curly quote inside an argument is data, and an
+            // unrelated error is reported as itself.
+            let typographic: Set<Character> = ["\u{201C}", "\u{201D}", "\u{201E}", "\u{201F}", "\u{2033}", "\u{FF02}"]
             if let found = text.first(where: { typographic.contains($0) }) {
-                throw ReviewedCommandRunError.invalid("The arguments contain a typographic quote (\(found)). JSON needs plain straight quotes (\") around each argument; replace it and approve again.")
+                let straightened = String(text.map { typographic.contains($0) ? "\"" : $0 })
+                if let data = straightened.data(using: .utf8), (try? JSONDecoder().decode([String].self, from: data)) != nil {
+                    throw ReviewedCommandRunError.invalid("The arguments contain a typographic quote (\(found)). JSON needs plain straight quotes (\") around each argument; replace it and approve again.")
+                }
             }
             throw ReviewedCommandRunError.invalid("The arguments are not a JSON array of strings: \(error.localizedDescription)")
         }

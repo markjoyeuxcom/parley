@@ -237,7 +237,9 @@ struct ContextPackView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                 }
+                // One editor per part: its undo history belongs to that part's text.
                 PlainTextEditor(text: partTextBinding(part.id), accessibilityLabel: "Part text")
+                    .id(part.id)
                     .frame(minHeight: 120)
                     .border(Color.secondary.opacity(0.25))
                 HStack {
@@ -273,8 +275,8 @@ struct ContextPackView: View {
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
             }
-            TextEditor(text: noteBinding)
-                .font(.body)
+            PlainTextEditor(text: noteBinding, accessibilityLabel: "Pack instruction",
+                            font: .systemFont(ofSize: NSFont.systemFontSize))
                 .frame(minHeight: 72, maxHeight: 110)
                 .border(Color.secondary.opacity(0.25))
             Text("This instruction is part of the pack and must be present before Ask or Compare is enabled.")

@@ -1,4 +1,5 @@
 import ParleyCore
+import ParleyUI
 import SwiftUI
 
 struct TeamSessionNotice: View {
@@ -314,9 +315,8 @@ private struct TeamSessionApproval: View {
             Text(TeamSessionDisclosure.approval).font(.system(size: 12))
             Text("Objective (edit freely; the requesting pane receives the approved text)")
                 .font(.system(size: 11, weight: .medium))
-            TextEditor(text: $objective).font(.system(size: 12))
+            PlainTextEditor(text: $objective, accessibilityLabel: "Approved objective", font: .systemFont(ofSize: 12))
                 .frame(height: 90).border(Color.secondary.opacity(0.3))
-                .accessibilityLabel("Approved objective")
             TextField("Working folder (inside the requesting pane's working folder)", text: $folder).textFieldStyle(.roundedBorder)
                 .onChange(of: folder) { _, _ in worktreePreview = nil; worktreePreviewError = nil; existingWorktreePath = "" }
             worktreeSection
