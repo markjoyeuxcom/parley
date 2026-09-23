@@ -136,7 +136,7 @@ public enum ParleyHelpGuide {
                     ],
                     items: [
                         "Attach zero, one or several folders for opening and search. Attachment order is presentation metadata; attaching, moving or removing one never changes a pane or grants filesystem permission.",
-                        "The toolbar's Pane menu offers Shell and Agent. A shell opens at once; Agent opens the permission review, whose Vendor row is where you choose Claude Code, Codex, Agy or Copilot, preselected with the last vendor you started. Pane > New Agent Pane… (Option-Command-N) does the same, and the New Claude, Codex, Agy and Copilot Pane items (Shift-Command-1, 2, 3 and 5) open that review with their vendor preselected.",
+                        "The toolbar's Pane menu offers Shell and Agent. A shell opens at once; Agent opens the permission review, whose Vendor row is where you choose Claude Code, Codex, Agy or Copilot, preselected with the last vendor you started. Pane > New Agent Pane… (Option-Command-N) does the same, and the New Claude, Codex, Agy and Copilot Pane items (Option-Command-1, 2, 3 and 5) open that review with their vendor preselected; New Shell Pane is Option-Command-4.",
                         "Split Right and Split Below use the optional New Pane Folder. When it is clear, shells follow the active pane and a new agent asks for an explicit working folder.",
                         "When the active pane has moved elsewhere, Split Right Here and Split Below Here explicitly use that pane's current folder.",
                         "Changing the New Pane Folder does not move or restart running panes.",
@@ -1052,11 +1052,11 @@ public enum ParleyHelpGuide {
                     items: [
                         "Command-Shift-N — New Workspace; creates a folderless, empty workspace. Use Workspace > Open Folder… to open an existing folder with a shell.",
                         "Option-Command-N — New Agent Pane…; opens the permission review with the last vendor you started preselected in its Vendor row.",
-                        "Command-Shift-1 — the same review with Claude Code preselected.",
-                        "Command-Shift-2 — the same review with Codex preselected.",
-                        "Command-Shift-3 — the same review with Agy preselected.",
-                        "Command-Shift-4 — new shell pane, opened at once.",
-                        "Command-Shift-5 — the same review with Copilot preselected.",
+                        "Option-Command-1 — the same review with Claude Code preselected.",
+                        "Option-Command-2 — the same review with Codex preselected.",
+                        "Option-Command-3 — the same review with Agy preselected.",
+                        "Option-Command-4 — new shell pane, opened at once.",
+                        "Option-Command-5 — the same review with Copilot preselected.",
                         "Command-Shift-A — open the exact terminal selection for this source pane's last explicit Ask target; Command-Return remains the separate send confirmation.",
                         "Command-Shift-Return — return an answer through the native pane route.",
                     ]

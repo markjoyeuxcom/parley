@@ -263,8 +263,12 @@ discards a checked image, whose probe was for the previous vendor. The
 Agent entry and Pane › New Agent Pane… (⌥⌘N) preselect
 `AppModel.lastAgentVendor`, the vendor of the last creation review that
 started a pane (a preference, Claude until then); the New Claude, Codex, Agy
-and Copilot Pane items (⇧⌘1, 2, 3 and 5) open the same review with their
-vendor preselected. `PanePermissionRequest.kind` is mutable for that reason
+and Copilot Pane items (⌥⌘1, 2, 3 and 5; New Shell Pane is ⌥⌘4, from
+`PaneCreationShortcut`) open the same review with their
+vendor preselected. They were ⇧⌘1–5 until 23 September 2026, and macOS
+takes ⇧⌘3, 4 and 5 for screenshots before any application sees them;
+`PaneShortcutChecks` keeps them clear of `SystemReservedShortcut` and of
+Parley's own key monitor. `PanePermissionRequest.kind` is mutable for that reason
 and the request id is unchanged, so the model still recognises the review.
 Restart, resume and folder-access reviews have no Vendor row: a pane cannot
 change vendor.

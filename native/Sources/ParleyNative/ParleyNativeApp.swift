@@ -438,15 +438,15 @@ struct ParleyNativeApp: App {
                 Button("New Agent Pane…") { model.createAgent(direction: .horizontal) }
                     .keyboardShortcut("n", modifiers: [.command, .option])
                 Button("New Claude Pane") { model.create(.claude, direction: .horizontal) }
-                    .keyboardShortcut("1", modifiers: [.command, .shift])
+                    .keyboardShortcut(KeyEquivalent(PaneCreationShortcut.key(for: .claude)!), modifiers: [.command, .option])
                 Button("New Codex Pane") { model.create(.codex, direction: .horizontal) }
-                    .keyboardShortcut("2", modifiers: [.command, .shift])
+                    .keyboardShortcut(KeyEquivalent(PaneCreationShortcut.key(for: .codex)!), modifiers: [.command, .option])
                 Button("New Agy Pane") { model.create(.agy, direction: .horizontal) }
-                    .keyboardShortcut("3", modifiers: [.command, .shift])
+                    .keyboardShortcut(KeyEquivalent(PaneCreationShortcut.key(for: .agy)!), modifiers: [.command, .option])
                 Button("New Shell Pane") { model.create(.shell, direction: .horizontal) }
-                    .keyboardShortcut("4", modifiers: [.command, .shift])
+                    .keyboardShortcut(KeyEquivalent(PaneCreationShortcut.key(for: .shell)!), modifiers: [.command, .option])
                 Button("New Copilot Pane") { model.create(.copilot, direction: .horizontal) }
-                    .keyboardShortcut("5", modifiers: [.command, .shift])
+                    .keyboardShortcut(KeyEquivalent(PaneCreationShortcut.key(for: .copilot)!), modifiers: [.command, .option])
                 Divider()
                 Button(model.quickRelayTarget.map { "Ask \($0.displayName) with Selection…" } ?? "Ask Last Target with Selection…") {
                     model.quickRelaySelection()
