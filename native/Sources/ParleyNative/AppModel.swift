@@ -5514,7 +5514,7 @@ final class AppModel: ObservableObject {
         case .verify:
             request = "Verify this returned result against the stated task. Identify the evidence that supports or contradicts it, then give a clear conclusion."
         case .requestChanges:
-            request = "Revise this returned result. Address the requested changes below, keep what is already correct, and return the revised result with `parley done current` or `parley done current --file <path>`.\n\nRequested changes:\n(describe the changes required before this result can be accepted)"
+            request = "Revise this returned result. Address the requested changes below, keep what is already correct, and return the revised result with `parley done <id>` or `parley done <id> --file <path>`, using the id Parley names in this delegation.\n\nRequested changes:\n(describe the changes required before this result can be accepted)"
         }
         let originalLabel = handoff.kind == .commandRun ? "Original command request" : (handoff.kind == .delegate ? "Original instruction" : "Original question or message")
         return """

@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "32"
+    public static let version = "33"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -155,12 +155,17 @@ public enum AgentProtocol {
       `stopAttempts` lists native stop attempts with per-pane outcomes, every
       time is ISO 8601, and `detail` is display-only text that must never be
       parsed. Vendor permission prompts remain active unless the person
-      explicitly approved bypass in that vendor's container settings, so a
-      host team is supervised automation, not unattended: Claude runs `parley`
-      commands without asking but asks before other shell commands, Codex asks
-      when a command needs to leave its sandbox, and Agy asks before commands
-      and has no allowlist. Only container members whose bypass the person
-      approved run without prompts; plan an unattended team around those.
+      explicitly approved bypass in that vendor's container settings or chose
+      the vendor's automatic reviewer for that vendor. On the host that
+      reviewer is Claude's auto mode, Codex's auto review or Copilot's
+      assisted approval: it answers prompts inside the vendor's own sandbox
+      and rules and can still refuse, so such members usually run without
+      asking the person but never past a deny. Without it a host team is
+      supervised automation: Claude runs `parley` commands without asking but
+      asks before other shell commands, Codex asks when a command needs to
+      leave its sandbox, and Agy asks before commands and has no allowlist or
+      reviewer. Plan an unattended team around members with the automatic
+      reviewer or an approved container bypass.
       Parley never answers prompts or restarts a pane for you. The grant is memory-only and ends at the provisioning
       deadline, on the person's Stop, on quit, when this
       pane restarts, moves, changes folder or its workspace policy changes,
@@ -177,14 +182,19 @@ public enum AgentProtocol {
       busy target is refused rather than queued.
     - While delegated work is active, its exact target may replace one compact,
       agent-declared note of at most \(DelegationProgressText.maximumBytes) UTF-8 bytes with
-      `parley progress current "<note>"`. Progress is not proof of activity or
+      `parley progress <id> "<note>"`, using the id the delegation names.
+      Progress is not proof of activity or
       completion; use `done` or `fail` for the
       terminal outcome. Post progress for work that takes more than a minute
       or so; a ten-second check needs none.
     - When delegated work reaches a terminal outcome, run
-      `parley done current "<report>"` or `parley fail current "<reason>"`.
+      `parley done <id> "<report>"` or `parley fail <id> "<reason>"` with the
+      exact id the received delegation names. Do not substitute `current`: it
+      resolves to whichever delegation this pane holds when the command runs,
+      which may by then be a later one. A report naming a delegation that has
+      closed is refused with the state it reached.
       For a substantial UTF-8 result file, use
-      `parley done current --file <path>`. The file must remain inside this
+      `parley done <id> --file <path>`. The file must remain inside this
       pane's working folder. Parley completes the tracked work only after it
       durably stages the bounded file as agent-provided content for explicit
       human review; it does not send or promote the file automatically.
@@ -311,7 +321,7 @@ public enum AgentProtocol {
                                         request a new Shell and wait for captured output/exit
       parley wait <run-id>              recover a run from the same source generation
                                         human session trust or automatic approval may omit the preview
-                                        Cancel, session trust and persistent Settings switches are native-only
+                                        Cancel, session trust and the session-only Settings switches are native-only
                                         clean-close is fixed at launch; captured results remain available
 
     Team sessions (native approval; bounded provisioning for one objective):

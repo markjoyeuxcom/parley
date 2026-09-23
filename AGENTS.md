@@ -431,7 +431,7 @@ streamed progress or any completion estimate; agent-supplied progress and
 evidence remain labelled claims.
 
 Completion-evidence convention (agent-declared, presentation only): a
-substantial result returned with `parley done current --file <path>` may use
+substantial result returned with `parley done <id> --file <path>` may use
 the plain Markdown template below. Status Center recognises the three ATX
 headings, in any order, as one **COMPLETION EVIDENCE** block labelled
 AGENT-DECLARED and shows every body as an unchecked claim. Unknown headings
@@ -1493,11 +1493,16 @@ alter an existing model context.
   (Mark's decision after it had asked before every Bash command), so it places
   no shell restriction on any vendor; Default and Workspace folders still ask.
   A host team
-  is therefore supervised automation: Codex asks on sandbox escalation, Agy
-  asks before commands and has no allowlist (only `--dangerously-skip-permissions`,
-  which invariant 3 forbids on the host), and only container members with
-  approved bypass run unattended. Help, the protocol and the team approval
-  say so.
+  is therefore supervised automation unless the person chose the vendor's
+  automatic reviewer for that vendor (Claude auto mode, Codex auto review,
+  Copilot assisted approval), which answers prompts inside the vendor's rules
+  and can still refuse: without it Codex asks on sandbox escalation, Agy
+  asks before commands and has no allowlist or reviewer (only
+  `--dangerously-skip-permissions`, which invariant 3 forbids on the host).
+  Members with the automatic reviewer or an approved container bypass are the
+  ones that run unattended. Help, the protocol and the team approval say so
+  (they said "not unattended" until protocol 33 on 23 September 2026, which
+  contradicted the form).
 - Codex receives the protocol through `developer_instructions` and generated
   lifecycle hooks through fixed inline `-c` values.
 - Agy is passed generated `agent-protocol/AGENTS.md` through `--add-dir`.

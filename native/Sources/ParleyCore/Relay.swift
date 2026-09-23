@@ -1851,7 +1851,7 @@ public final class RelayBroker: @unchecked Sendable {
         }
         guard cleaned.count <= RelayText.maximumCharacters else {
             return RelayTextResponse(status: 400, text: RelayText.tooLong("delegation result", count: cleaned.count,
-                hint: "Put a long report in a file inside your working folder and return it with parley done current --file <path>"))
+                hint: "Put a long report in a file inside your working folder and return it with parley done <id> --file <path>, using this delegation's id"))
         }
 
         // Phase one, unlocked: informational Git facts for the reporting
@@ -1878,8 +1878,9 @@ public final class RelayBroker: @unchecked Sendable {
             handoffID = requestedHandoffID
         }
         guard let record = delegationRecords[handoffID], let handoff = handoffRecords[handoffID] else {
+            let detail = retiredDelegationDetailLocked(handoffID, senderID: senderID)
             consultationCondition.unlock()
-            return RelayTextResponse(status: 404, text: "unknown active delegation")
+            return RelayTextResponse(status: 404, text: detail ?? "unknown active delegation")
         }
         guard handoff.targetPaneID == senderID else {
             consultationCondition.unlock()
@@ -1960,8 +1961,9 @@ public final class RelayBroker: @unchecked Sendable {
                 handoffID = requestedHandoffID
             }
             guard let record = delegationRecords[handoffID], let handoff = handoffRecords[handoffID] else {
+                let detail = retiredDelegationDetailLocked(handoffID, senderID: sender.id)
                 consultationCondition.unlock()
-                return RelayTextResponse(status: 404, text: "unknown active delegation")
+                return RelayTextResponse(status: 404, text: detail ?? "unknown active delegation")
             }
             guard handoff.targetPaneID == sender.id else {
                 consultationCondition.unlock()
@@ -2074,8 +2076,9 @@ public final class RelayBroker: @unchecked Sendable {
             handoffID = requestedHandoffID
         }
         guard let record = delegationRecords[handoffID], var handoff = handoffRecords[handoffID] else {
+            let detail = retiredDelegationDetailLocked(handoffID, senderID: senderID)
             consultationCondition.unlock()
-            return RelayTextResponse(status: 404, text: "unknown active delegation")
+            return RelayTextResponse(status: 404, text: detail ?? "unknown active delegation")
         }
         guard handoff.targetPaneID == senderID else {
             consultationCondition.unlock()
@@ -3986,6 +3989,25 @@ public final class RelayBroker: @unchecked Sendable {
             + "Your answer was not accepted or delivered, and retrying will not reopen it."
     }
 
+    /// Why a report naming this delegation is refused, told only to the pane
+    /// it was delegated to: a closed delegation never reopens, and a report
+    /// for it must never land on a later one (review of 22 Sep 2026, M4).
+    private func retiredDelegationDetailLocked(_ handoffID: String, senderID: String) -> String? {
+        guard let handoff = handoffRecords[handoffID],
+              handoff.kind == .delegate,
+              handoff.targetPaneID == senderID else { return nil }
+        let closedAt = handoff.transitions.last { $0.state == handoff.state }?.occurredAt ?? handoff.updatedAt
+        let reason = switch handoff.state {
+        case .completed: "already has a result"
+        case .cancelled: "was cancelled"
+        case .failed: "already ended as failed"
+        case .interrupted: "was interrupted"
+        default: "is no longer awaiting a result"
+        }
+        return "This delegation \(reason) at \(ISO8601DateFormatter().string(from: closedAt)). "
+            + "Your report was not accepted or returned, and retrying will not reopen it."
+    }
+
     private func acceptAnswer(
         from senderID: String,
         presentedCredential: String?,
@@ -4174,27 +4196,28 @@ public final class RelayBroker: @unchecked Sendable {
         } else {
             "\(handoff.sourceName) delegated work:"
         }
+        let id = handoff.id
         return """
         \(heading)
 
         \(handoff.text)
 
         When the work is complete, return a concise completion report to \(handoff.sourceName) by running:
-        parley done current "your completion report"
+        parley done \(id) "your completion report"
 
         For a substantial result file of at most \(ContextPackBuilder.defaultMaximumPartBytes) UTF-8 bytes inside this pane's working folder, stage it for explicit human review by running:
-        parley done current --file <path>
+        parley done \(id) --file <path>
         In that file, plain Markdown headings ## Implemented, ## Tested (each command and its outcome) and ## Unable to test (with the reason) are shown to the person as agent-declared completion evidence; nothing in it is checked by Parley.
 
         At each milestone, replace the one agent-declared progress note of at most \(DelegationProgressText.maximumBytes) UTF-8 bytes visible to \(handoff.sourceName) by running:
-        parley progress current "what changed"
+        parley progress \(id) "what changed"
 
         If the work cannot be completed, return the blocking reason by running:
-        parley fail current "why the work failed"
+        parley fail \(id) "why the work failed"
 
         If Parley's instructions are missing, run `parley protocol` (or `"$PARLEY_COMMAND" protocol` when PATH changed). Vendor tool approval still applies.
 
-        For a multiline report, pipe the text to `parley done current` or `parley fail current`. A returned file is not forwarded automatically. Parley identifies this tracked item from the pane credential. Do not only print the result in this pane; the initiating agent may use `parley wait` for the structured outcome.
+        For a multiline report, pipe the text to `parley done \(id)` or `parley fail \(id)`. That id names this exact delegation; use it verbatim. Do not substitute `current`, which resolves to whichever delegation this pane holds when the command runs and may by then be a later one. A returned file is not forwarded automatically. Do not only print the result in this pane; the initiating agent may use `parley wait` for the structured outcome.
         """
     }
 

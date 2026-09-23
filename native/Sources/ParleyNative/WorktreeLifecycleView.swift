@@ -82,7 +82,7 @@ struct WorktreeLifecycleView: View {
                         if let message { Text(message).font(.caption).textSelection(.enabled) }
                     }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    Text(records.isEmpty ? "No matching managed worktrees. Track an existing tree from Browse, or create one." : "Select a worktree to inspect or finish.")
+                    Text(records.isEmpty ? "No matching recorded worktrees. The Worktrees window lists every registered tree and records one when you use Finish… or Remove…, or create one there." : "Select a worktree to inspect or finish.")
                         .foregroundStyle(.secondary).padding(24)
                 }
             }

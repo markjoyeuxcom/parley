@@ -120,7 +120,7 @@ func checkOverLongRelayTextIsRefusedAndNothingIsDelivered() throws {
     let longReport = broker.handleDelegationResult(token: targetToken, handoffID: workID, text: over, succeeded: true)
     try refused(longReport.status, longReport.text, "done")
     try limitExpect(broker.handoffs().first { $0.id == workID }?.state == .waiting, "a refused report changed the delegation's state")
-    try limitExpect(longReport.text.contains("parley done current --file"), "the refused report did not point at done --file: \(longReport.text)")
+    try limitExpect(longReport.text.contains("parley done <id> --file"), "the refused report did not point at done --file: \(longReport.text)")
 
     // A reviewed busy-queue draft sent with over-long edited text is refused
     // before the edit is stored: the queue keeps what the person last saved.
