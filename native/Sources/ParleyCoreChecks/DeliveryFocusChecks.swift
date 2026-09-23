@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import GhosttyTerminal
 import ParleyCore
+import ParleyUI
 
 private func focusExpect(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
     if try !condition() { throw NSError(domain: "DeliveryFocus", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
@@ -74,10 +75,89 @@ func checkGhosttyDeliveryWithoutFocusKeepsThePersonsPane() throws {
         try focusExpect(pump(until: { FileManager.default.fileExists(atPath: delivered.path) }),
                         "a pane without focus did not run the delivered command")
         try focusExpect(window.firstResponder === person, "delivering to another pane moved the person's focus")
+
+        // Copilot's path: the pane is lent focus for the delivery and the
+        // person's pane gets it back.
+        let focus = DeliveryFocus()
+        let lent = directory.appendingPathComponent("lent")
+        var settled: [TimeInterval] = []
+        try focus.deliver(focusing: target, paneID: "target", beforeRestoring: 0.1, settle: { settled.append($0) }) {
+            try focusExpect(window.firstResponder === target && focus.paneID == "target", "the delivery did not hold the target's focus")
+            try focusExpect(run(target, touching: lent), "Ghostty refused input for the focused target")
+        }
+        try focusExpect(pump(until: { FileManager.default.fileExists(atPath: lent.path) }), "the focused delivery did not run")
+        try focusExpect(window.firstResponder === person && focus.paneID == nil && settled == [0.1],
+                        "a focused delivery did not give the person's pane its focus back")
+    }
+}
+
+private final class FocusableView: NSView {
+    override var acceptsFirstResponder: Bool { true }
+}
+
+private struct Refused: Error {}
+
+/// `DeliveryFocus` on every exit: a refusal part-way, a text field being
+/// edited, focus the person moved, a view that went away and a target that
+/// already had focus.
+func checkDeliveryFocusRestoresThePersonsFocusOnEveryExit() throws {
+    try MainActor.assumeIsolated {
+        _ = NSApplication.shared
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 600, height: 200))
+        let person = FocusableView(frame: NSRect(x: 0, y: 0, width: 200, height: 200))
+        let target = FocusableView(frame: NSRect(x: 200, y: 0, width: 200, height: 200))
+        let other = FocusableView(frame: NSRect(x: 400, y: 100, width: 200, height: 100))
+        let field = NSTextField(frame: NSRect(x: 400, y: 0, width: 200, height: 24))
+        for view in [person, target, other, field] { container.addSubview(view) }
+        let window = NSWindow(contentRect: container.frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = container
+        defer { window.close() }
+        let focus = DeliveryFocus()
+        var settled = 0
+        func settle(_: TimeInterval) { settled += 1 }
+
+        // A refusal part-way still restores, without the settle.
+        try focusExpect(window.makeFirstResponder(person), "the person's view did not take focus")
+        do {
+            try focus.deliver(focusing: target, paneID: "target", beforeRestoring: 0.1, settle: settle) { throw Refused() }
+            throw NSError(domain: "DeliveryFocus", code: 1, userInfo: [NSLocalizedDescriptionKey: "the refusal was swallowed"])
+        } catch is Refused {}
+        try focusExpect(window.firstResponder === person && focus.paneID == nil && settled == 0,
+                        "a refused delivery left focus on the target or settled")
+
+        // A text field being edited comes back with the person's selection.
+        field.stringValue = "filter text"
+        try focusExpect(window.makeFirstResponder(field), "the field did not take focus")
+        field.currentEditor()?.selectedRange = NSRange(location: 3, length: 2)
+        try focus.deliver(focusing: target, paneID: "target", beforeRestoring: 0, settle: settle) {}
+        let editor = window.firstResponder as? NSTextView
+        try focusExpect(editor?.isFieldEditor == true && editor?.delegate === field,
+                        "the text field being edited did not get focus back: \(String(describing: window.firstResponder))")
+        try focusExpect(editor?.selectedRange() == NSRange(location: 3, length: 2),
+                        "the person's selection in the field was not kept: \(String(describing: editor?.selectedRange()))")
+
+        // Focus the person moved during the delivery stays where they put it.
+        try focusExpect(window.makeFirstResponder(person), "the person's view did not take focus")
+        try focus.deliver(focusing: target, paneID: "target", beforeRestoring: 0, settle: settle) { window.makeFirstResponder(other) }
+        try focusExpect(window.firstResponder === other, "restoring overrode focus the person moved")
+
+        // The person's view went away: nothing is left focused rather than the target.
+        try focusExpect(window.makeFirstResponder(person), "the person's view did not take focus")
+        try focus.deliver(focusing: target, paneID: "target", beforeRestoring: 0, settle: settle) { person.removeFromSuperview() }
+        try focusExpect(window.firstResponder === window, "focus stayed on the target after the person's view went away")
+
+        // A target that already has focus is not lent it: nothing to restore.
+        try focusExpect(window.makeFirstResponder(target), "the target did not take focus")
+        try focus.deliver(focusing: target, paneID: "target", beforeRestoring: 0, settle: settle) {
+            try focusExpect(focus.paneID == nil, "a target that already had focus was marked as lent it")
+        }
+        try focusExpect(window.firstResponder === target, "a target that already had focus lost it")
     }
 }
 
 @MainActor let deliveryFocusChecks: [(String, () throws -> Void)] = [
     ("only copilot submission moves focus", checkOnlyCopilotSubmissionMovesFocus),
     ("ghostty delivery without focus keeps the person's pane", checkGhosttyDeliveryWithoutFocusKeepsThePersonsPane),
+    ("delivery focus restores the person's focus on every exit", checkDeliveryFocusRestoresThePersonsFocusOnEveryExit),
 ]

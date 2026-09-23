@@ -491,10 +491,15 @@ thread for the length of any backward step. Ghostty takes paste and Enter on
 a surface without focus (`DeliveryFocusChecks` proves it on real surfaces), so a
 delivery leaves the person's focus and active pane alone
 (`PaneSubmissionTiming.focusesTarget`). Only Copilot's submission briefly
-focuses its pane. That focus is programmatic: its callback changes no
-selection. It is restored through the target's own window rather than
-whichever window is key, on every exit, and only if the target still holds
-it. Until 23 September 2026 every delivery focused its target, the callback
+focuses its pane, through `DeliveryFocus` (ParleyUI). For the whole delivery,
+restore included, the pane's focus callbacks change no selection, and focus
+repair and `focusSelected` leave the lent focus alone. Focus is restored
+through the target's own window rather than whichever window is key, on every
+exit, and only if the target still holds it. A text field being edited comes
+back as the field with the person's selection, because its field editor
+leaves the window the moment it resigns. Keys typed during the settle are not
+lost to the target: pumping the run loop does not dispatch NSEvents, so they
+wait in the queue and reach the restored responder. Until 23 September 2026 every delivery focused its target, the callback
 made that pane the person's active pane, and the restore used
 `NSApp.keyWindow`, so with Status Center key or Parley in the background
 the person's next keystrokes went to the other agent. Refuse delivery at
