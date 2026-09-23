@@ -77,9 +77,10 @@ public struct GitWorktreeScan: Equatable, Sendable {
     }
 }
 
-/// Read-only Git worktree discovery. Both calls are direct argv executions,
-/// suppress locks and pagers, and have fixed timeouts. Parley never creates,
-/// prunes, moves or removes a worktree through this surface.
+/// Read-only Git worktree discovery. Both calls are fixed argv run inside
+/// `GitReadBoundary`, suppress locks and pagers, and have fixed timeouts.
+/// Parley never creates, prunes, moves or removes a worktree through this
+/// surface.
 public struct GitWorktreeResolver: Sendable {
     private let gitExecutable: URL
     private let environment: [String: String]
@@ -91,12 +92,7 @@ public struct GitWorktreeResolver: Sendable {
         timeout: TimeInterval = 2
     ) {
         self.gitExecutable = gitExecutable
-        var gitEnvironment = environment
-        gitEnvironment["GIT_OPTIONAL_LOCKS"] = "0"
-        gitEnvironment["GIT_PAGER"] = "cat"
-        gitEnvironment["PAGER"] = "cat"
-        gitEnvironment["LC_ALL"] = "C"
-        self.environment = gitEnvironment
+        self.environment = GitReadBoundary.environment(environment)
         self.timeout = max(0.1, timeout)
     }
 
@@ -178,11 +174,11 @@ public struct GitWorktreeResolver: Sendable {
     private func runGit(in folder: String, arguments: [String]) -> String? {
         let output: CommandOutput
         do {
-            output = try ProcessCommandRunner(timeout: timeout).run(
-                executable: gitExecutable,
+            output = try GitReadBoundary.run(
+                git: gitExecutable,
                 arguments: ["-C", folder, "-c", "core.fsmonitor=false"] + arguments,
                 environment: environment,
-                input: nil
+                runner: ProcessCommandRunner(timeout: timeout)
             )
         } catch {
             return nil

@@ -87,6 +87,7 @@ struct ContainerLaunchOptionsView: View {
                         .textSelection(.enabled)
                 }
                 if let message { Text(message).foregroundStyle(.orange).textSelection(.enabled) }
+                Text(GitReadBoundary.containerDisclosure)
                 Text("The container is the execution boundary. The working folder and this pane’s relay endpoint are writable; any additional shared Git mount is listed above. Docker runs outside Parley’s control. No Docker socket or host login is mounted. Sign in inside the pane; a private named volume keeps this pane’s vendor login, configuration and saved conversations until you delete them in Status Center. Closing the main window keeps the container running; closing the pane or quitting stops it. Docker output logging is disabled.")
                 Text("Vendor sandbox availability varies by image. Claude’s and Agy’s own sandboxes may be unavailable. Vendor prompts apply unless you selected bypass above. Checks do not prove login, instruction uptake or a vendor session. Linked worktrees require review of their shared Git directory; arbitrary additional folders are not mounted.")
             }

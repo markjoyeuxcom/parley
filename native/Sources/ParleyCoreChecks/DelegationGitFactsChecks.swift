@@ -101,22 +101,29 @@ func checkDelegationGitSnapshotIsBoundedPathsOnly() throws {
     )
     let captured = try gitRequire(capture.snapshot(in: folder), "a dirty repository produced no Git facts")
 
-    // Fixed executable and argv, one command, no content-bearing subcommand.
-    try gitExpect(runner.calls.count == 1, "capture ran \(runner.calls.count) commands instead of one")
-    try gitExpect(runner.calls.first?.executable == "/usr/bin/git", "capture invoked something other than git directly")
+    // Fixed argv inside the Git read guard: the filter-driver listing, then
+    // one status. No content-bearing subcommand.
+    try gitExpect(runner.calls.count == 2, "capture ran \(runner.calls.count) commands instead of the listing and one status")
+    try gitExpect(runner.calls.allSatisfy { $0.executable == GitReadBoundary.shell.path }, "capture ran Git outside the read guard")
+    let gitCalls = runner.calls.map { GitReadBoundary.gitArguments(inInvocation: $0.arguments) }
+    try gitExpect(runner.calls.allSatisfy { $0.arguments[3] == "/usr/bin/git" }, "the guard did not exec the fixed Git executable")
     try gitExpect(
-        runner.calls.first?.arguments == [
-            "-C", folder, "-c", "core.fsmonitor=false",
-            "status", "--porcelain=v2", "--branch", "--untracked-files=normal", "-z",
-        ],
-        "capture did not use the fixed status argv: \(runner.calls.first?.arguments ?? [])"
+        gitCalls.first == ["-C", folder, "-c", "core.fsmonitor=false", "config", "--list", "--name-only", "-z"],
+        "capture did not list filter drivers first: \(String(describing: gitCalls.first))"
     )
     try gitExpect(
-        DelegationGitFacts.arguments(for: folder) == runner.calls.first?.arguments,
+        gitCalls.last == [
+            "-C", folder, "-c", "core.fsmonitor=false",
+            "status", "--porcelain=v2", "--branch", "--untracked-files=normal", "--ignore-submodules=dirty", "-z",
+        ],
+        "capture did not use the fixed status argv: \(String(describing: gitCalls.last))"
+    )
+    try gitExpect(
+        DelegationGitFacts.arguments(for: folder) == gitCalls.last,
         "the published argv differs from the one the capture ran"
     )
     for banned in ["diff", "show", "log", "blame", "cat-file", "-p", "--patch"] {
-        try gitExpect(!(runner.calls.first?.arguments.contains(banned) ?? true), "capture argv contains content-bearing option \(banned)")
+        try gitExpect(!gitCalls.contains { $0?.contains(banned) ?? true }, "capture argv contains content-bearing option \(banned)")
     }
 
     // Paths only, deduplicated and sorted; modes, hashes and scores are dropped.

@@ -348,6 +348,7 @@ public final class ContextPackBuilder: @unchecked Sendable {
 
     private let gitExecutable: URL
     private let environment: [String: String]
+    private let gitEnvironment: [String: String]
     private let gitRunner: any CommandRunning
     private let commandRunner: any ContextCommandRunning
     private let fileManager: FileManager
@@ -373,6 +374,7 @@ public final class ContextPackBuilder: @unchecked Sendable {
         captureEnvironment["PAGER"] = "cat"
         captureEnvironment["LC_ALL"] = "C"
         self.environment = captureEnvironment
+        self.gitEnvironment = GitReadBoundary.environment(environment)
         self.gitRunner = gitRunner
         self.maximumPartBytes = max(1, maximumPartBytes)
         self.maximumRenderedBytes = max(1, maximumRenderedBytes)
@@ -417,6 +419,9 @@ public final class ContextPackBuilder: @unchecked Sendable {
 
     /// Recaptures a fixed Git surface from disk. An optional relative file is
     /// passed only after `--`, never interpreted by a shell or as a Git option.
+    /// Every command runs inside `GitReadBoundary` with the repository's
+    /// filter drivers turned off, and diffs never run textconv or an
+    /// external diff, so the captured text is Git's own diff of the bytes.
     public func gitDiff(
         in folder: String,
         scope: ContextPackGitDiffScope,
@@ -427,31 +432,24 @@ public final class ContextPackBuilder: @unchecked Sendable {
         guard !root.isEmpty else { throw ContextPackError.commandFailed("git returned no repository root") }
         let captureFolder = relativeFile == nil ? root : folder
         let pathspec = relativeFile.map { ["--", $0] } ?? ["--"]
-        let status = try git(in: captureFolder, ["status", "--short", "--untracked-files=all"] + pathspec)
-            .trimmingCharacters(in: .newlines)
+        let readEnvironment = GitReadBoundary.neutralizingFilters(
+            in: captureFolder, git: gitExecutable, environment: gitEnvironment, runner: gitRunner
+        )
+        func read(_ arguments: [String]) throws -> String {
+            try git(in: captureFolder, arguments + pathspec, environment: readEnvironment).trimmingCharacters(in: .newlines)
+        }
+        let status = try read(["status", "--short", "--untracked-files=all"] + GitReadBoundary.statusArguments)
         let staged: String
         let working: String
         switch scope {
         case .combined:
-            staged = try git(
-                in: captureFolder,
-                ["diff", "--cached", "--no-ext-diff", "--no-color"] + pathspec
-            ).trimmingCharacters(in: .newlines)
-            working = try git(
-                in: captureFolder,
-                ["diff", "--no-ext-diff", "--no-color"] + pathspec
-            ).trimmingCharacters(in: .newlines)
+            staged = try read(["diff", "--cached", "--no-color"] + GitReadBoundary.diffArguments)
+            working = try read(["diff", "--no-color"] + GitReadBoundary.diffArguments)
         case .workingTree:
             staged = ""
-            working = try git(
-                in: captureFolder,
-                ["diff", "--no-ext-diff", "--no-color"] + pathspec
-            ).trimmingCharacters(in: .newlines)
+            working = try read(["diff", "--no-color"] + GitReadBoundary.diffArguments)
         case .staged:
-            staged = try git(
-                in: captureFolder,
-                ["diff", "--cached", "--no-ext-diff", "--no-color"] + pathspec
-            ).trimmingCharacters(in: .newlines)
+            staged = try read(["diff", "--cached", "--no-color"] + GitReadBoundary.diffArguments)
             working = ""
         }
 
@@ -859,12 +857,12 @@ public final class ContextPackBuilder: @unchecked Sendable {
         return url.absoluteString
     }
 
-    private func git(in folder: String, _ arguments: [String]) throws -> String {
-        let output = try gitRunner.run(
-            executable: gitExecutable,
+    private func git(in folder: String, _ arguments: [String], environment readEnvironment: [String: String]? = nil) throws -> String {
+        let output = try GitReadBoundary.run(
+            git: gitExecutable,
             arguments: ["--literal-pathspecs", "-C", folder, "-c", "core.fsmonitor=false"] + arguments,
-            environment: environment,
-            input: nil
+            environment: readEnvironment ?? gitEnvironment,
+            runner: gitRunner
         )
         guard output.status == 0 else {
             let stdout = output.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)

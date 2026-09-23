@@ -1754,7 +1754,7 @@ public final class RelayBroker: @unchecked Sendable {
         // Informational Git facts are read outside the coordination lock. They
         // never gate delivery, and terminal input is never driven while the
         // lock is held.
-        let gitAtDelegation = gitFacts?(target.launchWorkingDirectory)
+        let gitAtDelegation = gitFactsSnapshot(for: target)
 
         // Revalidate the same created, still-active delegation immediately
         // before delivery. A cancellation or any other terminal transition
@@ -4335,12 +4335,25 @@ public final class RelayBroker: @unchecked Sendable {
     /// coordination lock; it takes the lock only briefly to learn whether the
     /// pane has tracked work, so a bogus report never runs Git.
     private func gitFactsForReportingPane(_ paneID: String) -> DelegationGitSnapshot? {
-        guard let gitFacts else { return nil }
+        guard gitFacts != nil else { return nil }
         consultationCondition.lock()
         let hasTrackedWork = delegationRecords.keys.contains { handoffRecords[$0]?.targetPaneID == paneID }
         consultationCondition.unlock()
         guard hasTrackedWork,
               let pane = (try? panes())?.first(where: { $0.id == paneID }) else { return nil }
+        return gitFactsSnapshot(for: pane)
+    }
+
+    /// Informational Git facts for the delegated pane's reviewed folder. A
+    /// container pane gets an explicit not-captured record and no Git at
+    /// all: its container can rewrite that checkout's Git configuration, and
+    /// a delegation to it or its own report must not be what makes Parley
+    /// run Git over that configuration on this Mac.
+    private func gitFactsSnapshot(for pane: WorkbenchPane) -> DelegationGitSnapshot? {
+        guard let gitFacts else { return nil }
+        if pane.containerConfiguration != nil {
+            return .notCaptured(folder: pane.launchWorkingDirectory, capturedAt: clock(), reason: DelegationGitSnapshot.containerPaneReason)
+        }
         return gitFacts(pane.launchWorkingDirectory)
     }
 

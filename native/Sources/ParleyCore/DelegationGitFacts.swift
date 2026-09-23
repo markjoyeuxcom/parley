@@ -52,6 +52,22 @@ public struct DelegationGitSnapshot: Codable, Equatable, Sendable {
     /// Present when the folder was inside a Parley-managed worktree at
     /// capture time. Older records decode without it.
     public var managedWorktree: ManagedWorktreeEvidence? = nil
+    /// Set when Parley deliberately ran no Git for this folder; the other
+    /// fields are then empty. Older records decode without it.
+    public var notCapturedReason: String? = nil
+
+    /// Why a container pane's folder gets no Git facts: the container can
+    /// rewrite that checkout's Git configuration, and an agent's report
+    /// must not be what makes Parley run Git over it on this Mac.
+    public static let containerPaneReason = "Parley does not run Git on this Mac in a container pane's folder"
+
+    /// A record that Parley chose not to read this folder, and why.
+    public static func notCaptured(folder: String, capturedAt: Date, reason: String) -> DelegationGitSnapshot {
+        var snapshot = DelegationGitSnapshot(capturedAt: capturedAt, folder: folder, headRevision: nil, branch: nil,
+                                             isDetached: false, dirtyPaths: [], dirtyPathCount: 0)
+        snapshot.notCapturedReason = reason
+        return snapshot
+    }
 
     public init(
         capturedAt: Date,
@@ -75,7 +91,7 @@ public struct DelegationGitSnapshot: Codable, Equatable, Sendable {
         self.managedWorktree = managedWorktree
     }
 
-    public var isAvailable: Bool { unavailableReason == nil }
+    public var isAvailable: Bool { unavailableReason == nil && notCapturedReason == nil }
     public var isTruncated: Bool { dirtyPathCount > dirtyPaths.count }
     public var shortRevision: String? { headRevision.map { String($0.prefix(7)) } }
 
@@ -85,6 +101,7 @@ public struct DelegationGitSnapshot: Codable, Equatable, Sendable {
     }
 
     private var baseSummary: String {
+        if let notCapturedReason { return "Git facts not captured: \(notCapturedReason)" }
         if let unavailableReason { return "Git facts unavailable: \(unavailableReason)" }
         let head = shortRevision.map { "HEAD \($0)" } ?? "no commits yet"
         let reference = isDetached ? "detached" : (branch ?? "no branch")
@@ -169,13 +186,14 @@ public enum DelegationGitFacts {
         }
     }
 
-    /// The one fixed argv used for every capture: a porcelain status with NUL
-    /// separators. No diff, log, show or blame is ever requested.
+    /// The one fixed Git argv used for every capture: a porcelain status with
+    /// NUL separators. No diff, log, show or blame is ever requested. It runs
+    /// inside `GitReadBoundary`, so submodules are compared by recorded commit.
     public static func arguments(for folder: String) -> [String] {
         [
             "-C", folder, "-c", "core.fsmonitor=false",
-            "status", "--porcelain=v2", "--branch", "--untracked-files=normal", "-z",
-        ]
+            "status", "--porcelain=v2", "--branch", "--untracked-files=normal",
+        ] + GitReadBoundary.statusArguments + ["-z"]
     }
 
     public static func parseStatus(_ output: Data, folder: String, capturedAt: Date) -> DelegationGitSnapshot {
@@ -268,8 +286,11 @@ public enum DelegationGitFacts {
 }
 
 /// Runs the one fixed Git status command with a hard timeout through the
-/// existing argv-only runner. A non-Git folder yields nil; any other failure
-/// yields an informational snapshot with a short reason and no paths.
+/// existing argv-only runner, inside `GitReadBoundary`: it lists the
+/// configured filter drivers first, turns them off for the status, and the
+/// status itself cannot start any other program. A non-Git folder yields
+/// nil; any other failure yields an informational snapshot with a short
+/// reason and no paths.
 public final class DelegationGitSnapshotCapture: @unchecked Sendable {
     private let runner: CommandRunning
     private let gitExecutable: URL
@@ -293,12 +314,7 @@ public final class DelegationGitSnapshotCapture: @unchecked Sendable {
         self.runner = runner
         self.managedWorktreeLookup = managedWorktreeLookup
         self.gitExecutable = gitExecutable
-        var gitEnvironment = environment
-        gitEnvironment["GIT_OPTIONAL_LOCKS"] = "0"
-        gitEnvironment["GIT_PAGER"] = "cat"
-        gitEnvironment["PAGER"] = "cat"
-        gitEnvironment["LC_ALL"] = "C"
-        self.environment = gitEnvironment
+        self.environment = GitReadBoundary.environment(environment)
         self.fileManager = fileManager
         self.clock = clock
     }
@@ -323,11 +339,11 @@ public final class DelegationGitSnapshotCapture: @unchecked Sendable {
         }
         let output: CommandOutput
         do {
-            output = try runner.run(
-                executable: gitExecutable,
+            output = try GitReadBoundary.run(
+                git: gitExecutable,
                 arguments: DelegationGitFacts.arguments(for: folder),
-                environment: environment,
-                input: nil
+                environment: GitReadBoundary.neutralizingFilters(in: folder, git: gitExecutable, environment: environment, runner: runner),
+                runner: runner
             )
         } catch {
             return unavailable("git status could not start")
@@ -345,8 +361,8 @@ public final class DelegationGitSnapshotCapture: @unchecked Sendable {
     }
 
     private func worktreeRoot(of folder: String) -> String? {
-        guard let output = try? runner.run(executable: gitExecutable,
-            arguments: ["-C", folder, "-c", "core.fsmonitor=false", "rev-parse", "--show-toplevel"], environment: environment, input: nil),
+        guard let output = try? GitReadBoundary.run(git: gitExecutable,
+            arguments: ["-C", folder, "-c", "core.fsmonitor=false", "rev-parse", "--show-toplevel"], environment: environment, runner: runner),
               output.status == 0 else { return nil }
         let root = GitWorktreeResolver.singlePathOutput(output.stdoutText)
         return root.hasPrefix("/") ? GitWorktreeResolver.canonicalPath(root) : nil

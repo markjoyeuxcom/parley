@@ -11,8 +11,11 @@ public struct GitProjectContext: Equatable, Sendable {
 }
 
 /// Reads the small piece of repository state Parley owns in its pane chrome.
-/// Every folder costs one fixed argv-based Git command with a hard process
-/// timeout; no shell, pager, hook, index lock or unbounded file read is used.
+/// Every folder costs one fixed argv-based Git status with a hard process
+/// timeout, after listing the filter drivers to turn off, both inside
+/// `GitReadBoundary`; no pager, hook, filter, index lock or unbounded file
+/// read is used. It runs on a timer for every pane's folder, container panes
+/// included, so the guard is what keeps a planted filter from running.
 public struct GitProjectContextResolver: Sendable {
     private let gitExecutable: URL
     private let environment: [String: String]
@@ -24,12 +27,7 @@ public struct GitProjectContextResolver: Sendable {
         timeout: TimeInterval = 2
     ) {
         self.gitExecutable = gitExecutable
-        var gitEnvironment = environment
-        gitEnvironment["GIT_OPTIONAL_LOCKS"] = "0"
-        gitEnvironment["GIT_PAGER"] = "cat"
-        gitEnvironment["PAGER"] = "cat"
-        gitEnvironment["LC_ALL"] = "C"
-        self.environment = gitEnvironment
+        self.environment = GitReadBoundary.environment(environment)
         self.timeout = max(0.1, timeout)
     }
 
@@ -46,16 +44,17 @@ public struct GitProjectContextResolver: Sendable {
 
     public func context(in folder: String) -> GitProjectContext? {
         let output: CommandOutput
+        let runner = ProcessCommandRunner(timeout: timeout)
         do {
-            output = try ProcessCommandRunner(timeout: timeout).run(
-                executable: gitExecutable,
+            output = try GitReadBoundary.run(
+                git: gitExecutable,
                 arguments: [
                     "-C", folder,
                     "-c", "core.fsmonitor=false",
                     "status", "--porcelain=v2", "--branch", "--untracked-files=normal",
-                ],
-                environment: environment,
-                input: nil
+                ] + GitReadBoundary.statusArguments,
+                environment: GitReadBoundary.neutralizingFilters(in: folder, git: gitExecutable, environment: environment, runner: runner),
+                runner: runner
             )
         } catch {
             return nil

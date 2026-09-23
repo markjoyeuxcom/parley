@@ -59,10 +59,7 @@ public struct HostAgentPermissions: Sendable {
             + (approvals == .vendorReviewer ? ["-c", "approvals_reviewer=auto_review"] : [])
     }
 
-    private func literal(_ value: String) -> String {
-        // JSON basic-string escaping is valid for these TOML keys and values.
-        String(decoding: try! JSONEncoder().encode(value), as: UTF8.self).replacingOccurrences(of: "\\/", with: "/")
-    }
+    private func literal(_ value: String) -> String { TOMLString.basic(value) }
 
     /// Run away from the main actor. The synthetic private file contains no
     /// credential. No model, login, project mutation or permission bypass occurs.
