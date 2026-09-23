@@ -1500,7 +1500,13 @@ alter an existing model context.
   approved bypass run unattended. Help, the protocol and the team approval
   say so.
 - Codex receives the protocol through `developer_instructions` and generated
-  lifecycle hooks through fixed inline `-c` values.
+  lifecycle hooks through fixed inline `-c` values. Codex parses each `-c`
+  value as TOML and, if that fails, silently uses the whole value as a literal
+  string, so every string Parley puts in one (protocol, hook commands, host
+  permission paths) goes through `TOMLString.basic`, never a `JSONEncoder`:
+  JSON's `\/` is not a TOML escape, and until 22 September 2026 every Codex
+  pane received the protocol as one escaped line for that reason.
+  `CodexTOMLChecks` reads each value with a strict TOML string reader.
 - Agy is passed generated `agent-protocol/AGENTS.md` through `--add-dir`.
   Automatic rule loading from that added directory remains unverified; do not
   claim uptake without the fresh/resumed-session check in RELEASING.md. No

@@ -3717,6 +3717,9 @@ private func checkSharedProtocolLaunchAdapters() throws {
         codexProtocolArgument.split(separator: "=", maxSplits: 1).last.map(String.init),
         "Codex protocol value disappeared"
     )
+    // JSONDecoder accepts `\/`, which TOML rejects; the strict TOML reading
+    // is "codex configuration values are valid toml".
+    try expect(!codexValue.contains("\\/"), "Codex developer instructions contain an escape TOML does not define")
     let decodedCodex = try JSONDecoder().decode(String.self, from: Data(codexValue.utf8))
     try expect(decodedCodex == AgentProtocol.text, "Codex launch adapter changed the shared protocol")
 
@@ -10324,7 +10327,7 @@ if let image = argument(named: "--container-transport-spike") {
 let onlyFilter = argument(named: "--only")?.lowercased()
 let skipFilters = (argument(named: "--skip") ?? "").lowercased()
     .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-let allChecks = (voiceChecks + containerPaneChecks + checks + reviewRegressionChecks + repositoryReviewChecks + approvalHandlingChecks + folderListChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + worktreeBoardChecks + worktreeRepositoryChecks + emptyWorkspaceChecks + relayTicketChecks + protocolDriftChecks + auxiliaryWindowChecks + helpAuditChecks + terminalTypeChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + askCorrelationChecks + gitReadBoundaryChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
+let allChecks = (voiceChecks + containerPaneChecks + checks + reviewRegressionChecks + repositoryReviewChecks + approvalHandlingChecks + folderListChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + worktreeBoardChecks + worktreeRepositoryChecks + emptyWorkspaceChecks + relayTicketChecks + protocolDriftChecks + auxiliaryWindowChecks + helpAuditChecks + terminalTypeChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + askCorrelationChecks + gitReadBoundaryChecks + codexTOMLChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
     onlyFilter.map { name.lowercased().contains($0) } ?? true
 }
 var skippedCount = 0
