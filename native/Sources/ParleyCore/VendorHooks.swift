@@ -164,7 +164,7 @@ public enum VendorHookAdapter {
         _ signal: VendorHookSignal,
         shimExecutable: String
     ) -> String {
-        let command = jsonString(hookCommand(shimExecutable: shimExecutable, signal: signal))
+        let command = TOMLString.basic(hookCommand(shimExecutable: shimExecutable, signal: signal))
         return "hooks.\(event)=[{ hooks = [{ type = \"command\", command = \(command), timeout = 3 }] }]"
     }
 
@@ -246,13 +246,6 @@ public enum VendorHookAdapter {
 
     private static func shellQuote(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
-    }
-
-    private static func jsonString(_ value: String) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.withoutEscapingSlashes]
-        let data = try! encoder.encode(value)
-        return String(decoding: data, as: UTF8.self)
     }
 
     private static func writeJSON(
