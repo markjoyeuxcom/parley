@@ -5371,9 +5371,6 @@ final class AppModel: ObservableObject {
                             guard let self, self.handoffComposerDraft.map({ RelayText.clean($0.text).isEmpty }) ?? true else { return false }
                             self.handoffComposerDraft = draft
                             return true
-                        },
-                        clearRestored: { [weak self] in
-                            if self?.handoffComposerDraft?.id == draft.id { self?.handoffComposerDraft = nil }
                         }
                     )
                 }
@@ -6129,11 +6126,6 @@ final class AppModel: ObservableObject {
                             self.contextPackDraft = draft
                             self.contextPackPresented = true
                             return true
-                        },
-                        clearRestored: { [weak self] in
-                            guard self?.contextPackDraft?.id == draft.id else { return }
-                            self?.contextPackPresented = false
-                            self?.contextPackDraft = nil
                         }
                     )
                 }
@@ -8034,7 +8026,7 @@ final class AppModel: ObservableObject {
                 // reopen; its text can be copied.
                 self?.handleUnansweredAsk(
                     failure, text: edited, from: source, to: target, preserveFormatting: false,
-                    restore: { false }, clearRestored: {},
+                    restore: { false },
                     notRestoredNote: "The review text was edited in a dialog that has closed; copy it to keep it, or start the review again."
                 )
             }
@@ -8178,27 +8170,26 @@ final class AppModel: ObservableObject {
         to target: WorkbenchPane,
         preserveFormatting: Bool,
         restore: () -> Bool,
-        clearRestored: @escaping () -> Void,
         notRestoredNote: String = "Another draft is open in its place, so this one was not reopened; copy its text to keep it."
     ) {
         let title: String
         let detail: String
         switch failure {
         case let .refused(reason, targetBusy):
-            let restored = restore()
+            // A busy target is offered the queue first, so a queued draft never
+            // needs reopening; declined, the draft comes back quietly because
+            // the offer already said why it was not sent.
+            var offeredQueue = false
             if targetBusy {
                 do {
-                    if try offerBusyQueue(text, from: source, to: target, preserveFormatting: preserveFormatting) {
-                        if restored { clearRestored() }
-                        return
-                    }
-                    // Declined: a restored draft is already on screen, and the
-                    // busy offer said why it was not sent.
-                    if restored { return }
+                    if try offerBusyQueue(text, from: source, to: target, preserveFormatting: preserveFormatting) { return }
+                    offeredQueue = true
                 } catch {
                     NSAlert(error: error).runModal()
                 }
             }
+            let restored = restore()
+            if restored && offeredQueue { return }
             title = "Nothing was sent to \(target.displayName)"
             detail = reason + "\n\n" + (restored ? "Your reviewed draft is back where you wrote it." : notRestoredNote)
             if restored {
