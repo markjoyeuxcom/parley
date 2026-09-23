@@ -27,6 +27,8 @@ final class GhosttyPaneRegistry {
         var onAttach: (String) -> Void
         var onDetach: (String) -> Void
         var onOpenURL: (String) -> Void
+        /// The live surface, for reading Ghostty's record of the child's exit.
+        private(set) var surface: TerminalSurface?
 
         init(
             paneID: String,
@@ -52,8 +54,14 @@ final class GhosttyPaneRegistry {
         func terminalDidChangeFocus(_ focused: Bool) { if focused { onFocus(paneID) } }
         func terminalDidClose(processAlive: Bool) { onClose(paneID, processAlive) }
         func terminalDidChangeWorkingDirectory(_ path: String) { onWorkingDirectory(paneID, path) }
-        func terminalDidAttachSurface(_ surface: TerminalSurface) { onAttach(paneID) }
-        func terminalDidDetachSurface() { onDetach(paneID) }
+        func terminalDidAttachSurface(_ surface: TerminalSurface) {
+            self.surface = surface
+            onAttach(paneID)
+        }
+        func terminalDidDetachSurface() {
+            surface = nil
+            onDetach(paneID)
+        }
         func terminalDidRequestOpenURL(_ url: String, kind: TerminalOpenURLKind) { onOpenURL(url) }
     }
 
@@ -80,6 +88,7 @@ final class GhosttyPaneRegistry {
     /// meanwhile are not the person choosing that pane: they change no
     /// selection, and focus repair leaves the lent focus alone.
     private let deliveryFocus = DeliveryFocus()
+    private var exitTracker = ProcessExitTracker()
     var onPaneFocused: ((String) -> Void)?
     var onPaneStateChanged: (() -> Void)?
     /// A title actually changed. Titles are display metadata only, so the
@@ -355,6 +364,27 @@ final class GhosttyPaneRegistry {
             throw ParleyWorkbenchError.noRelayText
         }
         return text
+    }
+
+    /// Records the exit of every pane process Ghostty reports as exited.
+    /// Parley forces wait-after-command, so Ghostty keeps such a surface open
+    /// showing "Process exited" and calls the close callback only when the
+    /// person presses a key there; until then the pane read as running with
+    /// relay enabled. An exit is routed through that same close path, once
+    /// per launch generation. A deliberate stop removes the entry before the
+    /// surface is torn down, so it is never reported here.
+    func recordExitedProcesses() {
+        let observations = entries.map { paneID, entry in
+            ProcessExitTracker.Observation(
+                paneID: paneID,
+                generation: entry.generation,
+                exited: entry.view.controller == nil ? nil : entry.delegate.surface.flatMap(GhosttyProcessExit.hasExited)
+            )
+        }
+        for exit in exitTracker.exits(observations) {
+            guard let entry = entries[exit.paneID], entry.generation == exit.generation else { continue }
+            entry.delegate.onClose(exit.paneID, false)
+        }
     }
 
     func stop(paneID: String) {

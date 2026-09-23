@@ -193,6 +193,22 @@ Production and a separate Development directory.
   the name without the button.
 - On a later app launch, workspace definitions remain, shells can restart and
   agent panes are stopped placeholders. Never claim a vendor session survived.
+- A pane's exit is recorded from Ghostty's own record of it
+  (`ghostty_surface_process_exited`, read by `GhosttyProcessExit` in
+  ParleyUI), polled on the one-second tick and routed through the same path
+  as Ghostty's close callback, once per launch generation
+  (`ProcessExitTracker`). The pane then reads exited, relay and input turn
+  off, and a container pane's lost-client cleanup runs. Wait-after-command
+  keeps the surface open, so until 23 September 2026 Ghostty's close
+  callback (sent only when the person pressed a key in the exited pane) was
+  the sole record: after `/exit`, or a CLI missing from PATH, the pane stayed
+  RUNNING with relay enabled. The wrapper forwards neither
+  `GHOSTTY_ACTION_SHOW_CHILD_EXITED` nor this call, so the raw surface is
+  read by reflection from its one private field; `ProcessExitChecks` runs
+  the reader on real surfaces so a wrapper upgrade that moves the field
+  fails the suite, and an unreadable record is unknown, never an exit. Check
+  it again whenever the Ghostty pin changes. No exit status is available
+  through this route.
 
 Durable records are JSON lines. The handoff journal and the native activity
 journal both append one synced line per record and compact the bounded file
@@ -837,9 +853,11 @@ removes the pane once the worker's lease is released, restoring the pane that
 was active at launch if the person is still on the run's pane. Ghostty forces
 wait-after-command on every surface created with a command (the per-surface
 flag can only turn it on), so the surface keeps showing "Process exited" and
-never reports its process as ended by itself; in exit-when-clean mode the
-released lease is the proof that the worker exited without exec'ing a shell
-and nothing runs behind the surface. The worker outlives Ghostty's
+never closes by itself. Parley records the exit from Ghostty's own record
+(see the exit paragraph under the runtime model), but that says only that a
+process ended; in exit-when-clean mode the released lease is the proof that
+the worker exited without exec'ing a shell and nothing runs behind the
+surface. The worker outlives Ghostty's
 abnormal-runtime threshold before exiting (monotonic clock) so no
 failed-launch screen flashes. Ghostty reports a close synchronously from
 inside `terminate`, and that report refreshes the app: every termination in
