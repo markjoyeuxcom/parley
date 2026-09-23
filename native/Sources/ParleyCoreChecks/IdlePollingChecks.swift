@@ -143,8 +143,8 @@ let idlePollingChecks: [(String, () throws -> Void)] = [
             let ready = request.appendingPathComponent("ready")
             let replied = endpoint.appendingPathComponent("outbox", isDirectory: true).appendingPathComponent(id, isDirectory: true).appendingPathComponent("ready")
             let started = DispatchTime.now().uptimeNanoseconds
+            // Not touched after it appears: the transport may claim the request at once.
             try Data("ready".utf8).write(to: ready)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: ready.path)
             while !FileManager.default.fileExists(atPath: replied.path) {
                 try pollExpect(DispatchTime.now().uptimeNanoseconds - started < 2_000_000_000, "the transport did not answer a direct request within 2 s")
                 usleep(1_000)

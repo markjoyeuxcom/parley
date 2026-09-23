@@ -67,7 +67,7 @@ handoffs work. Agy reports hook state as Unknown by design.
    /home/parley/.gemini: permission denied"; Copilot: "EACCES … .cache"),
    which every image with a `/home/parley` directory did before 14
    September 2026 until the home volume was mounted with nocopy.
-3. Confirm protocol uptake (`parley whoami`, protocol 32) fresh and resumed.
+3. Confirm protocol uptake (`parley whoami`, protocol 33) fresh and resumed.
 4. Send an Ask and a Delegate between a container pane and a host pane.
 5. Check normal permission prompts appear (unless you chose bypass — then the
    pane badge and review must say so).
@@ -161,10 +161,10 @@ question, or the refusal is a bare error.
 - `parley ask` — blocks, returns the exact answer.
 - `parley ask-many` with two targets — independent answers, neither sees the other.
 - `parley delegate` — returns an id immediately, does not block.
-- `parley progress current "..."` — note appears in Status Center, labelled
+- `parley progress <id> "..."` — note appears in Status Center, labelled
   AGENT-DECLARED.
-- `parley done current "..."` and `parley fail current "..."` — recorded correctly.
-- `parley done current --file <path>` — stages for review, does **not** forward.
+- `parley done <id> "..."` and `parley fail <id> "..."` — recorded correctly.
+- `parley done <id> --file <path>` — stages for review, does **not** forward.
 - `parley status`, `parley wait <id>`, `parley cancel <id>`.
 - Refusals: same pane, a shell target, an ambiguous vendor name, a busy target.
 

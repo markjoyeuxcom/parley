@@ -47,6 +47,28 @@ public final class RelayFileTransport: @unchecked Sendable {
     private var pendingSince: [String: Date] = [:]
     public static let pendingFollowUpWindow: TimeInterval = 0.25
     public let abandonedRequestAge: TimeInterval
+    /// Requests that can block for minutes. They count against
+    /// `blockingGate`; every other request is short and never counted.
+    public static let blockingCommands: Set<String> = ["wait", "ask", "ask-many", "context-ask", "request-run", "team-request", "team-add"]
+    public static let defaultMaximumBlockingRequests = 64
+    public static let defaultWaitWindow: TimeInterval = 55
+    /// A reply nobody collected within this age is removed: its shim is
+    /// gone. A live shim collects its reply within half a second.
+    public static let defaultStaleResponseAge: TimeInterval = 600
+    public let waitWindow: TimeInterval
+    public let staleResponseAge: TimeInterval
+    /// At most this many request threads at once. A burst past it waits in
+    /// the inbox and is claimed as threads finish, so a flood of short
+    /// requests cannot create threads without bound.
+    public static let defaultMaximumWorkerThreads = 128
+    private let maximumWorkerThreads: Int
+    private var runningWorkers = 0
+    private var peakWorkers = 0
+    /// The most request threads that have run at once (diagnostics and checks).
+    public var peakWorkerThreads: Int { lock.withLock { peakWorkers } }
+    public var maximumWorkerThreadLimit: Int { maximumWorkerThreads }
+    private let blockingGate: BlockingRequestGate
+    public var activeBlockingRequests: Int { blockingGate.activeCount }
     /// Ticks serviced so far (diagnostics and checks).
     public var tickCount: Int { lock.withLock { ticks } }
     private var ticks = 0
@@ -66,7 +88,11 @@ public final class RelayFileTransport: @unchecked Sendable {
         runtimeDirectory: URL,
         tickets: RelayTicketServer? = nil,
         fileManager: FileManager = .default,
-        abandonedRequestAge: TimeInterval = 30
+        abandonedRequestAge: TimeInterval = 30,
+        maximumBlockingRequests: Int = RelayFileTransport.defaultMaximumBlockingRequests,
+        waitWindow: TimeInterval = RelayFileTransport.defaultWaitWindow,
+        staleResponseAge: TimeInterval = RelayFileTransport.defaultStaleResponseAge,
+        maximumWorkerThreads: Int = RelayFileTransport.defaultMaximumWorkerThreads
     ) {
         self.broker = broker
         self.credentials = credentials
@@ -74,6 +100,12 @@ public final class RelayFileTransport: @unchecked Sendable {
         self.runtimeDirectory = runtimeDirectory
         self.fileManager = fileManager
         self.abandonedRequestAge = max(0.1, abandonedRequestAge)
+        self.blockingGate = BlockingRequestGate(limit: maximumBlockingRequests)
+        self.waitWindow = max(0.1, waitWindow)
+        self.staleResponseAge = max(0.1, staleResponseAge)
+        // Blocking requests hold their threads, so the limit always leaves
+        // at least one above them for done, answer and the other short ones.
+        self.maximumWorkerThreads = max(maximumWorkerThreads, blockingGate.limit + 1)
     }
 
     public static func runtimeDirectory(
@@ -157,6 +189,7 @@ public final class RelayFileTransport: @unchecked Sendable {
         let now = Date()
         if now.timeIntervalSince(lastHeartbeat) >= 1 {
             try? writeHeartbeats()
+            removeStaleResponses(now: now)
         }
         var activity = false
         // A request directory that exists but has no `ready` marker yet: the
@@ -168,7 +201,8 @@ public final class RelayFileTransport: @unchecked Sendable {
         var seenWithoutReady: Set<String> = []
         let endpoints = endpointDirectories()
         syncInboxWatchers(endpoints)
-        for endpoint in endpoints {
+        var saturated = false
+        for endpoint in endpoints where !saturated {
             let inbox = endpoint.appendingPathComponent("inbox", isDirectory: true)
             let processing = endpoint.appendingPathComponent("processing", isDirectory: true)
             guard let candidates = try? fileManager.contentsOfDirectory(
@@ -197,17 +231,34 @@ public final class RelayFileTransport: @unchecked Sendable {
                     }
                     continue
                 }
+                let reserved = lock.withLock { () -> Bool in
+                    guard runningWorkers < maximumWorkerThreads else { return false }
+                    runningWorkers += 1
+                    peakWorkers = max(peakWorkers, runningWorkers)
+                    return true
+                }
+                guard reserved else {
+                    // Left in the inbox; the fast cadence claims it as threads free up.
+                    saturated = true
+                    activity = true
+                    break
+                }
                 let claimed = processing.appendingPathComponent(requestID, isDirectory: true)
                 do {
                     try fileManager.moveItem(at: candidate, to: claimed)
                 } catch {
+                    lock.withLock { runningWorkers -= 1 }
                     continue
                 }
                 activity = true
                 workers.enter()
                 let workers = workers
-                DispatchQueue.global(qos: .utility).async { [weak self] in
-                    defer { workers.leave() }
+                // A thread of its own, never the shared pool: see RelayWorkerThread.
+                RelayWorkerThread.start(name: "parley.relay.request") { [weak self] in
+                    defer {
+                        self?.lock.withLock { self?.runningWorkers -= 1 }
+                        workers.leave()
+                    }
                     self?.process(requestID: requestID, directory: claimed, endpoint: endpoint)
                 }
             }
@@ -277,6 +328,16 @@ public final class RelayFileTransport: @unchecked Sendable {
         // Credentials and request text leave the filesystem before a blocking
         // Ask or wait begins. The worker retains only its in-memory value.
         try? fileManager.removeItem(at: directory)
+        let blocking = Self.blockingCommands.contains(request.command)
+        if blocking, !blockingGate.enter() {
+            try? writeResponse(
+                FileResponse(status: 503, body: "Parley already has \(blockingGate.limit) agent requests waiting on this Mac; nothing was sent. Try again in a minute."),
+                requestID: requestID,
+                endpoint: endpoint
+            )
+            return
+        }
+        defer { if blocking { blockingGate.leave() } }
         let response = route(request) { [weak self] handoffID in
             try? self?.writeAskAcceptance(
                 handoffID: handoffID,
@@ -383,7 +444,10 @@ public final class RelayFileTransport: @unchecked Sendable {
         case "status":
             return encode(broker.delegationStatus(token: request.token))
         case "wait":
-            return encode(broker.waitForTrackedWork(token: request.token, handoffID: request.item))
+            // A bounded long-poll: after `waitWindow` the shim is told to ask
+            // again, so a wait whose shim a vendor killed holds its thread
+            // for at most one window.
+            return encode(broker.waitForTrackedWork(token: request.token, handoffID: request.item, within: waitWindow))
         case "progress":
             return encode(broker.handleDelegationProgress(
                 token: request.token,
@@ -492,6 +556,23 @@ public final class RelayFileTransport: @unchecked Sendable {
         try writeProtected(String(response.status), to: directory.appendingPathComponent("status"))
         try writeProtected(response.body, to: directory.appendingPathComponent("body"))
         try writeProtected("ready", to: directory.appendingPathComponent("ready"))
+    }
+
+    /// Replies whose shim never collected them: a vendor killed the shim,
+    /// typically while a wait or Ask was in progress. Only a finished reply
+    /// (`ready` present) is removed; an Ask still in progress keeps its
+    /// acceptance files.
+    private func removeStaleResponses(now: Date) {
+        for endpoint in endpointDirectories() {
+            let outbox = endpoint.appendingPathComponent("outbox", isDirectory: true)
+            guard let replies = try? fileManager.contentsOfDirectory(at: outbox, includingPropertiesForKeys: nil, options: []) else { continue }
+            for reply in replies where Self.isRequestID(reply.lastPathComponent) {
+                let ready = reply.appendingPathComponent("ready")
+                guard let written = (try? fileManager.attributesOfItem(atPath: ready.path))?[.modificationDate] as? Date,
+                      now.timeIntervalSince(written) > staleResponseAge else { continue }
+                try? fileManager.removeItem(at: reply)
+            }
+        }
     }
 
     private func responseDirectory(requestID: String, endpoint: URL) throws -> URL {

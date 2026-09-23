@@ -481,6 +481,12 @@ public final class RelayBroker: @unchecked Sendable {
     private let selectedText: SelectedText?
     private let vendorSignal: VendorSignal
     private let gitFacts: GitFacts?
+    /// Target pane id to the credential of the run in which a delegation to
+    /// it was cancelled. Cancel does not interrupt the target, so that run
+    /// may still report the cancelled work; while it lasts, `current` could
+    /// resolve to a later delegation and is refused (review of 22 Sep 2026,
+    /// M4). A restart rotates the credential, which ends the refusal.
+    private var cancelledDelegationRuns: [String: String] = [:]
     private let clock: Clock
     private let consultationTimeout: TimeInterval
     private let livenessPollInterval: TimeInterval
@@ -1538,7 +1544,7 @@ public final class RelayBroker: @unchecked Sendable {
             let cleaned = RelayText.clean(text)
             guard !cleaned.isEmpty else { return failure(400, "nothing to relay") }
             guard cleaned.count <= RelayText.maximumCharacters else {
-                return failure(400, "text too long")
+                return failure(400, RelayText.tooLong("text", count: cleaned.count))
             }
             let (sender, target) = try route(token: token, requestedTarget: requestedTarget)
             try authorize(kind, for: sender)
@@ -1676,7 +1682,7 @@ public final class RelayBroker: @unchecked Sendable {
         let cleaned = preserveFormatting ? ContextPackText.normalize(text) : RelayText.clean(text)
         guard !cleaned.isEmpty else { return failure(400, "nothing to delegate") }
         guard cleaned.count <= RelayText.maximumCharacters else {
-            return failure(400, "delegated task too long")
+            return failure(400, RelayText.tooLong("delegated task", count: cleaned.count))
         }
 
         let scope = IdempotencyScope(senderPaneID: sender.id, key: idempotencyKey)
@@ -1850,7 +1856,8 @@ public final class RelayBroker: @unchecked Sendable {
             return RelayTextResponse(status: 400, text: succeeded ? "nothing to report as done" : "nothing to report as failed")
         }
         guard cleaned.count <= RelayText.maximumCharacters else {
-            return RelayTextResponse(status: 400, text: "delegation result too long")
+            return RelayTextResponse(status: 400, text: RelayText.tooLong("delegation result", count: cleaned.count,
+                hint: "Put a long report in a file inside your working folder and return it with parley done <id> --file <path>, using this delegation's id"))
         }
 
         // Phase one, unlocked: informational Git facts for the reporting
@@ -1862,6 +1869,10 @@ public final class RelayBroker: @unchecked Sendable {
         consultationCondition.lock()
         let handoffID: String
         if requestedHandoffID.caseInsensitiveCompare("current") == .orderedSame {
+            if let refusal = ambiguousCurrentDelegationLocked(senderID: senderID, token: token) {
+                consultationCondition.unlock()
+                return refusal
+            }
             let matches = delegationRecords.keys.filter { handoffRecords[$0]?.targetPaneID == senderID }
             guard matches.count == 1, let match = matches.first else {
                 consultationCondition.unlock()
@@ -1877,8 +1888,9 @@ public final class RelayBroker: @unchecked Sendable {
             handoffID = requestedHandoffID
         }
         guard let record = delegationRecords[handoffID], let handoff = handoffRecords[handoffID] else {
+            let detail = retiredDelegationDetailLocked(handoffID, senderID: senderID)
             consultationCondition.unlock()
-            return RelayTextResponse(status: 404, text: "unknown active delegation")
+            return RelayTextResponse(status: 404, text: detail ?? "unknown active delegation")
         }
         guard handoff.targetPaneID == senderID else {
             consultationCondition.unlock()
@@ -1944,6 +1956,10 @@ public final class RelayBroker: @unchecked Sendable {
             consultationCondition.lock()
             let handoffID: String
             if requestedHandoffID.caseInsensitiveCompare("current") == .orderedSame {
+                if let refusal = ambiguousCurrentDelegationLocked(senderID: sender.id, token: token) {
+                    consultationCondition.unlock()
+                    return refusal
+                }
                 let matches = delegationRecords.keys.filter { handoffRecords[$0]?.targetPaneID == sender.id }
                 guard matches.count == 1, let match = matches.first else {
                     consultationCondition.unlock()
@@ -1959,8 +1975,9 @@ public final class RelayBroker: @unchecked Sendable {
                 handoffID = requestedHandoffID
             }
             guard let record = delegationRecords[handoffID], let handoff = handoffRecords[handoffID] else {
+                let detail = retiredDelegationDetailLocked(handoffID, senderID: sender.id)
                 consultationCondition.unlock()
-                return RelayTextResponse(status: 404, text: "unknown active delegation")
+                return RelayTextResponse(status: 404, text: detail ?? "unknown active delegation")
             }
             guard handoff.targetPaneID == sender.id else {
                 consultationCondition.unlock()
@@ -2058,6 +2075,10 @@ public final class RelayBroker: @unchecked Sendable {
         consultationCondition.lock()
         let handoffID: String
         if requestedHandoffID.caseInsensitiveCompare("current") == .orderedSame {
+            if let refusal = ambiguousCurrentDelegationLocked(senderID: senderID, token: token) {
+                consultationCondition.unlock()
+                return refusal
+            }
             let matches = delegationRecords.keys.filter { handoffRecords[$0]?.targetPaneID == senderID }
             guard matches.count == 1, let match = matches.first else {
                 consultationCondition.unlock()
@@ -2073,8 +2094,9 @@ public final class RelayBroker: @unchecked Sendable {
             handoffID = requestedHandoffID
         }
         guard let record = delegationRecords[handoffID], var handoff = handoffRecords[handoffID] else {
+            let detail = retiredDelegationDetailLocked(handoffID, senderID: senderID)
             consultationCondition.unlock()
-            return RelayTextResponse(status: 404, text: "unknown active delegation")
+            return RelayTextResponse(status: 404, text: detail ?? "unknown active delegation")
         }
         guard handoff.targetPaneID == senderID else {
             consultationCondition.unlock()
@@ -2450,13 +2472,24 @@ public final class RelayBroker: @unchecked Sendable {
         }
     }
 
-    public func waitForTrackedWork(token: String, handoffID requestedHandoffID: String) -> RelayTextResponse {
+    /// `parley wait`'s status when its window passes with the work still
+    /// open. The shim hides it and asks again; it is never a result.
+    public static let stillWaitingStatus = 102
+    public static let stillWaiting = RelayTextResponse(status: stillWaitingStatus, text: "still waiting")
+
+    /// Waits for one tracked item. With a window it is a bounded long-poll:
+    /// when the window passes first it returns `stillWaiting`, so a waiter
+    /// whose caller has gone holds its thread for one window at most. Nothing
+    /// about the tracked work changes. Without a window it waits until the
+    /// work ends, as native callers expect.
+    public func waitForTrackedWork(token: String, handoffID requestedHandoffID: String, within window: TimeInterval? = nil) -> RelayTextResponse {
+        let deadline = window.map { DispatchTime.now() + $0 }
         let source: WorkbenchPane
         do { source = try authenticatedSender(token: token) }
         catch let error as BrokerFailure { return RelayTextResponse(status: error.status, text: error.message) }
         catch { return RelayTextResponse(status: 403, text: error.localizedDescription) }
-        if let commandRuns, commandRuns.owns(id: requestedHandoffID) { return commandRuns.wait(token: token, id: requestedHandoffID) }
-        if let teamSessions, teamSessions.owns(id: requestedHandoffID) { return teamSessions.wait(token: token, id: requestedHandoffID) }
+        if let commandRuns, commandRuns.owns(id: requestedHandoffID) { return commandRuns.wait(token: token, id: requestedHandoffID, until: deadline) }
+        if let teamSessions, teamSessions.owns(id: requestedHandoffID) { return teamSessions.wait(token: token, id: requestedHandoffID, until: deadline) }
         consultationCondition.lock()
         let handoffID: String
         if requestedHandoffID.caseInsensitiveCompare("current") == .orderedSame {
@@ -2515,6 +2548,10 @@ public final class RelayBroker: @unchecked Sendable {
             if let response = liveDelegationResponse ?? trackedWaitResponse(for: handoff) {
                 consultationCondition.unlock()
                 return response
+            }
+            if let deadline, DispatchTime.now() >= deadline {
+                consultationCondition.unlock()
+                return Self.stillWaiting
             }
             _ = consultationCondition.wait(until: Date().addingTimeInterval(livenessPollInterval))
             consultationCondition.unlock()
@@ -2583,7 +2620,7 @@ public final class RelayBroker: @unchecked Sendable {
             : RelayText.clean(text)
         guard !cleaned.isEmpty else { return RelayTextResponse(status: 400, text: "nothing to ask") }
         guard cleaned.count <= RelayText.maximumCharacters else {
-            return RelayTextResponse(status: 400, text: "question too long")
+            return RelayTextResponse(status: 400, text: RelayText.tooLong("question", count: cleaned.count))
         }
 
         let scope = IdempotencyScope(senderPaneID: sender.id, key: idempotencyKey)
@@ -2751,7 +2788,7 @@ public final class RelayBroker: @unchecked Sendable {
             : RelayText.clean(text)
         guard !cleaned.isEmpty else { return RelayTextResponse(status: 400, text: "nothing to ask") }
         guard cleaned.count <= RelayText.maximumCharacters else {
-            return RelayTextResponse(status: 400, text: "question too long")
+            return RelayTextResponse(status: 400, text: RelayText.tooLong("question", count: cleaned.count))
         }
 
         let targets = requestedTargets
@@ -2797,7 +2834,9 @@ public final class RelayBroker: @unchecked Sendable {
         let group = DispatchGroup()
         for (index, route) in routes.enumerated() {
             group.enter()
-            DispatchQueue.global(qos: .utility).async { [self] in
+            // Each child blocks until its target answers, so it gets a thread
+            // of its own rather than one from the shared pool (RelayWorkerThread).
+            RelayWorkerThread.start(name: "parley.relay.ask-many") { [self] in
                 defer { group.leave() }
                 let childKey = askManyChildKey(root: rootKey, targetPaneID: route.pane.id)
                 let response = handleAsk(
@@ -3137,6 +3176,11 @@ public final class RelayBroker: @unchecked Sendable {
         let normalized = request.preserveFormatting
             ? ContextPackText.normalize(request.text)
             : RelayText.clean(request.text)
+        // Refused before the edited text is stored, so the queued draft keeps
+        // what the person last saved.
+        guard normalized.count <= RelayText.maximumCharacters else {
+            return RelayTextResponse(status: 400, text: RelayText.tooLong("reviewed draft", count: normalized.count))
+        }
         let dispatching: ReviewedBusyDraft
         consultationCondition.lock()
         if targetHasTrackedWorkLocked(existing.targetPaneID) {
@@ -3703,6 +3747,9 @@ public final class RelayBroker: @unchecked Sendable {
                 consultationCondition.unlock()
                 return RelayTextResponse(status: 409, text: "this delegation is no longer active")
             }
+            if let record = delegationRecords[handoffID] {
+                cancelledDelegationRuns[handoff.targetPaneID] = record.targetCredential
+            }
             transitionHandoffLocked(handoffID, to: .cancelled, detail: message, origin: origin)
             delegationRecords.removeValue(forKey: handoffID)
             delegationResponses[handoffID] = RelayTextResponse(status: 409, text: message)
@@ -3963,6 +4010,36 @@ public final class RelayBroker: @unchecked Sendable {
             + "Your answer was not accepted or delivered, and retrying will not reopen it."
     }
 
+    /// `current` is refused for a pane whose run had a delegation cancelled:
+    /// the report may be for that one, and `current` would give it to a later
+    /// delegation. The id always works.
+    private func ambiguousCurrentDelegationLocked(senderID: String, token: String) -> RelayTextResponse? {
+        guard cancelledDelegationRuns[senderID] == token else { return nil }
+        return RelayTextResponse(
+            status: 409,
+            text: "A delegation to this pane was cancelled while this run may still have been working on it, so `current` could name the wrong one. Name the delegation's id instead: parley done <id>, parley fail <id> or parley progress <id>, with the id its prompt gave."
+        )
+    }
+
+    /// Why a report naming this delegation is refused, told only to the pane
+    /// it was delegated to: a closed delegation never reopens, and a report
+    /// for it must never land on a later one (review of 22 Sep 2026, M4).
+    private func retiredDelegationDetailLocked(_ handoffID: String, senderID: String) -> String? {
+        guard let handoff = handoffRecords[handoffID],
+              handoff.kind == .delegate,
+              handoff.targetPaneID == senderID else { return nil }
+        let closedAt = handoff.transitions.last { $0.state == handoff.state }?.occurredAt ?? handoff.updatedAt
+        let reason = switch handoff.state {
+        case .completed: "already has a result"
+        case .cancelled: "was cancelled"
+        case .failed: "already ended as failed"
+        case .interrupted: "was interrupted"
+        default: "is no longer awaiting a result"
+        }
+        return "This delegation \(reason) at \(ISO8601DateFormatter().string(from: closedAt)). "
+            + "Your report was not accepted or returned, and retrying will not reopen it."
+    }
+
     private func acceptAnswer(
         from senderID: String,
         presentedCredential: String?,
@@ -3973,7 +4050,7 @@ public final class RelayBroker: @unchecked Sendable {
         let cleaned = RelayText.clean(text)
         guard !cleaned.isEmpty else { return RelayTextResponse(status: 400, text: "nothing to return") }
         guard cleaned.count <= RelayText.maximumCharacters else {
-            return RelayTextResponse(status: 400, text: "answer too long")
+            return RelayTextResponse(status: 400, text: RelayText.tooLong("answer", count: cleaned.count))
         }
 
         consultationCondition.lock()
@@ -4151,27 +4228,28 @@ public final class RelayBroker: @unchecked Sendable {
         } else {
             "\(handoff.sourceName) delegated work:"
         }
+        let id = handoff.id
         return """
         \(heading)
 
         \(handoff.text)
 
         When the work is complete, return a concise completion report to \(handoff.sourceName) by running:
-        parley done current "your completion report"
+        parley done \(id) "your completion report"
 
         For a substantial result file of at most \(ContextPackBuilder.defaultMaximumPartBytes) UTF-8 bytes inside this pane's working folder, stage it for explicit human review by running:
-        parley done current --file <path>
+        parley done \(id) --file <path>
         In that file, plain Markdown headings ## Implemented, ## Tested (each command and its outcome) and ## Unable to test (with the reason) are shown to the person as agent-declared completion evidence; nothing in it is checked by Parley.
 
         At each milestone, replace the one agent-declared progress note of at most \(DelegationProgressText.maximumBytes) UTF-8 bytes visible to \(handoff.sourceName) by running:
-        parley progress current "what changed"
+        parley progress \(id) "what changed"
 
         If the work cannot be completed, return the blocking reason by running:
-        parley fail current "why the work failed"
+        parley fail \(id) "why the work failed"
 
         If Parley's instructions are missing, run `parley protocol` (or `"$PARLEY_COMMAND" protocol` when PATH changed). Vendor tool approval still applies.
 
-        For a multiline report, pipe the text to `parley done current` or `parley fail current`. A returned file is not forwarded automatically. Parley identifies this tracked item from the pane credential. Do not only print the result in this pane; the initiating agent may use `parley wait` for the structured outcome.
+        For a multiline report, pipe the text to `parley done \(id)` or `parley fail \(id)`. That id names this exact delegation; use it verbatim. Do not substitute `current`, which resolves to whichever delegation this pane holds when the command runs and may by then be a later one. A returned file is not forwarded automatically. Do not only print the result in this pane; the initiating agent may use `parley wait` for the structured outcome.
         """
     }
 
@@ -5165,6 +5243,13 @@ public enum RelayShim {
           && [ -f "$response_dir/status" ] && [ ! -L "$response_dir/status" ] \
           && [ -f "$response_dir/body" ] && [ ! -L "$response_dir/body" ]; then
           status="$(/bin/cat "$response_dir/status")"
+          if [ "$status" = "102" ]; then
+            # The broker's long-poll window passed with the work still open:
+            # nothing to print; the caller asks again.
+            cleanup
+            trap - EXIT
+            return 75
+          fi
           /bin/cat "$response_dir/body"
           cleanup
           trap - EXIT
@@ -5174,11 +5259,21 @@ public enum RelayShim {
           esac
         fi
         checks=$((checks + 1))
-        if [ $((checks % 20)) -eq 0 ] && ! heartbeat_is_fresh; then
+        # Every 50 ms for the first second, where nearly every reply lands,
+        # then every 250 ms: a long wait must not start twenty processes a
+        # second. The broker's heartbeat is checked about once a second.
+        if [ "$checks" -le 20 ]; then
+          heartbeat_every=20
+          pause=0.05
+        else
+          heartbeat_every=4
+          pause=0.25
+        fi
+        if [ $((checks % heartbeat_every)) -eq 0 ] && ! heartbeat_is_fresh; then
           echo "the Parley relay broker stopped before replying" >&2
           return 2
         fi
-        /bin/sleep 0.05
+        /bin/sleep "$pause"
       done
     }
 
@@ -5214,7 +5309,14 @@ public enum RelayShim {
         printf '' | post
         ;;
       wait)
-        printf '' | post
+        # A bounded long-poll: each post returns within the broker's window,
+        # and 75 means the work is still open, so ask again. A wait whose
+        # shell is killed therefore leaves no request blocked for long.
+        while :; do
+          wait_status=0
+          printf '' | post || wait_status=$?
+          [ "$wait_status" -eq 75 ] || exit "$wait_status"
+        done
         ;;
       cancel)
         printf '' | post

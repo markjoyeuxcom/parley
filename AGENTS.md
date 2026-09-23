@@ -307,12 +307,58 @@ a different source identity.
 - `parley progress <id|current> <note>` lets the exact delegated target replace
   one bounded, control-stripped, agent-declared progress note. It is never a
   lifecycle transition and never counts as completion.
-- `parley done|fail <id|current> <report>` records the exact result.
+- `parley done|fail <id|current> <report>` records the exact result. The
+  delegation prompt names its own id and teaches it, as the Ask prompt does
+  (protocol 33, 23 September 2026): cancel does not interrupt the target, so a
+  target that finishes a cancelled delegation and runs `done current` used to
+  complete the next delegation to it with the wrong report. `done`, `done
+  --file` and `progress` naming a closed delegation are refused with its state
+  (`retiredDelegationDetailLocked`, told only to the delegated pane), and
+  `current` is refused outright for a pane whose run had a delegation
+  cancelled (`cancelledDelegationRuns`, keyed to the run's credential, so a
+  restart ends it). `current` otherwise still resolves a single delegation.
 - `parley done <id|current> --file <path>` completes a delegation only after
   a contained, bounded UTF-8 file is durably staged as an agent-provided draft
   for explicit human review. It never forwards the file automatically.
 - `parley status` returns the caller's initiated work as JSON.
 - `parley wait <id|current>` waits for one exact result.
+
+Relay requests never run on the shared dispatch pool (22 September 2026, H2
+of that day's review). Every agent transport request, every UI control
+connection and every `ask-many` child Ask runs on a thread of its own
+(`RelayWorkerThread`). The transport runs at most 128 request threads at once;
+a burst beyond that waits in the inbox, and the limit is always kept above the
+blocking limit so a `done` always finds a thread. Only short, bounded work
+stays on the pool: ticket connections and `CommandRunner`'s stdin write. The pool has a
+fixed number of threads per process (70 on the review's Mac); when parked
+waits filled it, the target's own `parley done`, the ticket socket and the UI
+socket stopped. The requests that can block for minutes (`wait`, `ask`,
+`ask-many`, `context-ask`, `request-run`, `team-request`, `team-add`) count
+against a `BlockingRequestGate` of 64. Past it a new one gets 503 at once, and
+short requests are never counted. `parley wait` is a bounded long-poll: the
+transport passes a 55-second window, the broker and both coordinators return
+`RelayBroker.stillWaiting` (status 102) when it passes, and the shim asks
+again without printing. A wait whose shell a vendor killed therefore holds its
+thread for one window at most. Native callers pass no window and wait as
+before. The initial `ask`, `request-run` and team calls still block, because
+their waiter enforces the consultation timeout and liveness; each is limited
+to one per target or pane, so they cannot accumulate. Replies nobody
+collected are removed after ten minutes. The shim polls every 50 ms for its
+first second, then every 250 ms. `BoundedWaitChecks` parks 80 waits and
+requires the worker's `done` to go through.
+
+Message text is limited to `RelayText.maximumCharacters` (100,000) after
+`RelayText.clean`, which never truncates. Every route (relay, paste, ask,
+ask-many, answer, delegate, done and the reviewed busy-draft send) refuses
+longer text with 400 and `RelayText.tooLong`, which states the real length
+and that nothing was sent; the composer shows the real count and disables
+Send, and Insert Selection refuses a selection over the limit rather than
+inserting part of it. The native editor dialog (`AppModel.editRelay`)
+enforces the limit itself and reopens with the person's edits, because
+Forward comparison and Run recipe paste its result straight into the lead
+pane without the broker; any new direct paste must keep a limit of its own. Until 22 September 2026 `clean` kept only the last
+100,000 characters, so these guards never fired and a long review, answer or
+report lost its beginning while Parley reported success.
 
 Discovery is read-only and uses the same pane capability boundary as delivery.
 `whoami` and `panes` never expose credentials, folders, commands, prompts or
@@ -394,7 +440,7 @@ streamed progress or any completion estimate; agent-supplied progress and
 evidence remain labelled claims.
 
 Completion-evidence convention (agent-declared, presentation only): a
-substantial result returned with `parley done current --file <path>` may use
+substantial result returned with `parley done <id> --file <path>` may use
 the plain Markdown template below. Status Center recognises the three ATX
 headings, in any order, as one **COMPLETION EVIDENCE** block labelled
 AGENT-DECLARED and shows every body as an unchecked claim. Unknown headings
@@ -1438,7 +1484,22 @@ in `recv` can never service that hop. v0.1.40 froze on a context-pack Ask for
 exactly this reason, until the person force-quit it. `RelayCoreClient` now
 refuses a tracked request made from the main thread before it touches the
 socket, so a call site that forgets gets an alert instead of a frozen app;
-short reads such as the refresh tick stay allowed on the main thread.
+short reads such as the refresh tick stay allowed on the main thread. The
+same refusal covers every short route whose core side reaches a pane (22
+September 2026, M3): Retry Delivery (`retryHandoff`, a paste) and trusted
+capture into an agent draft (`captureTrustedContext`, a selection read
+through `main.sync`, a 15-second command or several Git reads). Both
+previously froze the UI for their 3-second timeout and reported a failure
+while the delivery or capture happened anyway. They pass `reachesPane: true`
+and `paneReachingResponseTimeout` (45 s), and AppModel runs them detached;
+capture holds `contextCaptureInFlight` so a second click cannot add a
+duplicate part, and a selection is cleared only after the core has read it.
+While any capture into the open pack runs (`contextPackCaptureRunning`,
+including the person's own Git Diff, now also detached, and Command Result),
+Ask, Compare, Decline or Discard and every add-source button wait, because
+an agent draft's revision changes when the capture lands. A second Retry of
+the same handoff is ignored while the first is in flight.
+A new UI route that pastes into or reads from a pane must set `reachesPane`.
 
 ## Roles and mobility
 
@@ -1494,11 +1555,16 @@ alter an existing model context.
   (Mark's decision after it had asked before every Bash command), so it places
   no shell restriction on any vendor; Default and Workspace folders still ask.
   A host team
-  is therefore supervised automation: Codex asks on sandbox escalation, Agy
-  asks before commands and has no allowlist (only `--dangerously-skip-permissions`,
-  which invariant 3 forbids on the host), and only container members with
-  approved bypass run unattended. Help, the protocol and the team approval
-  say so.
+  is therefore supervised automation unless the person chose the vendor's
+  automatic reviewer for that vendor (Claude auto mode, Codex auto review,
+  Copilot assisted approval), which answers prompts inside the vendor's rules
+  and can still refuse: without it Codex asks on sandbox escalation, Agy
+  asks before commands and has no allowlist or reviewer (only
+  `--dangerously-skip-permissions`, which invariant 3 forbids on the host).
+  Members with the automatic reviewer or an approved container bypass are the
+  ones that run unattended. Help, the protocol and the team approval say so
+  (they said "not unattended" until protocol 33 on 23 September 2026, which
+  contradicted the form).
 - Codex receives the protocol through `developer_instructions` and generated
   lifecycle hooks through fixed inline `-c` values. Codex parses each `-c`
   value as TOML and, if that fails, silently uses the whole value as a literal

@@ -72,7 +72,7 @@ func checkReviewAndCorrectRecipeIsAPromptTemplateOnly() throws {
     let text = recipe.instructions
     let lowered = text.lowercased()
     for phrase in [
-        "parley delegate", "parley progress current", "parley done current", "--file <path>",
+        "parley delegate", "parley progress <id>", "parley done <id>", "--file <path>",
         "different vendor", "--parent <handoff-id>", "verif",
     ] {
         try recipeExpect(lowered.contains(phrase), "the recipe does not guide the step containing \(phrase)")
@@ -81,7 +81,7 @@ func checkReviewAndCorrectRecipeIsAPromptTemplateOnly() throws {
         try recipeExpect(lowered.contains(step), "the recipe omits the practice step \(step)")
     }
     let delegateIndex = try recipeRequire(lowered.range(of: "parley delegate ")?.lowerBound, "no delegate step")
-    let progressIndex = try recipeRequire(lowered.range(of: "parley progress current")?.lowerBound, "no progress step")
+    let progressIndex = try recipeRequire(lowered.range(of: "parley progress <id>")?.lowerBound, "no progress step")
     let reviewIndex = try recipeRequire(lowered.range(of: "different vendor")?.lowerBound, "no review step")
     let correctionIndex = try recipeRequire(lowered.range(of: "--parent <handoff-id>")?.lowerBound, "no linked corrections step")
     let verifyIndex = try recipeRequire(lowered.range(of: "verif", range: correctionIndex..<lowered.endIndex)?.lowerBound, "no independent verification after corrections")
@@ -189,7 +189,7 @@ func checkReviewAndCorrectGuidanceIsDocumentedAsPractice() throws {
     for banned in ["state machine", "automatic transition", "executor"] {
         try recipeExpect(!recipeText.contains(banned) || recipeText.contains("no \(banned)") || recipeText.contains("not "), "recipe help describes automation: \(banned)")
     }
-    try recipeExpect(AgentProtocol.version == "32", "recipe checks did not use the current shared protocol")
+    try recipeExpect(AgentProtocol.version == "33", "recipe checks did not use the current shared protocol")
 }
 
 private func targetPane(_ id: String, _ kind: PaneKind, _ name: String) -> WorkbenchPane {
@@ -263,5 +263,5 @@ func checkReviewAndCorrectRequiresTwoTargetsFromDifferentVendors() throws {
     try recipeExpect(HandoffRecipeTargeting.unavailableMessage(for: reviewAndCorrect).lowercased().contains("different vendors"), "the unavailable copy does not explain the two-vendor rule")
     try recipeExpect(HandoffRecipeTargeting.unavailableMessage(for: compare) == "Open at least two ready agent panes other than the lead.", "Compare unavailable copy changed")
     try recipeExpect(HandoffRecipeTargeting.unavailableMessage(for: bugHunt) == "Open a ready agent pane other than the lead.", "single-select unavailable copy changed")
-    try recipeExpect(AgentProtocol.version == "32", "targeting checks did not use the current shared protocol")
+    try recipeExpect(AgentProtocol.version == "33", "targeting checks did not use the current shared protocol")
 }

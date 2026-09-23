@@ -1320,7 +1320,7 @@ private func checkInAppHelpGuideCoverage() throws {
         "target signal", "advisory only", "neither blocks nor authorizes",
         "exact working directory", "bounded listen ports", "owning process tree",
         "latest authoritative attention reason", "none of these facts comes from terminal scraping",
-        "parley done current --file", "compact completion receipt", "returned delegation files",
+        "parley done <id> --file", "compact completion receipt", "returned delegation files",
         "review, not delivery",
         "pane focus strip", "native terminal", "macos clipboard", "mouse-aware", "shift",
     ] {
@@ -3660,7 +3660,7 @@ private func checkSharedProtocolLaunchAdapters() throws {
     let rules = try String(contentsOf: protocolDirectory.appendingPathComponent("AGENTS.md"), encoding: .utf8)
     try expect(rules == AgentProtocol.text, "Agy's rules file drifted from the canonical protocol text")
     try expect(AgentProtocol.text.contains("protocol v\(AgentProtocol.version)"), "protocol text does not identify its version")
-    try expect(AgentProtocol.version == "32", "the shared protocol version drifted from cross-project agent awareness")
+    try expect(AgentProtocol.version == "33", "the shared protocol version drifted from cross-project agent awareness")
     try expect(
         AgentProtocol.text.contains("parley delegate <target> --parent <handoff-id>")
             && AgentProtocol.text.contains("requestChanges")
@@ -3684,7 +3684,7 @@ private func checkSharedProtocolLaunchAdapters() throws {
         try expect(AgentProtocol.text.contains(command), "shared protocol omitted \(command)")
     }
     try expect(
-        AgentProtocol.text.contains("parley done current --file <path>")
+        AgentProtocol.text.contains("parley done <id> --file <path>")
             && AgentProtocol.text.contains("does not send or promote"),
         "shared protocol omitted the reviewed delegation-file boundary"
     )
@@ -3867,10 +3867,11 @@ private func checkTrackedDelegationCompletesAndWaits() throws {
     try expect(delegated.status == 200 && delegated.body.state == .waiting, "delegate did not return a waiting tracked item")
     try expect(submitted.value?.paneID == "%2" && submitted.value?.submit == true, "delegate was not submitted to the exact target")
     try expect(submitted.value?.text.contains("Planner delegated work:") == true, "delegate omitted source attribution")
-    try expect(submitted.value?.text.contains("parley done current") == true, "delegate omitted its completion command")
-    try expect(submitted.value?.text.contains("parley done current --file <path>") == true, "delegate omitted its reviewed file-result command")
-    try expect(submitted.value?.text.contains("parley fail current") == true, "delegate omitted its failure command")
-    try expect(submitted.value?.text.contains("parley progress current") == true, "delegate omitted its optional progress command")
+    // The prompt names this delegation's own id, never `current` (M4, 22 Sep 2026).
+    try expect(submitted.value?.text.contains("parley done \(handoffID) \"") == true, "delegate omitted its completion command")
+    try expect(submitted.value?.text.contains("parley done \(handoffID) --file <path>") == true, "delegate omitted its reviewed file-result command")
+    try expect(submitted.value?.text.contains("parley fail \(handoffID) \"") == true, "delegate omitted its failure command")
+    try expect(submitted.value?.text.contains("parley progress \(handoffID) \"") == true, "delegate omitted its optional progress command")
     try expect(submitted.value?.text.contains("\(DelegationProgressText.maximumBytes) UTF-8 bytes") == true, "delegate omitted the actual progress bound")
     try expect(submitted.value?.text.contains("\(ContextPackBuilder.defaultMaximumPartBytes) UTF-8 bytes") == true, "delegate omitted the result-file bound")
     try expect(submitted.value?.text.contains("parley protocol") == true, "delegate omitted protocol recovery")
@@ -10327,7 +10328,7 @@ if let image = argument(named: "--container-transport-spike") {
 let onlyFilter = argument(named: "--only")?.lowercased()
 let skipFilters = (argument(named: "--skip") ?? "").lowercased()
     .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-let allChecks = (voiceChecks + containerPaneChecks + checks + reviewRegressionChecks + repositoryReviewChecks + approvalHandlingChecks + folderListChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + worktreeBoardChecks + worktreeRepositoryChecks + emptyWorkspaceChecks + relayTicketChecks + protocolDriftChecks + auxiliaryWindowChecks + helpAuditChecks + terminalTypeChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + askCorrelationChecks + gitReadBoundaryChecks + codexTOMLChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
+let allChecks = (voiceChecks + containerPaneChecks + checks + reviewRegressionChecks + repositoryReviewChecks + approvalHandlingChecks + folderListChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + worktreeBoardChecks + worktreeRepositoryChecks + emptyWorkspaceChecks + relayTicketChecks + protocolDriftChecks + auxiliaryWindowChecks + helpAuditChecks + terminalTypeChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + askCorrelationChecks + gitReadBoundaryChecks + codexTOMLChecks + relayTextLimitChecks + boundedWaitChecks + paneReachingRequestChecks + delegationIdChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
     onlyFilter.map { name.lowercased().contains($0) } ?? true
 }
 var skippedCount = 0

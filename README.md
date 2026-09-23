@@ -265,7 +265,7 @@ likely to take longer; `parley wait current` remains shorthand only for one
 active delegation.
 
 The exact target of active delegated work may run
-`parley progress current "<note>"` to replace one control-stripped,
+`parley progress <id> "<note>"` to replace one control-stripped,
 200-byte progress note. The initiating pane sees it in structured
 `parley status`, and the person sees it in the existing Status Center
 inspector. It is explicitly agent-declared and never counts as activity,
@@ -273,7 +273,7 @@ completion or failure; terminal work still requires `parley done` or
 `parley fail`.
 
 For a substantial UTF-8 result, the exact delegated target can run
-`parley done current --file <path>`. The path must remain inside that pane's
+`parley done <id> --file <path>`. The path must remain inside that pane's
 working folder. Parley preserves formatting within the existing 60 KB source
 and 90 KB rendered Context Pack limits, completes the tracked work only after
 the agent-provided draft is durable, and returns a compact linked receipt to

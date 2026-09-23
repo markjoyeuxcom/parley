@@ -345,7 +345,7 @@ func checkDelegateRecipeGuidanceRequestsMilestonesAndFileResults() throws {
         "there is no default Delegate recipe"
     )
     try delegationExpect(
-        recipe.instructions.contains("parley progress current"),
+        recipe.instructions.contains("parley progress <id>"),
         "the default Delegate guidance does not ask for a progress note at each milestone"
     )
     try delegationExpect(
@@ -353,7 +353,7 @@ func checkDelegateRecipeGuidanceRequestsMilestonesAndFileResults() throws {
         "the default Delegate guidance does not tie progress notes to milestones"
     )
     try delegationExpect(
-        recipe.instructions.contains("parley done current --file <path>"),
+        recipe.instructions.contains("parley done <id> --file <path>"),
         "the default Delegate guidance does not show the complete file-result syntax with its <path> placeholder"
     )
     try delegationExpect(recipe.instructions.contains("{{targets}}"), "the default Delegate guidance lost its explicit targets placeholder")

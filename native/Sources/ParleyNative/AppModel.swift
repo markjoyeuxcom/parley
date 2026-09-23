@@ -240,6 +240,19 @@ final class AppModel: ObservableObject {
     @Published private(set) var contextPackDraft: ActiveContextPack?
     @Published private(set) var contextReviews: [AgentContextReview] = []
     @Published private(set) var contextCommandCapturing = false
+    /// One capture into the open context pack at a time: trusted capture into
+    /// an agent draft (the core records the part as soon as it runs, so a
+    /// second click would add a duplicate) or the person's own Git Diff.
+    @Published private(set) var contextCaptureInFlight = false
+    /// Retry Delivery requests still waiting on the core; a second retry of
+    /// the same handoff would only be refused.
+    private var retryingHandoffIDs: Set<String> = []
+
+    /// Any capture into the open pack is still running. Sending, comparing,
+    /// declining or adding another source waits for it: an agent draft's
+    /// revision changes when the capture lands, and a pack sent now would
+    /// miss the source being added.
+    var contextPackCaptureRunning: Bool { contextCaptureInFlight || contextCommandCapturing }
     @Published private(set) var coreAvailable = false
     /// Whether the peer-verified ticket socket is listening; the launch
     /// review's attestation line reads this at review time.
@@ -2944,7 +2957,8 @@ final class AppModel: ObservableObject {
     }
 
     var contextPackIsSendable: Bool {
-        guard let draft = contextPackDraft,
+        guard !contextPackCaptureRunning,
+              let draft = contextPackDraft,
               !draft.pack.parts.isEmpty,
               !draft.pack.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               contextPackSourcePane != nil else { return false }
@@ -5191,6 +5205,11 @@ final class AppModel: ObservableObject {
             guard !selection.isEmpty else {
                 throw RelayUIError.message("Select text in \(draft.sourceName) first; Parley never captures scrollback implicitly.")
             }
+            // Whole or not at all: inserting only part of a selection would
+            // silently drop its beginning.
+            guard selection.count <= RelayText.maximumCharacters else {
+                throw RelayUIError.message("The selection in \(draft.sourceName) is \(selection.count.formatted()) characters, over the \(RelayText.maximumCharacters.formatted())-character limit. Select less; nothing was inserted.")
+            }
             if !draft.text.isEmpty { draft.text += "\n\n" }
             draft.text += selection
             draft.includesTerminalSelection = true
@@ -5495,7 +5514,7 @@ final class AppModel: ObservableObject {
         case .verify:
             request = "Verify this returned result against the stated task. Identify the evidence that supports or contradicts it, then give a clear conclusion."
         case .requestChanges:
-            request = "Revise this returned result. Address the requested changes below, keep what is already correct, and return the revised result with `parley done current` or `parley done current --file <path>`.\n\nRequested changes:\n(describe the changes required before this result can be accepted)"
+            request = "Revise this returned result. Address the requested changes below, keep what is already correct, and return the revised result with `parley done <id>` or `parley done <id> --file <path>`, using the id Parley names in this delegation.\n\nRequested changes:\n(describe the changes required before this result can be accepted)"
         }
         let originalLabel = handoff.kind == .commandRun ? "Original command request" : (handoff.kind == .delegate ? "Original instruction" : "Original question or message")
         return """
@@ -5832,7 +5851,7 @@ final class AppModel: ObservableObject {
 
         perform {
             if let reviewID = draft.reviewID {
-                try captureTrustedContext(
+                captureTrustedContext(
                     AgentContextTrustedCaptureRequest(
                         reviewID: reviewID,
                         kind: .files,
@@ -5852,14 +5871,27 @@ final class AppModel: ObservableObject {
         perform {
             guard let draft = contextPackDraft else { return }
             if let reviewID = draft.reviewID {
-                try captureTrustedContext(
+                captureTrustedContext(
                     AgentContextTrustedCaptureRequest(reviewID: reviewID, kind: .gitDiff),
                     draftID: draft.id
                 )
             } else {
-                guard let contextPackBuilder else { return }
-                let part = try contextPackBuilder.gitDiff(in: draft.sourceFolder)
-                try appendContextPackParts([part], draftID: draft.id)
+                guard let contextPackBuilder, !contextCaptureInFlight else { return }
+                // Up to four Git commands with 5 s timeouts: never on the main thread.
+                let folder = draft.sourceFolder
+                let draftID = draft.id
+                contextCaptureInFlight = true
+                Task { @MainActor [weak self] in
+                    defer { self?.contextCaptureInFlight = false }
+                    do {
+                        let part = try await Task.detached(priority: .userInitiated) {
+                            try contextPackBuilder.gitDiff(in: folder)
+                        }.value
+                        try self?.appendContextPackParts([part], draftID: draftID)
+                    } catch {
+                        NSAlert(error: error).runModal()
+                    }
+                }
             }
         }
     }
@@ -5887,13 +5919,15 @@ final class AppModel: ObservableObject {
         guard let draft = contextPackDraft else { return }
         perform {
             if let reviewID = draft.reviewID {
-                try captureTrustedContext(
+                // The core reads the selection; clear it only once it has.
+                captureTrustedContext(
                     AgentContextTrustedCaptureRequest(
                         reviewID: reviewID,
                         kind: .visibleTerminal,
                         paneID: pane.id
                     ),
-                    draftID: draft.id
+                    draftID: draft.id,
+                    then: { [weak self] in self?.terminalHandle.clearSelection() }
                 )
             } else {
                 guard let controller, let contextPackBuilder else { return }
@@ -5904,8 +5938,8 @@ final class AppModel: ObservableObject {
                     text: visible
                 )
                 try appendContextPackParts([part], draftID: draft.id)
+                terminalHandle.clearSelection()
             }
-            terminalHandle.clearSelection()
         }
     }
 
@@ -5915,7 +5949,7 @@ final class AppModel: ObservableObject {
         sourceURL: String,
         selectedText: String,
         artifactPath: String
-    ) throws {
+    ) async throws {
         guard let draft = contextPackDraft else {
             throw RelayUIError.message("Open a context pack before adding browser or tool evidence.")
         }
@@ -5931,7 +5965,7 @@ final class AppModel: ObservableObject {
             case .browserScreenshot: .browserScreenshot
             case .savedArtifact: .toolArtifact
             }
-            try captureTrustedContext(
+            try await captureTrustedContextOffMain(
                 AgentContextTrustedCaptureRequest(
                     reviewID: reviewID,
                     kind: captureKind,
@@ -5978,19 +6012,15 @@ final class AppModel: ObservableObject {
         contextCommandCapturing = true
         defer { contextCommandCapturing = false }
         if let reviewID = draft.reviewID {
-            guard let relayClient else {
-                throw RelayUIError.message("The app-resident core is unavailable, so Parley cannot establish trusted capture provenance.")
-            }
-            let request = AgentContextTrustedCaptureRequest(
-                reviewID: reviewID,
-                kind: .commandResult,
-                executablePath: path,
-                arguments: arguments
+            try await captureTrustedContextOffMain(
+                AgentContextTrustedCaptureRequest(
+                    reviewID: reviewID,
+                    kind: .commandResult,
+                    executablePath: path,
+                    arguments: arguments
+                ),
+                draftID: draft.id
             )
-            let response = try await Task.detached(priority: .userInitiated) {
-                try relayClient.captureTrustedContext(request)
-            }.value
-            try appendTrustedContextResponse(response, draftID: draft.id)
             return
         }
         guard let contextPackBuilder else {
@@ -6027,6 +6057,9 @@ final class AppModel: ObservableObject {
 
     private func askWithContextPack(target: WorkbenchPane) {
         perform {
+            guard !contextPackCaptureRunning else {
+                throw RelayUIError.message("A source is still being captured into this pack. Send it once the capture finishes.")
+            }
             guard let draft = contextPackDraft,
                   let source = contextPackSourcePane,
                   let contextPackBuilder else {
@@ -6568,7 +6601,7 @@ final class AppModel: ObservableObject {
     private func appendContextPackParts(_ parts: [ContextPackPart], draftID: String) throws {
         guard !parts.isEmpty else { throw ContextPackError.emptyPart }
         guard var draft = contextPackDraft, draft.id == draftID, let contextPackBuilder else {
-            throw RelayUIError.message("That context pack was replaced while its source was being captured.")
+            throw RelayUIError.message("That context pack was closed or replaced while its source was being captured, so the source was not added.")
         }
         draft.pack.parts.append(contentsOf: parts)
         let rendered = try contextPackBuilder.render(draft.pack)
@@ -6577,19 +6610,46 @@ final class AppModel: ObservableObject {
         contextPackDraft = draft
     }
 
+    /// Trusted capture into an agent draft runs off the main thread: the
+    /// core reads a selection through `DispatchQueue.main.sync` and can run a
+    /// command or several Git reads, so a main thread waiting on it froze and
+    /// then reported a failure while the part had been recorded. `then` runs
+    /// on the main actor after the part is in the draft.
     private func captureTrustedContext(
         _ request: AgentContextTrustedCaptureRequest,
+        draftID: String,
+        then: (() -> Void)? = nil
+    ) {
+        Task { @MainActor [weak self] in
+            do {
+                try await self?.captureTrustedContextOffMain(request, draftID: draftID)
+                then?()
+            } catch is CancellationError {
+                return
+            } catch {
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
+    private func captureTrustedContextOffMain(
+        _ request: AgentContextTrustedCaptureRequest,
         draftID: String
-    ) throws {
+    ) async throws {
         guard let relayClient else {
             throw RelayUIError.message(
                 "The app-resident core is unavailable, so Parley cannot establish trusted capture provenance."
             )
         }
-        try appendTrustedContextResponse(
-            relayClient.captureTrustedContext(request),
-            draftID: draftID
-        )
+        guard !contextCaptureInFlight else {
+            throw RelayUIError.message("A capture into this pack is still running. Wait for it to finish before adding another source.")
+        }
+        contextCaptureInFlight = true
+        defer { contextCaptureInFlight = false }
+        let response = try await Task.detached(priority: .userInitiated) {
+            try relayClient.captureTrustedContext(request)
+        }.value
+        try appendTrustedContextResponse(response, draftID: draftID)
     }
 
     private func appendTrustedContextResponse(
@@ -6607,7 +6667,7 @@ final class AppModel: ObservableObject {
             throw RelayUIError.message("The app-resident core captured no context sources.")
         }
         guard var draft = contextPackDraft, draft.id == draftID else {
-            throw RelayUIError.message("That context pack was replaced while its source was being captured.")
+            throw RelayUIError.message("That context pack was closed or replaced while its source was being captured. The captured source is kept with the agent's draft; reopen the draft to see it.")
         }
         // The core has already bounded and durably recorded these exact parts.
         // Keep an oversized local edit visible and unsendable instead of hiding
@@ -6736,12 +6796,24 @@ final class AppModel: ObservableObject {
         alert.addButton(withTitle: "Retry Delivery")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        perform {
-            guard let relayClient else { return }
-            let response = try relayClient.retryHandoff(handoff.id)
-            guard response.status == 200 else { throw RelayUIError.message(response.text) }
-            try refresh()
-            terminalHandle.focus()
+        guard let relayClient, !retryingHandoffIDs.contains(handoff.id) else { return }
+        let handoffID = handoff.id
+        retryingHandoffIDs.insert(handoffID)
+        // Off the main thread: the core delivers into the target pane through
+        // DispatchQueue.main.sync, so a main thread waiting here froze and
+        // then reported "retry failed" while the delivery went through.
+        Task { @MainActor [weak self] in
+            defer { self?.retryingHandoffIDs.remove(handoffID) }
+            do {
+                let response = try await Task.detached(priority: .userInitiated) {
+                    try relayClient.retryHandoff(handoffID)
+                }.value
+                guard response.status == 200 else { throw RelayUIError.message(response.text) }
+                try self?.refresh()
+                self?.terminalHandle.focus()
+            } catch {
+                NSAlert(error: error).runModal()
+            }
         }
     }
 
@@ -7606,7 +7678,7 @@ final class AppModel: ObservableObject {
     func saveLayout(of workspace: WorkbenchWorkspace) {
         let alert = NSAlert()
         alert.messageText = "Save workspace layout"
-        alert.informativeText = "Saves pane kinds, names, folders and split structure. Native divider positions reopen balanced until divider persistence lands. Running processes, terminal contents and credentials are never stored."
+        alert.informativeText = "Saves pane kinds, names, folders and split structure. Divider positions are not part of a saved layout: it reopens balanced, and the workspace then keeps any positions you set. Running processes, terminal contents and credentials are never stored."
         let field = NSTextField(string: workspace.name)
         field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
         alert.accessoryView = field
@@ -7844,18 +7916,32 @@ final class AppModel: ObservableObject {
         action: String,
         insertVisible: @escaping () throws -> String
     ) -> String? {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = message
-        alert.addButton(withTitle: action)
-        alert.addButton(withTitle: "Cancel")
+        // Several callers paste the result straight into a pane (Forward
+        // comparison, Run recipe), so the limit is enforced here rather than
+        // left to the broker. `RelayText.clean` no longer truncates; over the
+        // limit the editor reopens with the person's edits.
+        var current = text
+        while true {
+            let alert = NSAlert()
+            alert.messageText = title
+            alert.informativeText = message
+            alert.addButton(withTitle: action)
+            alert.addButton(withTitle: "Cancel")
 
-        let accessory = RelayEditorAccessory(text: text, insertVisible: insertVisible)
-        alert.accessoryView = accessory
+            let accessory = RelayEditorAccessory(text: current, insertVisible: insertVisible)
+            alert.accessoryView = accessory
 
-        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
-        let cleaned = RelayText.clean(accessory.text)
-        return cleaned.isEmpty ? nil : cleaned
+            guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+            current = accessory.text
+            let cleaned = RelayText.clean(current)
+            if cleaned.count > RelayText.maximumCharacters {
+                NSAlert(error: RelayUIError.message(
+                    "The text is \(cleaned.count.formatted()) characters. Reduce it to \(RelayText.maximumCharacters.formatted()) before sending; nothing was sent."
+                )).runModal()
+                continue
+            }
+            return cleaned.isEmpty ? nil : cleaned
+        }
     }
 
     private func editBoundedText(
@@ -8132,6 +8218,10 @@ private final class RelayEditorAccessory: NSView {
         do {
             let visible = normalizeInserted(try insertVisible())
             guard !visible.isEmpty else { return }
+            // Whole or not at all, as in the composer's Insert Selection.
+            guard visible.count <= RelayText.maximumCharacters else {
+                throw RelayUIError.message("The selection is \(visible.count.formatted()) characters, over the \(RelayText.maximumCharacters.formatted())-character limit. Select less; nothing was inserted.")
+            }
             editor.insertText(visible, replacementRange: editor.selectedRange())
         } catch {
             NSAlert(error: error).runModal()

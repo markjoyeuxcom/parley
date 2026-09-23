@@ -432,7 +432,9 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
         }
     }
 
-    public func wait(token: String, id: String) -> RelayTextResponse {
+    /// With a deadline, returns `RelayBroker.stillWaiting` when it passes
+    /// before the run ends (the agent's `parley wait` long-poll).
+    public func wait(token: String, id: String, until deadline: DispatchTime? = nil) -> RelayTextResponse {
         while true {
             let response: RelayTextResponse? = lock.withLock {
                 reconcile()
@@ -447,6 +449,7 @@ public final class ReviewedCommandRunCoordinator: @unchecked Sendable {
                 return RelayTextResponse(status: 409, text: run.detail ?? "This run did not return a captured command result.")
             }
             if let response { return response }
+            if let deadline, DispatchTime.now() >= deadline { return RelayBroker.stillWaiting }
             Thread.sleep(forTimeInterval: 0.5)
         }
     }

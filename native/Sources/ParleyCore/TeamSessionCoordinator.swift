@@ -453,7 +453,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
 
     // MARK: Owner-only recovery
 
-    public func waitForDecision(token: String, id: String) -> RelayTextResponse {
+    public func waitForDecision(token: String, id: String, until deadline: DispatchTime? = nil) -> RelayTextResponse {
         while true {
             let response: RelayTextResponse? = lock.withLock {
                 reconcile()
@@ -467,11 +467,12 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                 }
             }
             if let response { return response }
+            if let deadline, DispatchTime.now() >= deadline { return RelayBroker.stillWaiting }
             Thread.sleep(forTimeInterval: 0.5)
         }
     }
 
-    public func waitForProvision(token: String, id: String) -> RelayTextResponse {
+    public func waitForProvision(token: String, id: String, until deadline: DispatchTime? = nil) -> RelayTextResponse {
         while true {
             let response: RelayTextResponse? = lock.withLock {
                 reconcile()
@@ -487,14 +488,16 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                     panesCreated: session.members.count, paneLimit: session.paneLimit, warning: provision.warning))
             }
             if let response { return response }
+            if let deadline, DispatchTime.now() >= deadline { return RelayBroker.stillWaiting }
             Thread.sleep(forTimeInterval: 0.5)
         }
     }
 
-    /// `parley wait <id>` recovery for either a session decision or a pane request.
-    public func wait(token: String, id: String) -> RelayTextResponse {
-        if lock.withLock({ provisions[id] != nil }) { return waitForProvision(token: token, id: id) }
-        return waitForDecision(token: token, id: id)
+    /// `parley wait <id>` recovery for either a session decision or a pane
+    /// request; with a deadline, a bounded long-poll.
+    public func wait(token: String, id: String, until deadline: DispatchTime? = nil) -> RelayTextResponse {
+        if lock.withLock({ provisions[id] != nil }) { return waitForProvision(token: token, id: id, until: deadline) }
+        return waitForDecision(token: token, id: id, until: deadline)
     }
 
     public func status(token: String) -> RelayTextResponse {

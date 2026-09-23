@@ -91,20 +91,29 @@ struct ContextPackView: View {
     private var sourceToolbar: some View {
         HStack(spacing: 10) {
             Button("Add Files…", systemImage: "doc.badge.plus") { model.addContextFiles() }
+                .disabled(model.contextPackCaptureRunning)
                 .help("Attach files you choose; each becomes an attributed, editable part")
             Button("Add Git Diff", systemImage: "arrow.triangle.branch") { model.addContextGitDiff() }
+                .disabled(model.contextPackCaptureRunning)
                 .help("Capture the source pane folder's current Git diff as a part")
             Button("Add Terminal Selection…", systemImage: "selection.pin.in.out") {
                 model.addVisibleTerminalContext()
             }
+            .disabled(model.contextPackCaptureRunning)
             Button("Capture Command…", systemImage: "terminal") {
                 commandCapturePresented = true
             }
+            .disabled(model.contextPackCaptureRunning)
             Menu("More Sources", systemImage: "plus") {
                 Button("Add Browser/Tool Evidence…", systemImage: "globe") {
                     vendorEvidencePresented = true
                 }
                 .disabled(model.vendorToolEvidencePanes.isEmpty)
+            }
+            .disabled(model.contextPackCaptureRunning)
+            if model.contextPackCaptureRunning {
+                ProgressView().controlSize(.small)
+                Text("Capturing…").font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
             Text(model.contextPackIsAgentProposed ? "Every added source states exactly what Parley established" : "Only sources you add explicitly are included")
@@ -294,6 +303,7 @@ struct ContextPackView: View {
                     model.contextPackDraft?.reviewState == .awaitingReview ? "Decline Ask" : "Discard Draft",
                     role: .destructive
                 ) { model.rejectCurrentContextReview() }
+                    .disabled(model.contextPackCaptureRunning)
             }
             Button("Close") { model.dismissContextPack() }
                 .keyboardShortcut(.cancelAction)
@@ -456,22 +466,24 @@ private struct VendorToolEvidenceCaptureView: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Add to Editable Pack") {
-                    do {
-                        try model.addVendorToolEvidence(
-                            kind: kind,
-                            paneID: selectedPaneID,
-                            sourceURL: sourceURL,
-                            selectedText: selectedText,
-                            artifactPath: artifactPath
-                        )
-                        dismiss()
-                    } catch {
-                        errorMessage = error.localizedDescription
+                Button(model.contextCaptureInFlight ? "Adding…" : "Add to Editable Pack") {
+                    Task {
+                        do {
+                            try await model.addVendorToolEvidence(
+                                kind: kind,
+                                paneID: selectedPaneID,
+                                sourceURL: sourceURL,
+                                selectedText: selectedText,
+                                artifactPath: artifactPath
+                            )
+                            dismiss()
+                        } catch {
+                            errorMessage = error.localizedDescription
+                        }
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(!canAdd)
+                .disabled(!canAdd || model.contextCaptureInFlight)
             }
         }
         .padding(20)
