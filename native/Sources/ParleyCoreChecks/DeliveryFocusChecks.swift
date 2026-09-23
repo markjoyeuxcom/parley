@@ -130,7 +130,7 @@ func checkDeliveryFocusRestoresThePersonsFocusOnEveryExit() throws {
         field.stringValue = "filter text"
         try focusExpect(window.makeFirstResponder(field), "the field did not take focus")
         field.currentEditor()?.selectedRange = NSRange(location: 3, length: 2)
-        try focus.deliver(focusing: target, paneID: "target", beforeRestoring: 0, settle: settle) {}
+        focus.deliver(focusing: target, paneID: "target", beforeRestoring: 0, settle: settle) {}
         let editor = window.firstResponder as? NSTextView
         try focusExpect(editor?.isFieldEditor == true && editor?.delegate === field,
                         "the text field being edited did not get focus back: \(String(describing: window.firstResponder))")
@@ -139,12 +139,12 @@ func checkDeliveryFocusRestoresThePersonsFocusOnEveryExit() throws {
 
         // Focus the person moved during the delivery stays where they put it.
         try focusExpect(window.makeFirstResponder(person), "the person's view did not take focus")
-        try focus.deliver(focusing: target, paneID: "target", beforeRestoring: 0, settle: settle) { window.makeFirstResponder(other) }
+        focus.deliver(focusing: target, paneID: "target", beforeRestoring: 0, settle: settle) { _ = window.makeFirstResponder(other) }
         try focusExpect(window.firstResponder === other, "restoring overrode focus the person moved")
 
         // The person's view went away: nothing is left focused rather than the target.
         try focusExpect(window.makeFirstResponder(person), "the person's view did not take focus")
-        try focus.deliver(focusing: target, paneID: "target", beforeRestoring: 0, settle: settle) { person.removeFromSuperview() }
+        focus.deliver(focusing: target, paneID: "target", beforeRestoring: 0, settle: settle) { person.removeFromSuperview() }
         try focusExpect(window.firstResponder === window, "focus stayed on the target after the person's view went away")
 
         // A target that already has focus is not lent it: nothing to restore.
