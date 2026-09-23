@@ -842,6 +842,17 @@ Cancel ran it as a command, a password reaching shell history.
 `ApprovedCommandTerminalChecks` pins both. A command that needs a prompt now
 fails and says so, so the person runs it themselves in a Shell.
 
+The approval preview's argument editor is `PlainTextEditor` (ParleyUI), an
+AppKit text view with every automatic substitution, correction and detector
+off; the Command Result capture's argument lines and the context pack's
+part and selection editors use it too. A SwiftUI `TextEditor` leaves macOS
+smart quotes on, so on 23 September 2026 (v0.1.61) a closing `"` became `”`
+and approval failed with "The data couldn't be read because it isn't in the
+correct format". `ReviewedCommand.display` writes slashes as they are rather
+than `\/`, and `ReviewedCommand.parseDisplay` names a typographic quote in
+its error instead of rewriting it, because an argument may contain one.
+`CommandRunArgvEditorChecks` pins all three.
+
 Per-run approval is the default. Optional exact-command session trust is native,
 off by default, memory-only, revocable and visibly disclosed. It keys exact argv,
 canonical folder and source generation and includes mutable code with human file

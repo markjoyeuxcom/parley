@@ -172,7 +172,29 @@ public struct ReviewedCommand: Codable, Equatable, Hashable, Sendable {
     public var display: String {
         // JSON array syntax makes argument boundaries, empty values and
         // control characters explicit in previews and durable handoffs.
-        String(decoding: (try? JSONEncoder().encode(argv)) ?? Data(), as: UTF8.self)
+        // Slashes stay as written: `\/` only made a path harder to check.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes]
+        return String(decoding: (try? encoder.encode(argv)) ?? Data(), as: UTF8.self)
+    }
+
+    /// Reads the edited preview back as argv. A typographic quote where JSON
+    /// needs a plain one (macOS smart quotes turn `"` into `”`) is named in
+    /// the error rather than reported as a bare format failure. It is never
+    /// rewritten silently, because an argument may contain one legitimately.
+    public static func parseDisplay(_ text: String) throws -> [String] {
+        guard let data = text.data(using: .utf8), data.count <= 100_000 else {
+            throw ReviewedCommandRunError.invalid("The argument preview is too large.")
+        }
+        do {
+            return try JSONDecoder().decode([String].self, from: data)
+        } catch {
+            let typographic: [Character] = ["\u{201C}", "\u{201D}", "\u{201E}", "\u{201F}", "\u{2033}", "\u{FF02}"]
+            if let found = text.first(where: { typographic.contains($0) }) {
+                throw ReviewedCommandRunError.invalid("The arguments contain a typographic quote (\(found)). JSON needs plain straight quotes (\") around each argument; replace it and approve again.")
+            }
+            throw ReviewedCommandRunError.invalid("The arguments are not a JSON array of strings: \(error.localizedDescription)")
+        }
     }
 }
 

@@ -1,4 +1,5 @@
 import ParleyCore
+import ParleyUI
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -236,9 +237,8 @@ struct ContextPackView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                 }
-                TextEditor(text: partTextBinding(part.id))
-                    .font(.body.monospaced())
-                    .textSelection(.enabled)
+                PlainTextEditor(text: partTextBinding(part.id), accessibilityLabel: "Part text")
+                    .frame(minHeight: 120)
                     .border(Color.secondary.opacity(0.25))
                 HStack {
                     if part.isEdited {
@@ -425,8 +425,7 @@ private struct VendorToolEvidenceCaptureView: View {
                 }
                 if kind == .browserSelection {
                     LabeledContent("Selected text") {
-                        TextEditor(text: $selectedText)
-                            .font(.body.monospaced())
+                        PlainTextEditor(text: $selectedText, accessibilityLabel: "Selected text")
                             .frame(minHeight: 150)
                             .border(Color.secondary.opacity(0.25))
                     }
@@ -552,8 +551,7 @@ private struct ContextCommandCaptureView: View {
                         .textSelection(.enabled)
                 }
                 LabeledContent("Arguments") {
-                    TextEditor(text: $argumentLines)
-                        .font(.body.monospaced())
+                    PlainTextEditor(text: $argumentLines, accessibilityLabel: "Command arguments, one per line")
                         .frame(minHeight: 150)
                         .border(Color.secondary.opacity(0.25))
                 }

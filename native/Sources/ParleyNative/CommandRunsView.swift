@@ -1,4 +1,5 @@
 import ParleyCore
+import ParleyUI
 import SwiftUI
 
 /// A persistent native notice; active session trust never hides in a menu.
@@ -165,10 +166,9 @@ private struct CommandRunPreview: View {
             Text(ReviewedCommandRunCoordinator.trustDisclosure).font(.system(size: 12))
             Text("Exact arguments (JSON array; first item is an absolute executable)")
                 .font(.system(size: 11, weight: .medium))
-            TextEditor(text: $argv).font(.system(size: 12, design: .monospaced))
+            PlainTextEditor(text: $argv, isEditable: run.state == .pending,
+                            accessibilityLabel: "Approved executable and literal argument array")
                 .frame(height: 90).border(Color.secondary.opacity(0.3))
-                .disabled(run.state != .pending)
-                .accessibilityLabel("Approved executable and literal argument array")
             TextField("Working folder", text: $folder).textFieldStyle(.roundedBorder)
                 .disabled(run.state != .pending)
             Text("Noninteractive run: stdin is closed and stdout/stderr are captured through pipes. Each captured stream is limited to 30 KB; truncation is reported. \(run.state == .pending ? (model.automaticCommandRunPaneCloseEnabled ? "If the run finishes cleanly its process ends and Parley removes the pane (Settings > General); otherwise the Shell becomes interactive after the command exits." : "The Shell becomes interactive after the command exits.") : "Whether a clean result ends the pane was fixed when the run started (Settings > General at that moment); otherwise the Shell becomes interactive after the command exits.") Cancel stops the owned command process group; detached children may continue.")
@@ -187,10 +187,7 @@ private struct CommandRunPreview: View {
                     Spacer()
                     Button(autoApprove ? "Run and grant session trust" : "Run once in new Shell") {
                         do {
-                            guard let data = argv.data(using: .utf8), data.count <= 100_000 else {
-                                throw ReviewedCommandRunError.invalid("The argument preview is too large.")
-                            }
-                            let arguments = try JSONDecoder().decode([String].self, from: data)
+                            let arguments = try ReviewedCommand.parseDisplay(argv)
                             try model.approveCommandRun(run, argv: arguments, folder: folder, autoApprove: autoApprove)
                         } catch { self.error = error.localizedDescription }
                     }.buttonStyle(.borderedProminent)
