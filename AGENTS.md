@@ -1818,6 +1818,17 @@ Before changing Ghostty's exact wrapper pin, verify the current
 and inspect relevant release notes. Keep `Package.swift`, `Package.resolved` and
 `THIRD_PARTY_NOTICES.md` consistent.
 
+Never pin a wrapper whose Ghostty commit lacks upstream `72cf508`
+("renderer: never stop the display link while holding the draw mutex",
+ghostty-org/ghostty#14150); check with GitHub's compare API, where the pinned
+commit must be `ahead` of it with `behind_by` 0. Without it the renderer
+thread called the blocking `CVDisplayLinkStop` while holding `draw_mutex`, the
+main thread's CoreAnimation layer draw waited on that mutex, and a CoreVideo
+stall around sleep and wake froze the whole app: v0.1.60 (wrapper
+1.6.20260909, Ghostty `82938b63`) hung 44 seconds after a wake on 23 September
+2026 and had to be force-quit. Wrapper 1.6.20260922 (Ghostty `3c47ca15`) is
+the first release carrying it.
+
 Before changing Sparkle's exact pin, verify the current official GitHub release
 and its Swift Package Manager artifact digest, inspect its security and release
 notes, and keep `Package.swift`, `Package.resolved` and
