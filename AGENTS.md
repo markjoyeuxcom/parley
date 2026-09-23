@@ -1582,6 +1582,23 @@ busy target, for instance), and `.failed` when delivery itself fails. The
 call returns with the answer or the consultation timeout, which is why it is
 a tracked request and runs off the main actor.
 
+Sending an agent-staged draft (approving the agent's waiting Ask or
+sending it as the person's own Ask) closes the sheet before the tracked
+request runs, so a failure used to lose the person's edits (844fa81d). After
+any failed send the app reads the review fresh and `ContextSendRecovery`
+decides. If the review is still `.draft` or `.awaitingReview` and unchanged
+apart from what was sent (same revision, or the stored parts and note equal
+the sent pack), nothing was delivered: the edits reopen at the review's
+current revision, state and target, and a resend is accepted. If the agent
+changed the draft meanwhile (added a part, or turned it into an Ask; the
+core's stale-revision refusal), the draft opens as the agent left it and the
+edits are offered to copy, because reopening the old copy at the new
+revision would drop the agent's part or approve a request the person never
+saw. A `.completed` review was delivered and says so. Anything else, or an
+unreadable review, offers the edits to copy and never reopens them for a
+second send. `ContextSendRecoveryChecks` drives every case through a real
+broker.
+
 Every UI control request that uses `trackedResponseTimeout` (Ask, Ask-many,
 request changes, busy-draft send, context approve and context complete) runs
 inside `Task.detached`, never on the main actor. Those requests return only
