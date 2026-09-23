@@ -96,7 +96,9 @@ struct WorktreeLifecycleView: View {
         loading = true
         defer { if !Task.isCancelled { loading = false } }
         model.refreshStatusCenterQuietly()
-        let records = model.managedWorktrees
+        // The row Finish opened on first, so it shows at once; the rest
+        // follow for the Inactive only filter.
+        let records = model.managedWorktrees.filter { $0.id == selectedID } + model.managedWorktrees.filter { $0.id != selectedID }
         inspections = [:]; failures = [:]; merge = nil
         for record in records {
             guard !Task.isCancelled else { return }

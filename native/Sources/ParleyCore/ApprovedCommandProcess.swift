@@ -33,8 +33,12 @@ public enum ApprovedCommandProcess {
         sigemptyset(&clearedMask)
         try checked(posix_spawnattr_setsigdefault(&attributes, &defaultedSignals))
         try checked(posix_spawnattr_setsigmask(&attributes, &clearedMask))
-        try checked(posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)))
-        try checked(posix_spawnattr_setpgroup(&attributes, 0))
+        // A session of its own, so no controlling terminal. In the pane's
+        // session a command that asks on /dev/tty (git's HTTPS username
+        // prompt) was stopped by SIGTTIN and read as running for up to a day;
+        // now the open fails and the command reports it. The session's
+        // process group id is the pid, so kill(-pid) still reaches the group.
+        try checked(posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETSID | POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)))
         try checked(posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0))
         try checked(posix_spawn_file_actions_adddup2(&actions, output.1, STDOUT_FILENO))
         try checked(posix_spawn_file_actions_adddup2(&actions, error.1, STDERR_FILENO))

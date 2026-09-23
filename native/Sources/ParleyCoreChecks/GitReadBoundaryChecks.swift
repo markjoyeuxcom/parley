@@ -190,7 +190,7 @@ func checkHostGitReadsNeverRunPlantedRepositoryCommands() throws {
         guard case .removeTree = preview.decision else {
             throw NSError(domain: "GitReadBoundary", code: 1, userInfo: [NSLocalizedDescriptionKey: "a clean linked tree was not removable: \(preview.decision)"])
         }
-        let outcome = try fixture.service.remove(fixture.record, acknowledgedIgnoredPaths: preview.ignoredPaths, livePaneFolders: [], otherRuntimeStateFiles: [])
+        let outcome = try fixture.service.remove(fixture.record, confirmed: .removeTree, acknowledgedIgnoredPaths: preview.ignoredPaths, livePaneFolders: [], otherRuntimeStateFiles: [])
         try grExpect(outcome.state == .removed, "the linked tree was not removed: \(outcome.detail)")
     }
     try grExpect(ran.isEmpty, "Parley's host Git reads ran repository-planted programs:\n" + ran.joined(separator: "\n"))

@@ -343,7 +343,10 @@ public enum ApprovedCommandWorker {
             try writeNew(JSONEncoder().encode(envelope), to: temporary)
             guard renamex_np(temporary.path, job.appendingPathComponent("result.json").path, UInt32(RENAME_EXCL)) == 0 else { throw posixError() }
             endsPaneAfterResult = ticket.exitInsteadOfShellWhenClean && ReviewedCommandRunPaneClosePolicy.isClean(result)
-            mirror(Data("\r\n[Parley captured command result: exit \(result.exitStatus.map(String.init) ?? "unavailable"), signal \(result.terminationSignal.map(String.init) ?? "none"). \(endsPaneAfterResult ? "Clean result; this pane closes." : "Returning to Shell.")]\r\n".utf8), to: STDOUT_FILENO)
+            // Cleared before the banner, not at the shell hand-over: what is
+            // typed after "Returning to Shell." is meant for the shell.
+            let discarded = discardQueuedTerminalInput(STDIN_FILENO) ? " " + discardedInputNote : ""
+            mirror(Data("\r\n[Parley captured command result: exit \(result.exitStatus.map(String.init) ?? "unavailable"), signal \(result.terminationSignal.map(String.init) ?? "none"). \(endsPaneAfterResult ? "Clean result; this pane closes." : "Returning to Shell.")\(discarded)]\r\n".utf8), to: STDOUT_FILENO)
             if commandWorkerInterrupted == SIGHUP || commandWorkerInterrupted == SIGTERM || !ownerIsCurrent(ticket) { exit(0) }
             _ = chdir(ticket.command.folder)
         } catch {
@@ -351,7 +354,8 @@ public enum ApprovedCommandWorker {
                 let detail = ReviewedCommandRunResult(exitStatus: nil, stdout: Data(), stderr: Data(), detail: error.localizedDescription).detail ?? "The worker could not publish its result."
                 try? writeNew(Data(detail.utf8), to: job.appendingPathComponent("failure.txt"))
             }
-            mirror(Data("Parley approved command could not start: \(error.localizedDescription)\r\n".utf8), to: STDERR_FILENO)
+            let discarded = discardQueuedTerminalInput(STDIN_FILENO) ? " [" + discardedInputNote + "]" : ""
+            mirror(Data("Parley approved command could not start: \(error.localizedDescription)\(discarded)\r\n".utf8), to: STDERR_FILENO)
         }
         // Decided from the ticket the person's settings staged: a clean run
         // ends here, so no interactive shell is ever created for it and the
@@ -381,6 +385,25 @@ public enum ApprovedCommandWorker {
             _ = execve(shell, args.baseAddress!, values.baseAddress!)
         } }
         exit(1)
+    }
+
+    static let discardedInputNote = "What was typed into this pane while the command ran was discarded, so the shell does not run it."
+
+    /// `FIONREAD`, `_IOR('f', 127, int)` on Darwin, which Swift does not
+    /// import: the number of bytes queued for reading.
+    public static let bytesQueuedRequest: UInt = 0x4004_667F
+
+    /// Discards input queued on a terminal and says whether there was any.
+    /// What the person typed into the pane while the command ran (a reply to
+    /// a prompt the command could not show them, perhaps a password) must not
+    /// become the first command of the login shell exec'd next. Nothing is
+    /// read, so the discarded bytes are never seen, logged or kept.
+    public static func discardQueuedTerminalInput(_ descriptor: Int32) -> Bool {
+        guard isatty(descriptor) == 1 else { return false }
+        var queued: Int32 = 0
+        _ = ioctl(descriptor, bytesQueuedRequest, &queued)
+        _ = tcflush(descriptor, TCIFLUSH)
+        return queued > 0
     }
 
     @discardableResult
