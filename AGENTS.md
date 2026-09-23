@@ -193,6 +193,22 @@ Production and a separate Development directory.
   the name without the button.
 - On a later app launch, workspace definitions remain, shells can restart and
   agent panes are stopped placeholders. Never claim a vendor session survived.
+- A pane's exit is recorded from Ghostty's own record of it
+  (`ghostty_surface_process_exited`, read by `GhosttyProcessExit` in
+  ParleyUI), polled on the one-second tick and routed through the same path
+  as Ghostty's close callback, once per launch generation
+  (`ProcessExitTracker`). The pane then reads exited, relay and input turn
+  off, and a container pane's lost-client cleanup runs. Wait-after-command
+  keeps the surface open, so until 23 September 2026 Ghostty's close
+  callback (sent only when the person pressed a key in the exited pane) was
+  the sole record: after `/exit`, or a CLI missing from PATH, the pane stayed
+  RUNNING with relay enabled. The wrapper forwards neither
+  `GHOSTTY_ACTION_SHOW_CHILD_EXITED` nor this call, so the raw surface is
+  read by reflection from its one private field; `ProcessExitChecks` runs
+  the reader on real surfaces so a wrapper upgrade that moves the field
+  fails the suite, and an unreadable record is unknown, never an exit. Check
+  it again whenever the Ghostty pin changes. No exit status is available
+  through this route.
 
 Durable records are JSON lines. The handoff journal and the native activity
 journal both append one synced line per record and compact the bounded file
@@ -247,8 +263,12 @@ discards a checked image, whose probe was for the previous vendor. The
 Agent entry and Pane › New Agent Pane… (⌥⌘N) preselect
 `AppModel.lastAgentVendor`, the vendor of the last creation review that
 started a pane (a preference, Claude until then); the New Claude, Codex, Agy
-and Copilot Pane items (⇧⌘1, 2, 3 and 5) open the same review with their
-vendor preselected. `PanePermissionRequest.kind` is mutable for that reason
+and Copilot Pane items (⌥⌘1, 2, 3 and 5; New Shell Pane is ⌥⌘4, from
+`PaneCreationShortcut`) open the same review with their
+vendor preselected. They were ⇧⌘1–5 until 23 September 2026, and macOS
+takes ⇧⌘3, 4 and 5 for screenshots before any application sees them;
+`PaneShortcutChecks` keeps them clear of `SystemReservedShortcut` and of
+Parley's own key monitor. `PanePermissionRequest.kind` is mutable for that reason
 and the request id is unchanged, so the model still recognises the review.
 Restart, resume and folder-access reviews have no Vendor row: a pane cannot
 change vendor.
@@ -487,9 +507,23 @@ each step that sends input, and a pane that went away refuses rather than
 writing into a torn-down surface. Restoring the person's focus afterwards is not
 delivery and never turns a completed submission into a reported failure. Bound
 those settles against a monotonic clock; a wall-clock deadline spins the main
-thread for the length of any backward step. Copilot may require briefly focusing the target for
-paste/submit and restoring the person's previous pane; refuse delivery at its
-folder-trust prompt. Copilot handoffs remain blocked until the person confirms
+thread for the length of any backward step. Ghostty takes paste and Enter on
+a surface without focus (`DeliveryFocusChecks` proves it on real surfaces), so a
+delivery leaves the person's focus and active pane alone
+(`PaneSubmissionTiming.focusesTarget`). Only Copilot's submission briefly
+focuses its pane, through `DeliveryFocus` (ParleyUI). For the whole delivery,
+restore included, the pane's focus callbacks change no selection, and focus
+repair and `focusSelected` leave the lent focus alone. Focus is restored
+through the target's own window rather than whichever window is key, on every
+exit, and only if the target still holds it. A text field being edited comes
+back as the field with the person's selection, because its field editor
+leaves the window the moment it resigns. Keys typed during the settle are not
+lost to the target: pumping the run loop does not dispatch NSEvents, so they
+wait in the queue and reach the restored responder. Until 23 September 2026 every delivery focused its target, the callback
+made that pane the person's active pane, and the restore used
+`NSApp.keyWindow`, so with Status Center key or Parley in the background
+the person's next keystrokes went to the other agent. Refuse delivery at
+Copilot's folder-trust prompt. Copilot handoffs remain blocked until the person confirms
 **Confirm Copilot Folder Trust** in its pane menu for that launch. Hooks cannot
 grant this confirmation.
 
@@ -823,9 +857,11 @@ removes the pane once the worker's lease is released, restoring the pane that
 was active at launch if the person is still on the run's pane. Ghostty forces
 wait-after-command on every surface created with a command (the per-surface
 flag can only turn it on), so the surface keeps showing "Process exited" and
-never reports its process as ended by itself; in exit-when-clean mode the
-released lease is the proof that the worker exited without exec'ing a shell
-and nothing runs behind the surface. The worker outlives Ghostty's
+never closes by itself. Parley records the exit from Ghostty's own record
+(see the exit paragraph under the runtime model), but that says only that a
+process ended; in exit-when-clean mode the released lease is the proof that
+the worker exited without exec'ing a shell and nothing runs behind the
+surface. The worker outlives Ghostty's
 abnormal-runtime threshold before exiting (monotonic clock) so no
 failed-launch screen flashes. Ghostty reports a close synchronously from
 inside `terminate`, and that report refreshes the app: every termination in

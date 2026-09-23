@@ -19,7 +19,14 @@ let package = Package(
     ],
     targets: [
         .target(name: "ParleyCore"),
-        .target(name: "ParleyUI", dependencies: ["ParleyCore"]),
+        .target(
+            name: "ParleyUI",
+            dependencies: [
+                "ParleyCore",
+                .product(name: "GhosttyKit", package: "libghostty-spm"),
+                .product(name: "GhosttyTerminal", package: "libghostty-spm"),
+            ]
+        ),
         .executableTarget(
             name: "ParleyNative",
             dependencies: [

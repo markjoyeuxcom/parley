@@ -2,6 +2,7 @@ import AppKit
 import GhosttyTerminal
 import GhosttyTheme
 import ParleyCore
+import ParleyUI
 
 struct GhosttyPaneProcessAnchor {
     let foregroundPID: Int32?
@@ -26,6 +27,8 @@ final class GhosttyPaneRegistry {
         var onAttach: (String) -> Void
         var onDetach: (String) -> Void
         var onOpenURL: (String) -> Void
+        /// The live surface, for reading Ghostty's record of the child's exit.
+        private(set) var surface: TerminalSurface?
 
         init(
             paneID: String,
@@ -51,8 +54,14 @@ final class GhosttyPaneRegistry {
         func terminalDidChangeFocus(_ focused: Bool) { if focused { onFocus(paneID) } }
         func terminalDidClose(processAlive: Bool) { onClose(paneID, processAlive) }
         func terminalDidChangeWorkingDirectory(_ path: String) { onWorkingDirectory(paneID, path) }
-        func terminalDidAttachSurface(_ surface: TerminalSurface) { onAttach(paneID) }
-        func terminalDidDetachSurface() { onDetach(paneID) }
+        func terminalDidAttachSurface(_ surface: TerminalSurface) {
+            self.surface = surface
+            onAttach(paneID)
+        }
+        func terminalDidDetachSurface() {
+            surface = nil
+            onDetach(paneID)
+        }
         func terminalDidRequestOpenURL(_ url: String, kind: TerminalOpenURLKind) { onOpenURL(url) }
     }
 
@@ -75,6 +84,11 @@ final class GhosttyPaneRegistry {
     private weak var workbench: WorkbenchController?
     private var entries: [String: Entry] = [:]
     private var selectedPaneID: String?
+    /// Lends a pane focus for a delivery that needs it. Its focus callbacks
+    /// meanwhile are not the person choosing that pane: they change no
+    /// selection, and focus repair leaves the lent focus alone.
+    private let deliveryFocus = DeliveryFocus()
+    private var exitTracker = ProcessExitTracker()
     var onPaneFocused: ((String) -> Void)?
     var onPaneStateChanged: (() -> Void)?
     /// A title actually changed. Titles are display metadata only, so the
@@ -203,7 +217,7 @@ final class GhosttyPaneRegistry {
                 }
             },
             onFocus: { [weak self] paneID in
-                guard let self else { return }
+                guard let self, paneID != deliveryFocus.paneID else { return }
                 selectedPaneID = paneID
                 onPaneFocused?(paneID)
             },
@@ -279,14 +293,14 @@ final class GhosttyPaneRegistry {
     }
 
     func focusSelected(in window: NSWindow? = nil) -> Bool {
-        guard let view = selectedView else { return false }
+        guard deliveryFocus.paneID == nil, let view = selectedView else { return false }
         if let window, view.window !== window { return false }
         return view.acquireProgrammaticFocus()
     }
 
     func repairFocusIfNeeded(in window: NSWindow, modifierFlags: NSEvent.ModifierFlags) -> Bool {
         let commandChord = modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command)
-        guard !commandChord,
+        guard !commandChord, deliveryFocus.paneID == nil,
               let selectedView,
               selectedView.window === window,
               window.firstResponder !== selectedView else { return false }
@@ -304,10 +318,22 @@ final class GhosttyPaneRegistry {
               let pane = try workbench?.listPanes().first(where: { $0.id == paneID }) else {
             throw ParleyWorkbenchError.unsafeRelayTarget(paneID)
         }
-        let previousWindow = NSApp.keyWindow
-        let previousResponder = previousWindow?.firstResponder
         let timing = PaneSubmissionTiming.forKind(pane.kind, submit: submit)
-        _ = entry.view.acquireProgrammaticFocus()
+        // Ghostty takes paste and Enter on a surface without focus, so only a
+        // delivery that needs its pane focused (Copilot's submission) moves
+        // the person's focus, and `DeliveryFocus` gives it back.
+        guard timing.focusesTarget else {
+            try deliver(text, to: entry, paneID: paneID, submit: submit, timing: timing, validate: validate)
+            return
+        }
+        try deliveryFocus.deliver(focusing: entry.view, paneID: paneID, beforeRestoring: timing.beforeRestoringFocus,
+                                  settle: { settleTerminalInput(for: $0) }) {
+            try deliver(text, to: entry, paneID: paneID, submit: submit, timing: timing, validate: validate)
+        }
+    }
+
+    private func deliver(_ text: String, to entry: Entry, paneID: String, submit: Bool,
+                         timing: PaneSubmissionTiming, validate: () throws -> Void) throws {
         settleTerminalInput(for: timing.afterFocus)
         try requireLiveTarget(paneID, entry)
         try validate()
@@ -321,13 +347,6 @@ final class GhosttyPaneRegistry {
             guard entry.view.sendKey(.enter) else {
                 throw ParleyWorkbenchError.unsafeRelayTarget(paneID)
             }
-        }
-        // Restoring the person's focus is not delivery. By here the text has
-        // landed, so a pane that went away during this last settle must not turn
-        // a completed submission into a reported failure the caller may resend.
-        if let previousWindow, let previousResponder, previousResponder !== entry.view {
-            settleTerminalInput(for: timing.beforeRestoringFocus)
-            previousWindow.makeFirstResponder(previousResponder)
         }
     }
 
@@ -345,6 +364,27 @@ final class GhosttyPaneRegistry {
             throw ParleyWorkbenchError.noRelayText
         }
         return text
+    }
+
+    /// Records the exit of every pane process Ghostty reports as exited.
+    /// Parley forces wait-after-command, so Ghostty keeps such a surface open
+    /// showing "Process exited" and calls the close callback only when the
+    /// person presses a key there; until then the pane read as running with
+    /// relay enabled. An exit is routed through that same close path, once
+    /// per launch generation. A deliberate stop removes the entry before the
+    /// surface is torn down, so it is never reported here.
+    func recordExitedProcesses() {
+        let observations = entries.map { paneID, entry in
+            ProcessExitTracker.Observation(
+                paneID: paneID,
+                generation: entry.generation,
+                exited: entry.view.controller == nil ? nil : entry.delegate.surface.flatMap(GhosttyProcessExit.hasExited)
+            )
+        }
+        for exit in exitTracker.exits(observations) {
+            guard let entry = entries[exit.paneID], entry.generation == exit.generation else { continue }
+            entry.delegate.onClose(exit.paneID, false)
+        }
     }
 
     func stop(paneID: String) {
@@ -394,7 +434,10 @@ final class GhosttyPaneRegistry {
         guard let current = entries[paneID],
               current.generation == started.generation,
               current.view === started.view,
-              current.view.controller != nil else {
+              current.view.controller != nil,
+              // The tick records an exit within a second; until then Ghostty's
+              // own record keeps input out of a dead terminal.
+              current.delegate.surface.flatMap(GhosttyProcessExit.hasExited) != true else {
             throw ParleyWorkbenchError.unsafeRelayTarget(paneID)
         }
     }

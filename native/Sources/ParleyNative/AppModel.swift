@@ -4043,6 +4043,7 @@ final class AppModel: ObservableObject {
         guard periodicRefreshTimer == nil else { return }
         let timer = Timer(timeInterval: Self.periodicRefreshInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
+                self?.ghosttyRegistry.recordExitedProcesses()
                 self?.refreshQuietly()
             }
         }
