@@ -824,6 +824,18 @@ agent content into a shell string, send input to an existing Shell, or present
 captured output as verification. This is explicitly outside the agent boundary
 and vendor tool enforcement; host vendor launches retain their own controls.
 
+The command runs in a session of its own (`POSIX_SPAWN_SETSID`), with stdin
+on `/dev/null` and no controlling terminal, and before the worker execs the
+shell it discards input still queued on the pane's terminal, saying so in the
+pane (`ApprovedCommandWorker.discardQueuedTerminalInput`). Until 23 September
+2026 the command was a background process group in the pane's session: a
+prompt on `/dev/tty` (git's HTTPS username) stopped it with SIGTTIN, it read
+as running for up to a day and blocked that pane's later requests, and the
+reply the person typed waited in the terminal until the shell exec'd after
+Cancel ran it as a command, a password reaching shell history.
+`ApprovedCommandTerminalChecks` pins both. A command that needs a prompt now
+fails and says so, so the person runs it themselves in a Shell.
+
 Per-run approval is the default. Optional exact-command session trust is native,
 off by default, memory-only, revocable and visibly disclosed. It keys exact argv,
 canonical folder and source generation and includes mutable code with human file
