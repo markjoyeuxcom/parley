@@ -43,6 +43,11 @@ public struct PaneSubmissionTiming: Equatable, Sendable {
         self.beforeRestoringFocus = beforeRestoringFocus
     }
 
+    /// Whether delivery must make the target pane first responder. Ghostty
+    /// accepts paste and Enter on a surface without focus, so only Copilot's
+    /// submission, which needs its pane focused, moves the person's focus.
+    public var focusesTarget: Bool { afterFocus > 0 }
+
     public static func forKind(_ kind: PaneKind, submit: Bool) -> PaneSubmissionTiming {
         guard kind == .copilot, submit else {
             return PaneSubmissionTiming(

@@ -487,9 +487,18 @@ each step that sends input, and a pane that went away refuses rather than
 writing into a torn-down surface. Restoring the person's focus afterwards is not
 delivery and never turns a completed submission into a reported failure. Bound
 those settles against a monotonic clock; a wall-clock deadline spins the main
-thread for the length of any backward step. Copilot may require briefly focusing the target for
-paste/submit and restoring the person's previous pane; refuse delivery at its
-folder-trust prompt. Copilot handoffs remain blocked until the person confirms
+thread for the length of any backward step. Ghostty takes paste and Enter on
+a surface without focus (`DeliveryFocusChecks` proves it on real surfaces), so a
+delivery leaves the person's focus and active pane alone
+(`PaneSubmissionTiming.focusesTarget`). Only Copilot's submission briefly
+focuses its pane. That focus is programmatic: its callback changes no
+selection. It is restored through the target's own window rather than
+whichever window is key, on every exit, and only if the target still holds
+it. Until 23 September 2026 every delivery focused its target, the callback
+made that pane the person's active pane, and the restore used
+`NSApp.keyWindow`, so with Status Center key or Parley in the background
+the person's next keystrokes went to the other agent. Refuse delivery at
+Copilot's folder-trust prompt. Copilot handoffs remain blocked until the person confirms
 **Confirm Copilot Folder Trust** in its pane menu for that launch. Hooks cannot
 grant this confirmation.
 

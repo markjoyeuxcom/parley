@@ -75,6 +75,9 @@ final class GhosttyPaneRegistry {
     private weak var workbench: WorkbenchController?
     private var entries: [String: Entry] = [:]
     private var selectedPaneID: String?
+    /// The pane a delivery is focusing for its own input. Its focus callback
+    /// is not the person choosing that pane, so it changes no selection.
+    private var programmaticFocusPaneID: String?
     var onPaneFocused: ((String) -> Void)?
     var onPaneStateChanged: (() -> Void)?
     /// A title actually changed. Titles are display metadata only, so the
@@ -203,7 +206,7 @@ final class GhosttyPaneRegistry {
                 }
             },
             onFocus: { [weak self] paneID in
-                guard let self else { return }
+                guard let self, paneID != programmaticFocusPaneID else { return }
                 selectedPaneID = paneID
                 onPaneFocused?(paneID)
             },
@@ -304,10 +307,28 @@ final class GhosttyPaneRegistry {
               let pane = try workbench?.listPanes().first(where: { $0.id == paneID }) else {
             throw ParleyWorkbenchError.unsafeRelayTarget(paneID)
         }
-        let previousWindow = NSApp.keyWindow
-        let previousResponder = previousWindow?.firstResponder
         let timing = PaneSubmissionTiming.forKind(pane.kind, submit: submit)
-        _ = entry.view.acquireProgrammaticFocus()
+        // Ghostty takes paste and Enter on a surface without focus, so only a
+        // delivery that needs its pane focused (Copilot's submission) moves
+        // the person's focus. It is restored through the target's own window,
+        // the one whose first responder changed, whichever window is key, and
+        // on every exit including a refusal part-way.
+        var submitted = false
+        if timing.focusesTarget, let window = entry.view.window, window.firstResponder !== entry.view {
+            let previousResponder = window.firstResponder
+            programmaticFocusPaneID = paneID
+            _ = entry.view.acquireProgrammaticFocus()
+            programmaticFocusPaneID = nil
+            defer { restoreFocus(after: entry, in: window, to: previousResponder, settling: submitted ? timing.beforeRestoringFocus : 0) }
+            try deliver(text, to: entry, paneID: paneID, submit: submit, timing: timing, validate: validate)
+            submitted = true
+        } else {
+            try deliver(text, to: entry, paneID: paneID, submit: submit, timing: timing, validate: validate)
+        }
+    }
+
+    private func deliver(_ text: String, to entry: Entry, paneID: String, submit: Bool,
+                         timing: PaneSubmissionTiming, validate: () throws -> Void) throws {
         settleTerminalInput(for: timing.afterFocus)
         try requireLiveTarget(paneID, entry)
         try validate()
@@ -322,12 +343,22 @@ final class GhosttyPaneRegistry {
                 throw ParleyWorkbenchError.unsafeRelayTarget(paneID)
             }
         }
-        // Restoring the person's focus is not delivery. By here the text has
-        // landed, so a pane that went away during this last settle must not turn
-        // a completed submission into a reported failure the caller may resend.
-        if let previousWindow, let previousResponder, previousResponder !== entry.view {
-            settleTerminalInput(for: timing.beforeRestoringFocus)
-            previousWindow.makeFirstResponder(previousResponder)
+    }
+
+    /// Restoring the person's focus is not delivery: it never throws, so a
+    /// pane that went away during this last settle cannot turn a completed
+    /// submission into a reported failure the caller may resend. Focus the
+    /// person moved themselves during the settle is left where they put it.
+    private func restoreFocus(after entry: Entry, in window: NSWindow, to previousResponder: NSResponder?, settling interval: TimeInterval) {
+        settleTerminalInput(for: interval)
+        guard window.firstResponder === entry.view else { return }
+        if let view = previousResponder as? NSView, view.window !== window {
+            // The person's pane went away meanwhile. Leave nothing focused
+            // rather than the other agent's pane; the next keystroke's focus
+            // repair hands input to the person's selected pane.
+            window.makeFirstResponder(nil)
+        } else {
+            window.makeFirstResponder(previousResponder)
         }
     }
 
