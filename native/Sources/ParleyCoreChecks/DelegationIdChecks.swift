@@ -69,6 +69,19 @@ func checkDelegationReportsNameTheirOwnId() throws {
     try idExpect(lateFile.status == 404 && lateFile.text.contains("was cancelled at"),
                  "a result file for the cancelled delegation was not refused with its state: \(lateFile.status) \(lateFile.text)")
     try idExpect(broker.handoffs().first { $0.id == secondID }?.state == .waiting, "the late D1 report changed D2")
+    // `current` could mean D1 or D2 in this run, so it is refused, never resolved to D2.
+    for (name, response) in [
+        ("done", broker.handleDelegationResult(token: workerToken, handoffID: "current", text: "First task done.", succeeded: true)),
+        ("progress", broker.handleDelegationProgress(token: workerToken, handoffID: "current", text: "still going")),
+        ("done --file", broker.handleDelegationFileResult(token: workerToken, handoffID: "current", path: staged.path, text: "# Result\n")),
+    ] {
+        try idExpect(response.status == 409 && response.text.contains("Name the delegation's id"),
+                     "`\(name) current` after a cancelled delegation was not refused: \(response.status) \(response.text)")
+    }
+    try idExpect(broker.handoffs().first { $0.id == secondID }?.state == .waiting, "a `current` report changed D2")
+    // Only the delegated pane learns why an id is closed.
+    let probe = broker.handleDelegationResult(token: leadToken, handoffID: firstID, text: "Probe.", succeeded: true)
+    try idExpect(probe.status == 404 && probe.text == "unknown active delegation", "another pane learned the delegation's state: \(probe.text)")
 
     // D2 receives its own report, and A's wait returns exactly that.
     try idExpect(broker.handleDelegationResult(token: workerToken, handoffID: secondID, text: "Second task done.", succeeded: true).status == 200,
@@ -78,6 +91,13 @@ func checkDelegationReportsNameTheirOwnId() throws {
     // A second report for a delegation that already completed says so too.
     let again = broker.handleDelegationResult(token: workerToken, handoffID: secondID, text: "Again.", succeeded: true)
     try idExpect(again.status == 404 && again.text.contains("already has a result"), "a repeated report was not refused with its state: \(again.text)")
+    // A delegation that ended as failed says so.
+    let third = broker.handleDelegate(token: leadToken, target: worker.id, text: "Third task.", idempotencyKey: "ids-third")
+    let thirdID = try idRequire(third.body.handoffID, "the third delegation returned no id")
+    try idExpect(broker.handleDelegationResult(token: workerToken, handoffID: thirdID, text: "Blocked.", succeeded: false).status == 200,
+                 "the third delegation did not accept its failure")
+    let afterFailure = broker.handleDelegationResult(token: workerToken, handoffID: thirdID, text: "Done after all.", succeeded: true)
+    try idExpect(afterFailure.status == 404 && afterFailure.text.contains("already ended as failed"), "a report after failure was not refused with its state: \(afterFailure.text)")
 }
 
 /// Review of 22 September 2026, "Text that contradicts behaviour": wording

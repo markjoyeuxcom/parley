@@ -481,6 +481,12 @@ public final class RelayBroker: @unchecked Sendable {
     private let selectedText: SelectedText?
     private let vendorSignal: VendorSignal
     private let gitFacts: GitFacts?
+    /// Target pane id to the credential of the run in which a delegation to
+    /// it was cancelled. Cancel does not interrupt the target, so that run
+    /// may still report the cancelled work; while it lasts, `current` could
+    /// resolve to a later delegation and is refused (review of 22 Sep 2026,
+    /// M4). A restart rotates the credential, which ends the refusal.
+    private var cancelledDelegationRuns: [String: String] = [:]
     private let clock: Clock
     private let consultationTimeout: TimeInterval
     private let livenessPollInterval: TimeInterval
@@ -1863,6 +1869,10 @@ public final class RelayBroker: @unchecked Sendable {
         consultationCondition.lock()
         let handoffID: String
         if requestedHandoffID.caseInsensitiveCompare("current") == .orderedSame {
+            if let refusal = ambiguousCurrentDelegationLocked(senderID: senderID, token: token) {
+                consultationCondition.unlock()
+                return refusal
+            }
             let matches = delegationRecords.keys.filter { handoffRecords[$0]?.targetPaneID == senderID }
             guard matches.count == 1, let match = matches.first else {
                 consultationCondition.unlock()
@@ -1946,6 +1956,10 @@ public final class RelayBroker: @unchecked Sendable {
             consultationCondition.lock()
             let handoffID: String
             if requestedHandoffID.caseInsensitiveCompare("current") == .orderedSame {
+                if let refusal = ambiguousCurrentDelegationLocked(senderID: sender.id, token: token) {
+                    consultationCondition.unlock()
+                    return refusal
+                }
                 let matches = delegationRecords.keys.filter { handoffRecords[$0]?.targetPaneID == sender.id }
                 guard matches.count == 1, let match = matches.first else {
                     consultationCondition.unlock()
@@ -2061,6 +2075,10 @@ public final class RelayBroker: @unchecked Sendable {
         consultationCondition.lock()
         let handoffID: String
         if requestedHandoffID.caseInsensitiveCompare("current") == .orderedSame {
+            if let refusal = ambiguousCurrentDelegationLocked(senderID: senderID, token: token) {
+                consultationCondition.unlock()
+                return refusal
+            }
             let matches = delegationRecords.keys.filter { handoffRecords[$0]?.targetPaneID == senderID }
             guard matches.count == 1, let match = matches.first else {
                 consultationCondition.unlock()
@@ -3729,6 +3747,9 @@ public final class RelayBroker: @unchecked Sendable {
                 consultationCondition.unlock()
                 return RelayTextResponse(status: 409, text: "this delegation is no longer active")
             }
+            if let record = delegationRecords[handoffID] {
+                cancelledDelegationRuns[handoff.targetPaneID] = record.targetCredential
+            }
             transitionHandoffLocked(handoffID, to: .cancelled, detail: message, origin: origin)
             delegationRecords.removeValue(forKey: handoffID)
             delegationResponses[handoffID] = RelayTextResponse(status: 409, text: message)
@@ -3987,6 +4008,17 @@ public final class RelayBroker: @unchecked Sendable {
         }
         return "This consultation \(reason) at \(formatter.string(from: closedAt)). "
             + "Your answer was not accepted or delivered, and retrying will not reopen it."
+    }
+
+    /// `current` is refused for a pane whose run had a delegation cancelled:
+    /// the report may be for that one, and `current` would give it to a later
+    /// delegation. The id always works.
+    private func ambiguousCurrentDelegationLocked(senderID: String, token: String) -> RelayTextResponse? {
+        guard cancelledDelegationRuns[senderID] == token else { return nil }
+        return RelayTextResponse(
+            status: 409,
+            text: "A delegation to this pane was cancelled while this run may still have been working on it, so `current` could name the wrong one. Name the delegation's id instead: parley done <id>, parley fail <id> or parley progress <id>, with the id its prompt gave."
+        )
     }
 
     /// Why a report naming this delegation is refused, told only to the pane

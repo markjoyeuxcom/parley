@@ -7678,7 +7678,7 @@ final class AppModel: ObservableObject {
     func saveLayout(of workspace: WorkbenchWorkspace) {
         let alert = NSAlert()
         alert.messageText = "Save workspace layout"
-        alert.informativeText = "Saves pane kinds, names, folders and split structure. Native divider positions reopen balanced until divider persistence lands. Running processes, terminal contents and credentials are never stored."
+        alert.informativeText = "Saves pane kinds, names, folders and split structure. Divider positions are not part of a saved layout: it reopens balanced, and the workspace then keeps any positions you set. Running processes, terminal contents and credentials are never stored."
         let field = NSTextField(string: workspace.name)
         field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
         alert.accessoryView = field

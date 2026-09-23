@@ -307,7 +307,16 @@ a different source identity.
 - `parley progress <id|current> <note>` lets the exact delegated target replace
   one bounded, control-stripped, agent-declared progress note. It is never a
   lifecycle transition and never counts as completion.
-- `parley done|fail <id|current> <report>` records the exact result.
+- `parley done|fail <id|current> <report>` records the exact result. The
+  delegation prompt names its own id and teaches it, as the Ask prompt does
+  (protocol 33, 23 September 2026): cancel does not interrupt the target, so a
+  target that finishes a cancelled delegation and runs `done current` used to
+  complete the next delegation to it with the wrong report. `done`, `done
+  --file` and `progress` naming a closed delegation are refused with its state
+  (`retiredDelegationDetailLocked`, told only to the delegated pane), and
+  `current` is refused outright for a pane whose run had a delegation
+  cancelled (`cancelledDelegationRuns`, keyed to the run's credential, so a
+  restart ends it). `current` otherwise still resolves a single delegation.
 - `parley done <id|current> --file <path>` completes a delegation only after
   a contained, bounded UTF-8 file is durably staged as an agent-provided draft
   for explicit human review. It never forwards the file automatically.
