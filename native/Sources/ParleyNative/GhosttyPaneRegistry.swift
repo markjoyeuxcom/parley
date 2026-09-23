@@ -434,7 +434,10 @@ final class GhosttyPaneRegistry {
         guard let current = entries[paneID],
               current.generation == started.generation,
               current.view === started.view,
-              current.view.controller != nil else {
+              current.view.controller != nil,
+              // The tick records an exit within a second; until then Ghostty's
+              // own record keeps input out of a dead terminal.
+              current.delegate.surface.flatMap(GhosttyProcessExit.hasExited) != true else {
             throw ParleyWorkbenchError.unsafeRelayTarget(paneID)
         }
     }
