@@ -371,6 +371,9 @@ public enum ApprovedCommandWorker {
         for descriptor in [STDOUT_FILENO, STDERR_FILENO] {
             _ = fcntl(descriptor, F_SETFL, fcntl(descriptor, F_GETFL, 0) & ~O_NONBLOCK)
         }
+        if discardQueuedTerminalInput(STDIN_FILENO) {
+            mirror(Data("[Parley discarded what was typed into this pane while the command ran, so the shell does not run it.]\r\n".utf8), to: STDOUT_FILENO)
+        }
         var environment = ProcessInfo.processInfo.environment
         let shellMetadata: Set<String> = ["PARLEY_PANE", "PARLEY_PANE_ID", "PARLEY_PANE_KIND", "PARLEY_APP_PID", "PARLEY_RUNTIME"]
         for key in environment.keys where key.hasPrefix("PARLEY_") && !shellMetadata.contains(key) { environment.removeValue(forKey: key) }
@@ -381,6 +384,23 @@ public enum ApprovedCommandWorker {
             _ = execve(shell, args.baseAddress!, values.baseAddress!)
         } }
         exit(1)
+    }
+
+    /// `FIONREAD`, `_IOR('f', 127, int)` on Darwin, which Swift does not
+    /// import: the number of bytes queued for reading.
+    public static let bytesQueuedRequest: UInt = 0x4004_667F
+
+    /// Discards input queued on a terminal and says whether there was any.
+    /// What the person typed into the pane while the command ran (a reply to
+    /// a prompt the command could not show them, perhaps a password) must not
+    /// become the first command of the login shell exec'd next. Nothing is
+    /// read, so the discarded bytes are never seen, logged or kept.
+    public static func discardQueuedTerminalInput(_ descriptor: Int32) -> Bool {
+        guard isatty(descriptor) == 1 else { return false }
+        var queued: Int32 = 0
+        _ = ioctl(descriptor, bytesQueuedRequest, &queued)
+        _ = tcflush(descriptor, TCIFLUSH)
+        return queued > 0
     }
 
     @discardableResult
