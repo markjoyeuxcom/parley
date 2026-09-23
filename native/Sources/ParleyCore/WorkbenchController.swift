@@ -77,7 +77,11 @@ public final class WorkbenchController: @unchecked Sendable {
 
     /// Every surface termination goes through here so the re-entrancy guard
     /// covers each lifecycle path alike.
-    private func terminateSurface(_ paneID: String) throws {
+    /// Whether a pane's surface may end now. Checked for every pane before
+    /// any of them ends, so an operation over several panes (closing or
+    /// replacing a workspace) is refused whole rather than stopping part-way
+    /// after ending some.
+    private func requireTerminableLocked(_ paneID: String) throws {
         if let pane = document.panes.first(where: { $0.id == paneID }), pane.containerConfiguration != nil {
             guard confirmedContainerStops[paneID] == pane.launchGeneration else {
                 throw ContainerPaneError.refused("Stop this container through its native action before ending the pane.")
@@ -86,6 +90,10 @@ public final class WorkbenchController: @unchecked Sendable {
         guard !containerPreparations.contains(paneID), preparedContainerIDs[paneID] == nil || confirmedContainerStops[paneID] == document.panes.first(where: { $0.id == paneID })?.launchGeneration else {
             throw ContainerPaneError.refused("This pane's prepared container must be removed before closing it.")
         }
+    }
+
+    private func terminateSurface(_ paneID: String) throws {
+        try requireTerminableLocked(paneID)
         preparedContainerIDs[paneID] = nil
         terminatingDepth += 1
         defer { terminatingDepth -= 1 }
@@ -350,7 +358,8 @@ public final class WorkbenchController: @unchecked Sendable {
                     name: nil,
                     attachedFolders: [],
                     newPaneFolder: nil,
-                    initialShell: true
+                    initialShell: true,
+                    automationPolicy: .askAndDelegate
                 )
             }
             normalizeSelectionLocked()
@@ -382,7 +391,8 @@ public final class WorkbenchController: @unchecked Sendable {
                 name: name,
                 attachedFolders: [folder],
                 newPaneFolder: folder,
-                initialShell: true
+                initialShell: true,
+                automationPolicy: .askAndDelegate
             )
             try persistLocked()
             return workspace
@@ -403,7 +413,8 @@ public final class WorkbenchController: @unchecked Sendable {
                 name: name,
                 attachedFolders: [],
                 newPaneFolder: nil,
-                initialShell: false
+                initialShell: false,
+                automationPolicy: .askAndDelegate
             )
             try persistLocked()
             return workspace
@@ -924,6 +935,7 @@ public final class WorkbenchController: @unchecked Sendable {
             guard document.workspaces.count > 1 else { throw ParleyWorkbenchError.cannotCloseLastWorkspace }
             let workspace = document.workspaces[try workspaceIndexLocked(workspaceID)]
             let paneIDs = document.panes.filter { $0.workspaceID == workspace.workspaceID }.map(\.id)
+            for paneID in paneIDs { try requireTerminableLocked(paneID) }
             for paneID in paneIDs {
                 try terminateSurface(paneID)
                 copilotTrustConfirmations[paneID] = nil
@@ -1068,47 +1080,63 @@ public final class WorkbenchController: @unchecked Sendable {
                     }
                 }
             }
-            let workspace = try createWorkspaceLocked(
-                launchFolder: layout.defaultFolder,
-                name: layout.name,
-                attachedFolders: replacement?.attachedFolders ?? [layout.defaultFolder],
-                newPaneFolder: layout.defaultFolder,
-                initialShell: false
-            )
-            document.panes.removeAll(where: { $0.workspaceID == workspace.workspaceID })
-            for leaf in layout.root.leaves {
-                let profile = try effectivePermissionProfile(
-                    for: leaf.kind,
-                    cwd: leaf.folder,
-                    supplied: nil,
-                    selection: leaf.permissionSelection
+            // Every replaced pane must be allowed to end before anything
+            // changes; the new workspace is then built and saved against a
+            // snapshot that is put back on any failure, and the replaced
+            // panes end only once the new state is saved.
+            let replacedIDs = replacement.map { replaced in document.panes.filter { $0.workspaceID == replaced.workspaceID }.map(\.id) } ?? []
+            for id in replacedIDs { try requireTerminableLocked(id) }
+            let previous = document
+            let workspace: WorkbenchWorkspace
+            do {
+                workspace = try createWorkspaceLocked(
+                    launchFolder: layout.defaultFolder,
+                    name: layout.name,
+                    attachedFolders: replacement?.attachedFolders ?? [layout.defaultFolder],
+                    newPaneFolder: layout.defaultFolder,
+                    initialShell: false,
+                    automationPolicy: layout.automationPolicy
                 )
-                var pane = try makePane(
-                    kind: leaf.kind,
-                    cwd: leaf.folder,
-                    workspace: workspace,
-                    started: leaf.kind == .shell,
-                    permissionProfile: profile
-                )
-                pane.customName = leaf.name == leaf.kind.label ? nil : leaf.name
-                pane.role = leaf.role
-                pane.isWorkspaceLead = leaf.isWorkspaceLead
-                document.panes.append(pane)
-                document.activity[pane.id] = Date()
-            }
-            if let replacement {
-                let oldIDs = document.panes.filter { $0.workspaceID == replacement.workspaceID }.map(\.id)
-                for id in oldIDs {
-                    try terminateSurface(id)
-                    copilotTrustConfirmations[id] = nil
-                    agentLaunchRequests[id] = nil
-                    try relayRuntime?.credentials.forget(id)
+                document.panes.removeAll(where: { $0.workspaceID == workspace.workspaceID })
+                for leaf in layout.root.leaves {
+                    let profile = try effectivePermissionProfile(
+                        for: leaf.kind,
+                        cwd: leaf.folder,
+                        supplied: nil,
+                        selection: leaf.permissionSelection
+                    )
+                    var pane = try makePane(
+                        kind: leaf.kind,
+                        cwd: leaf.folder,
+                        workspace: workspace,
+                        started: leaf.kind == .shell,
+                        permissionProfile: profile
+                    )
+                    pane.customName = leaf.name == leaf.kind.label ? nil : leaf.name
+                    pane.role = leaf.role
+                    pane.isWorkspaceLead = leaf.isWorkspaceLead
+                    document.panes.append(pane)
+                    document.activity[pane.id] = Date()
                 }
-                document.panes.removeAll(where: { $0.workspaceID == replacement.workspaceID })
-                document.workspaces.removeAll(where: { $0.workspaceID == replacement.workspaceID })
+                if let replacement {
+                    document.panes.removeAll(where: { $0.workspaceID == replacement.workspaceID })
+                    document.workspaces.removeAll(where: { $0.workspaceID == replacement.workspaceID })
+                }
+                try selectWorkspaceLocked(workspace.workspaceID)
+                try persistLocked()
+            } catch {
+                document = previous
+                throw error
             }
-            try selectWorkspaceLocked(workspace.workspaceID)
-            try persistLocked()
+            for id in replacedIDs {
+                // Checked above under the same lock, so this cannot refuse.
+                try? terminateSurface(id)
+                copilotTrustConfirmations[id] = nil
+                agentLaunchRequests[id] = nil
+                // The pane no longer exists in the saved state; a credential
+                // that cannot be forgotten names no pane and routes nowhere.
+                try? relayRuntime?.credentials.forget(id)
+            }
             return document.workspaces.first(where: { $0.workspaceID == workspace.workspaceID }) ?? workspace
         }
     }
@@ -1608,7 +1636,8 @@ public final class WorkbenchController: @unchecked Sendable {
         name: String?,
         attachedFolders: [String],
         newPaneFolder: String?,
-        initialShell: Bool
+        initialShell: Bool,
+        automationPolicy: WorkspaceAutomationPolicy
     ) throws -> WorkbenchWorkspace {
         // Checked under the lock before any workspace or pane is touched, so a
         // reservation never leaves half-applied metadata behind.
@@ -1628,7 +1657,7 @@ public final class WorkbenchController: @unchecked Sendable {
             attachedFolders: attachedFolders,
             newPaneFolder: newPaneFolder,
             isActive: true,
-            automationPolicy: .askAndDelegate,
+            automationPolicy: automationPolicy,
             workspaceID: id
         )
         document.workspaces.append(workspace)
