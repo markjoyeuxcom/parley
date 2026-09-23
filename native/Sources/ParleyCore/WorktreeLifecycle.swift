@@ -414,6 +414,17 @@ public struct WorktreeBoardRow: Equatable, Sendable {
 /// which are skipped and why, from fresh previews. Pure, so the decision
 /// is checkable; the previews themselves come from the service.
 public enum WorktreeBulkRemovalPlan {
+    /// The bulk action's label from facts read in the same pass as the
+    /// cleanup preview, not the board's cached reading: Unused for a clean
+    /// tree still at its recorded base, Integrated for a clean tree the
+    /// primary checkout contains, and nil for anything else, which the
+    /// action then skips.
+    public static func freshState(record: ManagedWorktreeRecord, facts: ManagedWorktreeFacts) -> WorktreeBoardRow.State? {
+        guard facts.registered == true, facts.changedPathCount == 0 else { return nil }
+        if let base = record.baseCommit, let head = facts.head, head == base { return .unused }
+        return facts.containedInPrimary == true ? .integrated : nil
+    }
+
     public struct Item: Equatable, Sendable {
         public let record: ManagedWorktreeRecord
         public let preview: WorktreeCleanupPreview

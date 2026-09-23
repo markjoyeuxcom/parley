@@ -211,6 +211,25 @@ public final class ManagedWorktreeStore: @unchecked Sendable {
 /// Branch names Parley will pass to Git: a strict subset of what Git accepts,
 /// validated before any process runs so option injection, traversal and
 /// control characters never reach argv.
+/// What the person confirmed in a cleanup preview. Removal re-reads every
+/// fact and refuses when the tree it would act on is not the one confirmed:
+/// a confirmed "clear the record, no Git command" never becomes a removal.
+public enum WorktreeCleanupAction: Equatable, Sendable {
+    case removeTree
+    case clearRecordOnly
+}
+
+/// Integrate…'s reviewed command. The branch is passed as its full ref,
+/// because Git resolves a short name to a same-named tag before the branch
+/// (`refs/tags/<name>` comes before `refs/heads/<name>`), and the merge
+/// would then integrate the tag's commit.
+public enum WorktreeIntegration {
+    public static func mergeArgv(branch: String) throws -> [String] {
+        try WorktreeNaming.validateBranch(branch)
+        return ["/usr/bin/git", "merge", "--no-ff", "--no-edit", "--end-of-options", "refs/heads/\(branch)"]
+    }
+}
+
 public enum WorktreeNaming {
     public static let maximumBranchLength = 120
 
@@ -289,13 +308,24 @@ public struct WorktreeCleanupFacts: Equatable, Sendable {
     /// Git lists the recorded path as the repository's primary checkout. A
     /// tracked record can point there; removal never can.
     public var isPrimary: Bool
+    /// Files Git is told not to check for changes (assume-unchanged or
+    /// skip-worktree) that are present in the tree. Status cannot see an edit
+    /// to them, so a clean status does not mean nothing would be lost.
+    public var uncheckedPaths: [String]
+    /// Why the search for independent repositories inside ignored directories
+    /// could not finish, when it could not. Unknown is a refusal.
+    public var nestedCheckRefusal: String?
+    /// The tree holds a populated submodule. Git refuses to remove such a
+    /// worktree without --force, which Parley never passes.
+    public var containsSubmodules: Bool
 
     public init(parleyCreated: Bool, creationTokenVerified: Bool, registered: Bool, registryReadable: Bool, pathInspectable: Bool, pathExists: Bool, pathIsDirectory: Bool,
                 recordInventoryReadable: Bool, recordPresentInInventory: Bool, recordUnchangedInInventory: Bool, locked: Bool, prunable: Bool,
                 nestedWorktreePaths: [String], livePaneFolders: [String],
                 otherRuntimePaneFolders: [String], otherRuntimeStateUnreadable: Bool, modifiedPaths: [String], untrackedPaths: [String],
                 ignoredPaths: [String], ignoredListTruncated: Bool, upstreamAheadCount: Int, hasUpstream: Bool, mergedIntoPrimary: Bool,
-                statusUncertain: Bool, path: String, isPrimary: Bool = false) {
+                statusUncertain: Bool, path: String, isPrimary: Bool = false,
+                uncheckedPaths: [String] = [], nestedCheckRefusal: String? = nil, containsSubmodules: Bool = false) {
         self.parleyCreated = parleyCreated
         self.creationTokenVerified = creationTokenVerified
         self.registered = registered
@@ -322,6 +352,9 @@ public struct WorktreeCleanupFacts: Equatable, Sendable {
         self.statusUncertain = statusUncertain
         self.path = path
         self.isPrimary = isPrimary
+        self.uncheckedPaths = uncheckedPaths
+        self.nestedCheckRefusal = nestedCheckRefusal
+        self.containsSubmodules = containsSubmodules
     }
 }
 
@@ -382,6 +415,14 @@ public enum WorktreeCleanupPolicy {
         if facts.statusUncertain { reasons.append("Git status could not be read") }
         if !facts.modifiedPaths.isEmpty { reasons.append("modified tracked files: " + facts.modifiedPaths.prefix(5).joined(separator: ", ")) }
         if !facts.untrackedPaths.isEmpty { reasons.append("untracked files: " + facts.untrackedPaths.prefix(5).joined(separator: ", ")) }
+        if !facts.uncheckedPaths.isEmpty {
+            reasons.append("\(facts.uncheckedPaths.count) file\(facts.uncheckedPaths.count == 1 ? " is" : "s are") marked for Git not to check for changes (assume-unchanged or skip-worktree), so an edit to \(facts.uncheckedPaths.count == 1 ? "it" : "them") would not show; clear the mark with git update-index --no-assume-unchanged or --no-skip-worktree and look first: "
+                + facts.uncheckedPaths.prefix(5).joined(separator: ", "))
+        }
+        if let refusal = facts.nestedCheckRefusal { reasons.append(refusal) }
+        if facts.containsSubmodules {
+            reasons.append("the worktree contains submodules, which Git will not remove without --force and Parley never forces; deinitialise them (git submodule deinit) or remove the tree yourself")
+        }
         if facts.ignoredListTruncated { reasons.append("more than \(maximumReviewedIgnoredPaths) ignored entries; too many to review here") }
         if facts.hasUpstream {
             if facts.upstreamAheadCount > 0 {
@@ -554,12 +595,18 @@ public struct ManagedWorktreeService: Sendable {
     /// For every read, which runs inside `GitReadBoundary`.
     private let readEnvironment: [String: String]
     private let readTimeout: TimeInterval
+    /// Directories, not files, the nested-repository search may visit in one
+    /// cleanup read: a tree with node_modules or .build holds far more files
+    /// than directories, and only a directory can be a repository.
+    private let nestedDirectoryBudget: Int
     private let mutationTimeout: TimeInterval
 
     public init(store: ManagedWorktreeStore, gitExecutable: URL = URL(fileURLWithPath: "/usr/bin/git"),
                 environment: [String: String] = ProcessInfo.processInfo.environment,
-                readTimeout: TimeInterval = 5, mutationTimeout: TimeInterval = 120) {
+                readTimeout: TimeInterval = 5, mutationTimeout: TimeInterval = 120,
+                nestedDirectoryBudget: Int = 20_000) {
         self.store = store
+        self.nestedDirectoryBudget = max(1, nestedDirectoryBudget)
         self.gitExecutable = gitExecutable
         // Inherited GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, GIT_CONFIG_* and the
         // like would redirect -C; none of them may reach a native command.
@@ -796,50 +843,133 @@ public struct ManagedWorktreeService: Sendable {
 
     // MARK: Prune and branch deletion
 
-    /// What `git worktree prune` would forget: every entry Git lists as
-    /// prunable. Git has no per-entry prune, so the preview shows them all
-    /// and the person acknowledges the whole list.
+    /// What `git worktree prune` would forget, from Git's own dry run
+    /// (`worktree prune -n -v`) rather than from `worktree list`: list omits
+    /// an entry whose gitdir file is missing, and prune removes it anyway.
+    /// Git has no per-entry prune, so the preview shows every entry and the
+    /// person acknowledges the whole list. Parley prunes only when every
+    /// entry's folder is known to be gone; a folder that still exists would
+    /// lose its link to the repository, its files left behind outside Git.
+    public struct PruneEntry: Equatable, Sendable {
+        /// The admin directory's name under `<common>/worktrees/`.
+        public let adminName: String
+        /// Git's own reason, as the dry run printed it.
+        public let reason: String
+        /// The folder the entry records, when its gitdir file names one.
+        public let folder: String?
+        /// The branch its admin HEAD names, if any.
+        public let branch: String?
+        /// Why Parley will not prune this entry, if it will not.
+        public let refusal: String?
+    }
+
     public struct PrunePreview: Equatable, Sendable {
         public let repositoryToplevel: String
-        public let entries: [RegisteredWorktree]
-        public var paths: [String] { entries.map(\.path) }
+        public let entries: [PruneEntry]
+        public var adminNames: [String] { entries.map(\.adminName) }
+        public var refusals: [String] { entries.compactMap(\.refusal) }
     }
 
     public struct PruneOutcome: Equatable, Sendable {
-        public let forgotten: [String]
+        public let forgottenNames: [String]
+        /// The recorded folders of the forgotten entries.
+        public let forgottenFolders: [String]
+        public let forgottenBranches: [String]
         public let remaining: [String]
+        /// Entries whose state after the prune could not be read.
+        public let unknown: [String]
         public let detail: String
     }
 
     public func prunePreview(in repositoryFolder: String) throws -> PrunePreview {
         let identity = try identity(of: repositoryFolder)
         let toplevel = primaryToplevel(identity) ?? identity.toplevel
-        let entries = try registeredWorktrees(of: GitRepositoryIdentity(commonDirectory: identity.commonDirectory, toplevel: toplevel)).filter(\.isPrunable)
+        let admin = URL(fileURLWithPath: identity.commonDirectory).appendingPathComponent("worktrees", isDirectory: true)
+        let names = ((try? FileManager.default.contentsOfDirectory(atPath: admin.path)) ?? []).sorted { $0.count > $1.count }
+        let output = try run(in: toplevel, ["worktree", "prune", "-n", "-v"], timeout: readTimeout)
+        let lines = (output.stdoutText + "\n" + output.stderrText).split(separator: "\n").map(String.init)
+        let linked = linkedFolders(of: identity.commonDirectory, toplevel: toplevel)
+        var entries: [PruneEntry] = []
+        for line in lines where line.hasPrefix("Removing worktrees/") {
+            let rest = String(line.dropFirst("Removing worktrees/".count))
+            guard let name = names.first(where: { rest.hasPrefix($0 + ": ") }) else {
+                entries.append(PruneEntry(adminName: rest, reason: rest, folder: nil, branch: nil,
+                    refusal: "Git would remove an entry Parley could not match to its admin directory (\(rest))"))
+                continue
+            }
+            let reason = String(rest.dropFirst(name.count + 2))
+            let entryDirectory = admin.appendingPathComponent(name, isDirectory: true)
+            let recorded = (try? String(contentsOf: entryDirectory.appendingPathComponent("gitdir"), encoding: .utf8))?
+                .trimmingCharacters(in: .newlines)
+            // worktree.useRelativePaths records this relative to the admin
+            // directory; anything else that is not "<folder>/.git" is unknown.
+            let pointer = recorded.map { $0.hasPrefix("/") ? $0 : entryDirectory.path + "/" + $0 }
+            let folder = pointer.flatMap { $0.hasSuffix("/.git") ? URL(fileURLWithPath: String($0.dropLast("/.git".count))).standardizedFileURL.path : nil }
+            let head = (try? String(contentsOf: entryDirectory.appendingPathComponent("HEAD"), encoding: .utf8))?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let branch = head.flatMap { $0.hasPrefix("ref: refs/heads/") ? String($0.dropFirst("ref: refs/heads/".count)) : nil }
+            let refusal: String?
+            if let user = linked[GitWorktreeResolver.canonicalPath(entryDirectory.path)] {
+                refusal = "the worktree at \(user) still links to \(name); pruning would cut it off from the repository"
+            } else if let folder {
+                refusal = Self.itemState(at: folder) == .absent ? nil
+                    : "the folder of \(name) still exists at \(folder); pruning would leave its files outside the repository. Restore its link with git worktree repair, or move the files, first"
+            } else {
+                refusal = "Git has no record of where the folder of \(name) is, so whether a worktree still uses it is unknown; check with git worktree prune -n -v and run the prune yourself"
+            }
+            entries.append(PruneEntry(adminName: name, reason: reason, folder: folder, branch: branch, refusal: refusal))
+        }
         return PrunePreview(repositoryToplevel: toplevel, entries: entries)
     }
 
-    /// One `git worktree prune` after re-reading the registry and requiring
-    /// the acknowledged list to match it exactly. A prunable entry has no
-    /// folder, so nothing on disk is touched and no branch changes; the
-    /// outcome reports only what the registry shows afterwards.
-    public func prune(in repositoryFolder: String, acknowledgedPaths: [String]) throws -> PruneOutcome {
-        let preview = try prunePreview(in: repositoryFolder)
-        guard !preview.entries.isEmpty else { throw ManagedWorktreeError.invalid("Git lists no prunable worktree entry for this repository.") }
-        guard Set(preview.paths) == Set(acknowledgedPaths) else {
-            throw ManagedWorktreeError.refused(["the prunable entries changed since the preview; review the list again"])
+    /// Folders known to Parley (its records, and every folder under the
+    /// repository's .worktrees) whose .git file names an admin directory of
+    /// this repository, keyed by that admin directory.
+    private func linkedFolders(of commonDirectory: String, toplevel: String) -> [String: String] {
+        var candidates = ((try? store.records()) ?? []).filter { $0.commonDirectory == commonDirectory }.map(\.path)
+        let worktrees = toplevel + "/" + Self.worktreesDirectoryName
+        candidates += ((try? FileManager.default.contentsOfDirectory(atPath: worktrees)) ?? []).map { worktrees + "/" + $0 }
+        var linked: [String: String] = [:]
+        for folder in Set(candidates) {
+            guard let text = try? String(contentsOfFile: folder + "/.git", encoding: .utf8),
+                  let line = text.split(separator: "\n").first, line.hasPrefix("gitdir: ") else { continue }
+            // worktree.useRelativePaths writes this relative to the tree.
+            let pointer = String(line.dropFirst("gitdir: ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            linked[GitWorktreeResolver.canonicalPath(pointer.hasPrefix("/") ? pointer : folder + "/" + pointer)] = folder
         }
+        return linked
+    }
+
+    /// One `git worktree prune` after re-reading Git's dry run and requiring
+    /// the acknowledged list to match it exactly and every entry's folder to
+    /// be gone. The outcome reports only what the admin directory shows
+    /// afterwards.
+    public func prune(in repositoryFolder: String, acknowledgedNames: [String]) throws -> PruneOutcome {
+        let preview = try prunePreview(in: repositoryFolder)
+        guard !preview.entries.isEmpty else { throw ManagedWorktreeError.invalid("Git would prune no worktree entry of this repository.") }
+        guard Set(preview.adminNames) == Set(acknowledgedNames) else {
+            throw ManagedWorktreeError.refused(["the entries Git would prune changed since the preview; review the list again"])
+        }
+        guard preview.refusals.isEmpty else { throw ManagedWorktreeError.refused(preview.refusals) }
         let result = try runObserving(in: preview.repositoryToplevel, ["worktree", "prune"], timeout: mutationTimeout)
-        let after = (try? prunePreview(in: repositoryFolder).paths) ?? preview.paths
-        let forgotten = preview.paths.filter { !after.contains($0) }
+        let identity = try identity(of: repositoryFolder)
+        let admin = URL(fileURLWithPath: identity.commonDirectory).appendingPathComponent("worktrees", isDirectory: true)
+        let states = Dictionary(uniqueKeysWithValues: preview.entries.map { ($0.adminName, Self.itemState(at: admin.appendingPathComponent($0.adminName).path)) })
+        let forgotten = preview.entries.filter { states[$0.adminName] == .absent }
+        let unknown = preview.entries.filter { states[$0.adminName] == .unknown }.map(\.adminName)
+        let remaining = preview.adminNames.filter { name in states[name] != .absent && !unknown.contains(name) }
         let detail: String
         if result.status == 0 {
-            detail = "Git forgot \(forgotten.count) of \(preview.paths.count) prunable entr\(preview.paths.count == 1 ? "y" : "ies"). No folder or branch changed."
+            detail = "Git forgot \(forgotten.count) of \(preview.entries.count) entr\(preview.entries.count == 1 ? "y" : "ies"). No folder or branch changed."
+                + (unknown.isEmpty ? "" : " Whether \(unknown.joined(separator: ", ")) \(unknown.count == 1 ? "is" : "are") gone could not be read.")
         } else {
             let text = result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
             detail = (result.status == 124 ? "git worktree prune timed out after \(Int(mutationTimeout)) seconds" : "git worktree prune reported exit status \(result.status)")
-                + (text.isEmpty ? "" : ": " + text) + ". \(forgotten.count) entr\(forgotten.count == 1 ? "y is" : "ies are") no longer listed."
+                + (text.isEmpty ? "" : ": " + text) + ". \(forgotten.count) entr\(forgotten.count == 1 ? "y is" : "ies are") gone"
+                + (unknown.isEmpty ? "." : "; whether \(unknown.joined(separator: ", ")) \(unknown.count == 1 ? "is" : "are") gone could not be read.")
         }
-        return PruneOutcome(forgotten: forgotten, remaining: after, detail: detail)
+        return PruneOutcome(forgottenNames: forgotten.map(\.adminName), forgottenFolders: forgotten.compactMap(\.folder),
+                            forgottenBranches: forgotten.compactMap(\.branch), remaining: remaining, unknown: unknown, detail: detail)
     }
 
     public struct BranchDeletionPreview: Equatable, Sendable {
@@ -852,6 +982,21 @@ public struct ManagedWorktreeService: Sendable {
         /// The holder is a prunable entry whose folder is gone: Git still
         /// counts the branch as checked out until the entry is pruned.
         public let heldByStaleEntry: Bool
+        /// The branch's upstream, when one is configured and its
+        /// remote-tracking ref exists locally.
+        public let upstream: String?
+        /// Whether the commit is contained in that upstream, by local
+        /// tracking state; nil without an upstream.
+        public let mergedIntoUpstream: Bool?
+
+        /// Git's own rule for `branch -d`: the branch must be merged into its
+        /// upstream when it has one, and into HEAD otherwise; a checked-out
+        /// branch is always refused.
+        public var gitWillDelete: Bool {
+            guard checkedOutAt == nil else { return false }
+            if upstream != nil { return mergedIntoUpstream == true }
+            return mergedIntoPrimaryHead
+        }
     }
 
     public enum BranchDeletionOutcome: Equatable, Sendable {
@@ -868,17 +1013,31 @@ public struct ManagedWorktreeService: Sendable {
             .stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
         let head = try run(in: toplevel, ["rev-parse", "HEAD"], timeout: readTimeout).stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
         let merged = (try? runAllowingFailure(in: toplevel, ["merge-base", "--is-ancestor", commit, head], timeout: readTimeout))?.status == 0
+        let configured = (try? run(in: toplevel, ["for-each-ref", "--format=%(upstream)", "--end-of-options", "refs/heads/\(branch)"], timeout: readTimeout))?
+            .stdoutText.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var upstream: String?
+        var mergedIntoUpstream: Bool?
+        if configured.hasPrefix("refs/"),
+           let upstreamCommit = (try? runAllowingFailure(in: toplevel, ["rev-parse", "--verify", "--quiet", "--end-of-options", configured], timeout: readTimeout))
+            .flatMap({ $0.status == 0 ? $0.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines) : nil }), !upstreamCommit.isEmpty {
+            upstream = configured
+            mergedIntoUpstream = (try? runAllowingFailure(in: toplevel, ["merge-base", "--is-ancestor", commit, upstreamCommit], timeout: readTimeout))?.status == 0
+        }
         let registry = try registeredWorktrees(of: GitRepositoryIdentity(commonDirectory: identity.commonDirectory, toplevel: toplevel))
         let checkedOut = registry.first { $0.branch == "refs/heads/\(branch)" }
         return BranchDeletionPreview(branch: branch, commit: commit, mergedIntoPrimaryHead: merged, checkedOutAt: checkedOut?.path,
-            heldByStaleEntry: checkedOut?.isPrunable ?? false)
+            heldByStaleEntry: checkedOut?.isPrunable ?? false, upstream: upstream, mergedIntoUpstream: mergedIntoUpstream)
     }
 
-    /// One `git branch -d`, from the primary checkout. Git refuses an unmerged
-    /// or checked-out branch and its message is what the person sees; the
-    /// upper-case form never appears in Parley's argv.
-    public func deleteBranch(_ branch: String, in repositoryFolder: String) throws -> BranchDeletionOutcome {
+    /// One `git branch -d`, from the primary checkout, only while the branch
+    /// is still at the commit the person saw in the preview. Git refuses an
+    /// unmerged or checked-out branch and its message is what the person
+    /// sees; the upper-case form never appears in Parley's argv.
+    public func deleteBranch(_ branch: String, expectedCommit: String, in repositoryFolder: String) throws -> BranchDeletionOutcome {
         let preview = try branchDeletionPreview(branch, in: repositoryFolder)
+        guard preview.commit == expectedCommit else {
+            throw ManagedWorktreeError.refused(["\(branch) moved from \(expectedCommit.prefix(12)) to \(preview.commit.prefix(12)) since the preview; review it again"])
+        }
         let identity = try identity(of: repositoryFolder)
         let toplevel = primaryToplevel(identity) ?? identity.toplevel
         let result = try runObserving(in: toplevel, ["branch", "-d", "--end-of-options", branch], timeout: mutationTimeout)
@@ -901,13 +1060,18 @@ public struct ManagedWorktreeService: Sendable {
         func unknown(_ registered: Bool?) -> ManagedWorktreeFacts {
             ManagedWorktreeFacts(recordID: id, currentBranch: nil, head: nil, changedPathCount: nil, upstreamAheadCount: nil, hasUpstream: nil, registered: registered)
         }
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else { return unknown(false) }
+        // Only a confirmed "no such file" is Missing; a permission or privacy
+        // (TCC) denial, or something that is not a directory, is unknown.
+        switch Self.itemState(at: path) {
+        case .absent: return unknown(false)
+        case .unknown, .present(isDirectory: false): return unknown(nil)
+        case .present(isDirectory: true): break
+        }
         // A failed read is unknown; only Git's own listing may say "absent".
         guard let identity = try? identity(of: path), expectedCommonDirectory == nil || identity.commonDirectory == expectedCommonDirectory,
               let registry = try? registeredWorktrees(of: identity) else { return unknown(nil) }
         guard registry.contains(where: { $0.path == path }) else { return unknown(false) }
-        let branch = (try? run(in: path, ["rev-parse", "--abbrev-ref", "HEAD"], timeout: readTimeout))?.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let branch = currentBranch(in: path).map { $0 ?? "HEAD" }
         let head = (try? run(in: path, ["rev-parse", "HEAD"], timeout: readTimeout))?.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
         let status = try? statusEntries(in: path)
         let upstream = upstreamState(in: path)
@@ -967,12 +1131,14 @@ public struct ManagedWorktreeService: Sendable {
     /// `git worktree remove` with no `--force` and reports what is observed
     /// afterwards. The branch is never deleted. A tree that is already gone
     /// clears only Parley's record and runs no Git command.
-    public func remove(_ record: ManagedWorktreeRecord, acknowledgedIgnoredPaths: [String], livePaneFolders: [String],
+    public func remove(_ record: ManagedWorktreeRecord, confirmed: WorktreeCleanupAction, acknowledgedIgnoredPaths: [String], livePaneFolders: [String],
                        otherRuntimeStateFiles: [URL]) throws -> WorktreeRemovalOutcome {
         let facts = try cleanupFacts(record, livePaneFolders: livePaneFolders, otherRuntimeStateFiles: otherRuntimeStateFiles)
         switch WorktreeCleanupPolicy.decision(for: facts) {
         case let .refuse(reasons):
             throw ManagedWorktreeError.refused(reasons)
+        case .removeTree where confirmed == .clearRecordOnly:
+            throw ManagedWorktreeError.refused(["a worktree is at \(record.path) again since the preview said its folder was gone; review it again before anything is removed"])
         case .clearRecordOnly:
             do {
                 try store.remove(id: record.id)
@@ -1101,6 +1267,9 @@ public struct ManagedWorktreeService: Sendable {
             other += folders
         }
         var modified: [String] = [], untracked: [String] = [], ignored: [String] = []
+        var unchecked: [String] = []
+        var submodules = false
+        var nestedRefusal: String?
         var truncated = false
         var uncertain = false
         if registered != nil, !(registered?.isPrunable ?? true), pathIsDirectory {
@@ -1114,8 +1283,11 @@ public struct ManagedWorktreeService: Sendable {
                 if !truncated {
                     let directories = status.ignored.filter { $0.hasSuffix("/") }
                         .map { URL(fileURLWithPath: record.path).appendingPathComponent($0) }
-                    nested += try nestedRepositories(in: directories)
+                    do { nested += try nestedRepositories(in: directories) }
+                    catch let ManagedWorktreeError.refused(reasons) { nestedRefusal = reasons.joined(separator: "; ") }
                 }
+                if let flagged = try? uncheckedPresentPaths(in: record.path) { unchecked = flagged } else { uncertain = true }
+                if let found = try? containsPopulatedSubmodules(in: record.path) { submodules = found } else { uncertain = true }
             } else { uncertain = true }
         }
         let upstream: UpstreamState = registered == nil || !pathIsDirectory ? UpstreamState(hasUpstream: nil, ahead: nil) : upstreamState(in: record.path)
@@ -1133,7 +1305,43 @@ public struct ManagedWorktreeService: Sendable {
             untrackedPaths: untracked, ignoredPaths: ignored, ignoredListTruncated: truncated, upstreamAheadCount: upstream.ahead ?? 0,
             hasUpstream: upstream.hasUpstream ?? false, mergedIntoPrimary: merged,
             statusUncertain: uncertain || upstream.hasUpstream == nil || (upstream.hasUpstream == true && upstream.ahead == nil), path: record.path,
-            isPrimary: registered?.isPrimary ?? false)
+            isPrimary: registered?.isPrimary ?? false, uncheckedPaths: unchecked, nestedCheckRefusal: nestedRefusal,
+            containsSubmodules: submodules)
+    }
+
+    /// Git's own test for refusing `worktree remove` (validate_no_submodules):
+    /// a `modules` directory in the tree's admin directory, or a gitlink in
+    /// its index whose submodule is populated. An empty gitlink does not
+    /// block removal, so it is not a refusal here either.
+    private func containsPopulatedSubmodules(in folder: String) throws -> Bool {
+        let admin = try run(in: folder, ["rev-parse", "--path-format=absolute", "--git-dir"], timeout: readTimeout)
+            .stdoutText.trimmingCharacters(in: .newlines)
+        if Self.itemState(at: admin + "/modules") != .absent { return true }
+        let index = try run(in: folder, ["ls-files", "--stage", "-z"], timeout: readTimeout)
+        let prefix = Array("160000 ".utf8)
+        return index.stdout.split(separator: 0).contains { entry in
+            let bytes = Array(entry)
+            guard bytes.starts(with: prefix), let tab = bytes.firstIndex(of: UInt8(ascii: "\t")) else { return false }
+            let path = String(decoding: bytes[(tab + 1)...], as: UTF8.self)
+            return Self.itemState(at: folder + "/" + path + "/.git") != .absent
+        }
+    }
+
+    /// Tracked files marked assume-unchanged (a lower-case tag from
+    /// `ls-files -v`) or skip-worktree (`S`) that are present on disk. A
+    /// sparse checkout's skip-worktree file that is absent holds nothing.
+    private func uncheckedPresentPaths(in folder: String) throws -> [String] {
+        let output = try run(in: folder, ["ls-files", "-v", "-z"], timeout: readTimeout)
+        // Bytes, not Characters: a path that begins with a combining mark
+        // joins the separating space into one Character, and dropping two
+        // Characters would drop its first letter and miss the file.
+        return output.stdout.split(separator: 0).compactMap { entry -> String? in
+            let bytes = Array(entry)
+            guard bytes.count > 2, bytes[1] == UInt8(ascii: " "),
+                  (UInt8(ascii: "a")...UInt8(ascii: "z")).contains(bytes[0]) || bytes[0] == UInt8(ascii: "S") else { return nil }
+            let path = String(decoding: bytes[2...], as: UTF8.self)
+            return Self.itemState(at: folder + "/" + path) == .absent ? nil : path
+        }
     }
 
     // MARK: Helpers
@@ -1144,7 +1352,8 @@ public struct ManagedWorktreeService: Sendable {
         var inspected = 0
         let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(readTimeout * 1_000_000_000)
         while let folder = pending.popLast() {
-            guard inspected < 20_000, DispatchTime.now().uptimeNanoseconds < deadline else {
+            inspected += 1
+            guard inspected <= nestedDirectoryBudget, DispatchTime.now().uptimeNanoseconds < deadline else {
                 throw ManagedWorktreeError.refused(["the ignored directory is too large to check for nested repositories; inspect or move it before removal"])
             }
             var folderInfo = stat()
@@ -1167,8 +1376,7 @@ public struct ManagedWorktreeService: Sendable {
                 continue
             }
             for entry in entries {
-                inspected += 1
-                guard inspected <= 20_000, DispatchTime.now().uptimeNanoseconds < deadline else {
+                guard DispatchTime.now().uptimeNanoseconds < deadline else {
                     throw ManagedWorktreeError.refused(["the ignored directory is too large to check for nested repositories; inspect or move it before removal"])
                 }
                 var info = stat()
@@ -1227,15 +1435,18 @@ public struct ManagedWorktreeService: Sendable {
     private func statusEntries(in folder: String) throws -> (modified: [String], untracked: [String], ignored: [String]) {
         let output = try run(in: folder, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching"] + GitReadBoundary.statusArguments,
                              timeout: readTimeout, environment: filterFreeEnvironment(in: folder, base: readEnvironment))
-        let tokens = output.stdout.split(separator: 0, omittingEmptySubsequences: false).map { String(decoding: $0, as: UTF8.self) }
+        // Split and slice bytes: a path that begins with a combining mark
+        // would join the separating space into one Character, and a
+        // Character-based dropFirst(3) would cut into the name.
+        let tokens = output.stdout.split(separator: 0, omittingEmptySubsequences: false).map { Array($0) }
         var modified: [String] = [], untracked: [String] = [], ignored: [String] = []
         var index = 0
         while index < tokens.count {
             let token = tokens[index]
             index += 1
             guard token.count >= 4 else { continue }
-            let code = String(token.prefix(2))
-            let path = String(token.dropFirst(3))
+            let code = String(decoding: token[0..<2], as: UTF8.self)
+            let path = String(decoding: token[3...], as: UTF8.self)
             if code.hasPrefix("R") || code.hasPrefix("C") { index += 1 } // rename/copy carries the origin path next
             switch code {
             case "!!": ignored.append(path)
@@ -1250,13 +1461,21 @@ public struct ManagedWorktreeService: Sendable {
     /// as "no upstream". `ahead == nil` with an upstream means the count failed.
     struct UpstreamState: Equatable { let hasUpstream: Bool?; let ahead: Int? }
 
+    /// The checked-out branch's short name: `.some(nil)` on a detached HEAD,
+    /// nil when Git could not answer. Read from the full ref rather than with
+    /// `--short`, which answers `heads/v2` when a tag `v2` also exists.
+    private func currentBranch(in folder: String) -> String?? {
+        guard let lookup = try? runAllowingFailure(in: folder, ["symbolic-ref", "--quiet", "HEAD"], timeout: readTimeout) else { return nil }
+        if lookup.status == 1 { return .some(nil) }
+        guard lookup.status == 0 else { return nil }
+        let ref = lookup.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ref.hasPrefix("refs/heads/"), ref.count > "refs/heads/".count else { return nil }
+        return .some(String(ref.dropFirst("refs/heads/".count)))
+    }
+
     private func upstreamState(in folder: String) -> UpstreamState {
-        guard let branchLookup = try? runAllowingFailure(in: folder, ["symbolic-ref", "--quiet", "--short", "HEAD"], timeout: readTimeout) else {
-            return UpstreamState(hasUpstream: nil, ahead: nil)
-        }
-        if branchLookup.status == 1 { return UpstreamState(hasUpstream: false, ahead: nil) } // detached HEAD: no upstream by definition
-        guard branchLookup.status == 0 else { return UpstreamState(hasUpstream: nil, ahead: nil) }
-        let branch = branchLookup.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let lookup = currentBranch(in: folder) else { return UpstreamState(hasUpstream: nil, ahead: nil) }
+        guard let branch = lookup else { return UpstreamState(hasUpstream: false, ahead: nil) } // detached HEAD: no upstream by definition
         // The configured upstream is read from config, so a tracking branch whose
         // remote or remote-tracking ref is missing counts as configured-but-unknown.
         guard !branch.isEmpty, let configured = try? runAllowingFailure(in: folder, ["config", "--get", "branch.\(branch).merge"], timeout: readTimeout) else {
@@ -1346,7 +1565,9 @@ extension ManagedWorktreeService {
     /// A same-branch directory is not evidence of a move. Match the original
     /// opaque marker within the same repository, and refuse ambiguous matches.
     public func recoveryCandidates(_ record: ManagedWorktreeRecord) throws -> [String] {
-        guard record.parleyCreated, record.creationToken != nil else { return [] }
+        // Relinking is only ever offered for a record whose folder is gone, so
+        // a present tree needs no scan of every other registered tree.
+        guard record.parleyCreated, record.creationToken != nil, Self.itemState(at: record.path) == .absent else { return [] }
         let identity = GitRepositoryIdentity(commonDirectory: record.commonDirectory, toplevel: record.commonDirectory)
         return try registeredWorktrees(of: identity).filter { item in
             guard item.path != record.path, !item.isPrunable, !item.isPrimary,
