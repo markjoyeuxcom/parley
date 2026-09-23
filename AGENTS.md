@@ -162,6 +162,12 @@ Production and a separate Development directory.
   whose surface was briefly unavailable therefore keeps its placeholder until
   its launch generation changes; fixing that must not reintroduce shared-view
   reparenting.
+  The same class appears if a layout names one pane twice, so each pane id
+  appears in a workspace's `NativeLayoutNode` at most once: `inserting` moves
+  a leaf that is already there, and `reconciled` keeps each leaf's first
+  place, which also repairs a stored tree at launch. Until 23 September 2026
+  a team container member, reconciled in by the one-second refresh while its
+  Docker preparation was awaited, was then inserted again beside the lead.
 - Closing/hiding the main window keeps panes and coordination alive while the
   application remains running.
 - Auxiliary windows (Status Center, Help, About, Settings) are
