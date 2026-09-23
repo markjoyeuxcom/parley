@@ -39,8 +39,8 @@ func checkRefusedReviewedAsksAreRecognisedAndBusyStateIsCurrent() throws {
     let refused = broker.handleAskFromUI(sourcePaneID: source.id, targetPaneID: target.id, text: "A reviewed question.", idempotencyKey: refusedKey)
     try draftExpect(refused.status == 409, "a UI Ask to a busy target was not refused: \(refused.status) \(refused.text)")
     let history = broker.handoffs()
-    try draftExpect(!ReviewedAskHistory.reachedTarget(idempotencyKey: refusedKey, in: history),
-                    "a refused UI Ask was treated as delivered, so its draft would be lost")
+    try draftExpect(ReviewedAskHistory.outcome(idempotencyKey: refusedKey, in: history) == .refusedBeforeDelivery,
+                    "a refused UI Ask was not recognised as refused before delivery, so its draft would be lost")
     try draftExpect(ReviewedAskHistory.targetHasTrackedWork(target.id, in: history), "the busy target was not recognised as busy")
 
     // A delivered Ask that then times out stays sent: bringing the draft back
@@ -49,9 +49,23 @@ func checkRefusedReviewedAsksAreRecognisedAndBusyStateIsCurrent() throws {
     let deliveredKey = "draft-delivered-\(UUID().uuidString.lowercased().prefix(8))"
     let timedOut = broker.handleAskFromUI(sourcePaneID: source.id, targetPaneID: target.id, text: "Another question.", idempotencyKey: deliveredKey)
     try draftExpect(timedOut.status == 408, "the delivered Ask did not time out as arranged: \(timedOut.status) \(timedOut.text)")
-    try draftExpect(ReviewedAskHistory.reachedTarget(idempotencyKey: deliveredKey, in: broker.handoffs()),
+    try draftExpect(ReviewedAskHistory.outcome(idempotencyKey: deliveredKey, in: broker.handoffs()) == .delivered,
                     "a delivered Ask that timed out was treated as never sent")
     try draftExpect(!ReviewedAskHistory.targetHasTrackedWork(target.id, in: broker.handoffs()), "an idle target was reported busy")
+
+    // A delivery that failed part-way (the paste can land and Enter fail) is
+    // never reported as refused: its text may already be in the input line.
+    final class Flaky: @unchecked Sendable { var fail = true }
+    let flaky = Flaky()
+    let partialBroker = RelayBroker(credentials: credentials, panes: { [source, target, lead] }, paste: { _, _ in },
+                                    submit: { paneID, _ in if flaky.fail { throw ParleyWorkbenchError.unsafeRelayTarget(paneID) } },
+                                    consultationTimeout: 1, livenessPollInterval: 0.01,
+                                    contextReviewStore: try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews-2.json")))
+    let partialKey = "draft-partial-\(UUID().uuidString.lowercased().prefix(8))"
+    let partial = partialBroker.handleAskFromUI(sourcePaneID: source.id, targetPaneID: target.id, text: "Half-sent question.", idempotencyKey: partialKey)
+    try draftExpect(partial.status != 200, "the failing delivery was reported as a success")
+    try draftExpect(ReviewedAskHistory.outcome(idempotencyKey: partialKey, in: partialBroker.handoffs()) == .deliveryMayHaveStarted,
+                    "a delivery that failed after the record existed was not reported as possibly started")
 
     // Status Center's history stops refreshing when its window closes; the
     // newest record for each handoff wins whichever list carries it.
@@ -66,6 +80,14 @@ func checkRefusedReviewedAsksAreRecognisedAndBusyStateIsCurrent() throws {
     try draftExpect(zip(merged, merged.dropFirst()).allSatisfy { $0.updatedAt >= $1.updatedAt }, "the merged history is not newest first")
     try draftExpect(!ReviewedAskHistory.targetHasTrackedWork(target.id, in: merged),
                     "a stale waiting record in one list made the idle target look busy")
+    // Two records with the same timestamp: the one with more transitions is further along.
+    var sameTime = delegation
+    sameTime.state = .waiting
+    sameTime.transitions = Array(delegation.transitions.dropLast())
+    for order in [[sameTime, delegation], [delegation, sameTime]] {
+        let tied = ReviewedAskHistory.newestPerHandoff([order[0]], [order[1]])
+        try draftExpect(tied.first?.state == .completed, "an equally timestamped record with fewer transitions won")
+    }
 }
 
 @MainActor let reviewedAskDraftChecks: [(String, () throws -> Void)] = [
