@@ -1044,8 +1044,11 @@ mutation) and the other Production/Development runtime's `workbench-state.json`
 the primary worktree. `WorktreeCleanupPolicy.decision` is the pure table:
 a nested registered or known worktree, any live or placeholder pane inside
 the tree, modified or untracked files, a present file marked assume-unchanged
-or skip-worktree (`git ls-files -v`; status cannot see an edit to it, and a
-sparse checkout's absent file holds nothing), commits ahead of the upstream's local
+or skip-worktree (`git ls-files -v`, sliced as bytes; status cannot see an
+edit to it, and a sparse checkout's absent file holds nothing), a populated
+submodule or a `modules` admin directory (Git's own `validate_no_submodules`
+test; Git will not remove that tree without `--force`),
+commits ahead of the upstream's local
 remote-tracking state (a pushed but unmerged branch is allowed; the remote
 is never contacted), no upstream and not contained in the primary's HEAD,
 locked, prunable, unregistered, the repository's primary checkout (a
@@ -1135,7 +1138,8 @@ whose gitdir file is missing and prune removes it anyway (a live tree then
 reads "not a git repository"). Each entry shows Git's reason, the folder its
 gitdir file records and its branch; Parley refuses the whole prune when any
 entry's folder still exists, has no recorded location, or is still linked
-from a Parley record or `.worktrees` folder. The person acknowledges the
+from a Parley record or `.worktrees` folder (a relative `gitdir:` pointer,
+from `worktree.useRelativePaths`, is resolved against the file holding it). The person acknowledges the
 admin names, which must still match Git's dry run when it runs, no folder or
 branch changes, and Parley clears its records for the forgotten entries.
 Delete branch runs one `git branch -d --end-of-options <branch>` from the

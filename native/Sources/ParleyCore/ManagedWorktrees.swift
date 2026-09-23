@@ -315,6 +315,9 @@ public struct WorktreeCleanupFacts: Equatable, Sendable {
     /// Why the search for independent repositories inside ignored directories
     /// could not finish, when it could not. Unknown is a refusal.
     public var nestedCheckRefusal: String?
+    /// The tree holds a populated submodule. Git refuses to remove such a
+    /// worktree without --force, which Parley never passes.
+    public var containsSubmodules: Bool
 
     public init(parleyCreated: Bool, creationTokenVerified: Bool, registered: Bool, registryReadable: Bool, pathInspectable: Bool, pathExists: Bool, pathIsDirectory: Bool,
                 recordInventoryReadable: Bool, recordPresentInInventory: Bool, recordUnchangedInInventory: Bool, locked: Bool, prunable: Bool,
@@ -322,7 +325,7 @@ public struct WorktreeCleanupFacts: Equatable, Sendable {
                 otherRuntimePaneFolders: [String], otherRuntimeStateUnreadable: Bool, modifiedPaths: [String], untrackedPaths: [String],
                 ignoredPaths: [String], ignoredListTruncated: Bool, upstreamAheadCount: Int, hasUpstream: Bool, mergedIntoPrimary: Bool,
                 statusUncertain: Bool, path: String, isPrimary: Bool = false,
-                uncheckedPaths: [String] = [], nestedCheckRefusal: String? = nil) {
+                uncheckedPaths: [String] = [], nestedCheckRefusal: String? = nil, containsSubmodules: Bool = false) {
         self.parleyCreated = parleyCreated
         self.creationTokenVerified = creationTokenVerified
         self.registered = registered
@@ -351,6 +354,7 @@ public struct WorktreeCleanupFacts: Equatable, Sendable {
         self.isPrimary = isPrimary
         self.uncheckedPaths = uncheckedPaths
         self.nestedCheckRefusal = nestedCheckRefusal
+        self.containsSubmodules = containsSubmodules
     }
 }
 
@@ -416,6 +420,9 @@ public enum WorktreeCleanupPolicy {
                 + facts.uncheckedPaths.prefix(5).joined(separator: ", "))
         }
         if let refusal = facts.nestedCheckRefusal { reasons.append(refusal) }
+        if facts.containsSubmodules {
+            reasons.append("the worktree contains submodules, which Git will not remove without --force and Parley never forces; deinitialise them (git submodule deinit) or remove the tree yourself")
+        }
         if facts.ignoredListTruncated { reasons.append("more than \(maximumReviewedIgnoredPaths) ignored entries; too many to review here") }
         if facts.hasUpstream {
             if facts.upstreamAheadCount > 0 {
@@ -894,7 +901,10 @@ public struct ManagedWorktreeService: Sendable {
             let entryDirectory = admin.appendingPathComponent(name, isDirectory: true)
             let recorded = (try? String(contentsOf: entryDirectory.appendingPathComponent("gitdir"), encoding: .utf8))?
                 .trimmingCharacters(in: .newlines)
-            let folder = recorded.flatMap { $0.hasPrefix("/") && $0.hasSuffix("/.git") ? String($0.dropLast("/.git".count)) : nil }
+            // worktree.useRelativePaths records this relative to the admin
+            // directory; anything else that is not "<folder>/.git" is unknown.
+            let pointer = recorded.map { $0.hasPrefix("/") ? $0 : entryDirectory.path + "/" + $0 }
+            let folder = pointer.flatMap { $0.hasSuffix("/.git") ? URL(fileURLWithPath: String($0.dropLast("/.git".count))).standardizedFileURL.path : nil }
             let head = (try? String(contentsOf: entryDirectory.appendingPathComponent("HEAD"), encoding: .utf8))?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let branch = head.flatMap { $0.hasPrefix("ref: refs/heads/") ? String($0.dropFirst("ref: refs/heads/".count)) : nil }
@@ -923,7 +933,9 @@ public struct ManagedWorktreeService: Sendable {
         for folder in Set(candidates) {
             guard let text = try? String(contentsOfFile: folder + "/.git", encoding: .utf8),
                   let line = text.split(separator: "\n").first, line.hasPrefix("gitdir: ") else { continue }
-            linked[GitWorktreeResolver.canonicalPath(String(line.dropFirst("gitdir: ".count)))] = folder
+            // worktree.useRelativePaths writes this relative to the tree.
+            let pointer = String(line.dropFirst("gitdir: ".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            linked[GitWorktreeResolver.canonicalPath(pointer.hasPrefix("/") ? pointer : folder + "/" + pointer)] = folder
         }
         return linked
     }
@@ -1256,6 +1268,7 @@ public struct ManagedWorktreeService: Sendable {
         }
         var modified: [String] = [], untracked: [String] = [], ignored: [String] = []
         var unchecked: [String] = []
+        var submodules = false
         var nestedRefusal: String?
         var truncated = false
         var uncertain = false
@@ -1274,6 +1287,7 @@ public struct ManagedWorktreeService: Sendable {
                     catch let ManagedWorktreeError.refused(reasons) { nestedRefusal = reasons.joined(separator: "; ") }
                 }
                 if let flagged = try? uncheckedPresentPaths(in: record.path) { unchecked = flagged } else { uncertain = true }
+                if let found = try? containsPopulatedSubmodules(in: record.path) { submodules = found } else { uncertain = true }
             } else { uncertain = true }
         }
         let upstream: UpstreamState = registered == nil || !pathIsDirectory ? UpstreamState(hasUpstream: nil, ahead: nil) : upstreamState(in: record.path)
@@ -1291,7 +1305,26 @@ public struct ManagedWorktreeService: Sendable {
             untrackedPaths: untracked, ignoredPaths: ignored, ignoredListTruncated: truncated, upstreamAheadCount: upstream.ahead ?? 0,
             hasUpstream: upstream.hasUpstream ?? false, mergedIntoPrimary: merged,
             statusUncertain: uncertain || upstream.hasUpstream == nil || (upstream.hasUpstream == true && upstream.ahead == nil), path: record.path,
-            isPrimary: registered?.isPrimary ?? false, uncheckedPaths: unchecked, nestedCheckRefusal: nestedRefusal)
+            isPrimary: registered?.isPrimary ?? false, uncheckedPaths: unchecked, nestedCheckRefusal: nestedRefusal,
+            containsSubmodules: submodules)
+    }
+
+    /// Git's own test for refusing `worktree remove` (validate_no_submodules):
+    /// a `modules` directory in the tree's admin directory, or a gitlink in
+    /// its index whose submodule is populated. An empty gitlink does not
+    /// block removal, so it is not a refusal here either.
+    private func containsPopulatedSubmodules(in folder: String) throws -> Bool {
+        let admin = try run(in: folder, ["rev-parse", "--path-format=absolute", "--git-dir"], timeout: readTimeout)
+            .stdoutText.trimmingCharacters(in: .newlines)
+        if Self.itemState(at: admin + "/modules") != .absent { return true }
+        let index = try run(in: folder, ["ls-files", "--stage", "-z"], timeout: readTimeout)
+        let prefix = Array("160000 ".utf8)
+        return index.stdout.split(separator: 0).contains { entry in
+            let bytes = Array(entry)
+            guard bytes.starts(with: prefix), let tab = bytes.firstIndex(of: UInt8(ascii: "\t")) else { return false }
+            let path = String(decoding: bytes[(tab + 1)...], as: UTF8.self)
+            return Self.itemState(at: folder + "/" + path + "/.git") != .absent
+        }
     }
 
     /// Tracked files marked assume-unchanged (a lower-case tag from
@@ -1299,10 +1332,14 @@ public struct ManagedWorktreeService: Sendable {
     /// sparse checkout's skip-worktree file that is absent holds nothing.
     private func uncheckedPresentPaths(in folder: String) throws -> [String] {
         let output = try run(in: folder, ["ls-files", "-v", "-z"], timeout: readTimeout)
+        // Bytes, not Characters: a path that begins with a combining mark
+        // joins the separating space into one Character, and dropping two
+        // Characters would drop its first letter and miss the file.
         return output.stdout.split(separator: 0).compactMap { entry -> String? in
-            let text = String(decoding: entry, as: UTF8.self)
-            guard text.count > 2, let tag = text.first, tag.isLowercase || tag == "S" else { return nil }
-            let path = String(text.dropFirst(2))
+            let bytes = Array(entry)
+            guard bytes.count > 2, bytes[1] == UInt8(ascii: " "),
+                  (UInt8(ascii: "a")...UInt8(ascii: "z")).contains(bytes[0]) || bytes[0] == UInt8(ascii: "S") else { return nil }
+            let path = String(decoding: bytes[2...], as: UTF8.self)
             return Self.itemState(at: folder + "/" + path) == .absent ? nil : path
         }
     }

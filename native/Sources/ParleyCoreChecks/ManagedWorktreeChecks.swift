@@ -1082,6 +1082,32 @@ func worktreeCleanupGapChecks() throws {
         try wtExpect(preview.refusals.contains { $0.contains("not to check for changes") && $0.contains("src/main.swift") },
                      "an edit hidden by \(flag) did not refuse removal: \(preview.refusals)")
     }
+    // A marked file whose name begins with a combining mark is still found.
+    let marked = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "gap/mark", baseRef: "main"))
+    let markedFolder = URL(fileURLWithPath: marked.path)
+    let combining = "\u{301}accent.txt"
+    try "x\n".write(to: markedFolder.appendingPathComponent(combining), atomically: true, encoding: .utf8)
+    try f.git(["add", combining], in: markedFolder)
+    try f.git(["commit", "-q", "-m", "accent"], in: markedFolder)
+    try f.git(["update-index", "--skip-worktree", combining], in: markedFolder)
+    try "edited\n".write(to: markedFolder.appendingPathComponent(combining), atomically: true, encoding: .utf8)
+    let markedPreview = try f.service.cleanupPreview(marked, livePaneFolders: [], otherRuntimeStateFiles: [])
+    try wtExpect(markedPreview.facts.uncheckedPaths == [combining], "a marked name beginning with a combining mark was missed: \(markedPreview.facts.uncheckedPaths.map { Array($0.unicodeScalars) })")
+    // A tree with a submodule is refused in the preview, since Git would refuse removal.
+    let withModule = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "gap/module", baseRef: "main"))
+    let moduleFolder = URL(fileURLWithPath: withModule.path)
+    let commit = try f.git(["rev-parse", "HEAD"], in: f.repo)
+    try f.git(["update-index", "--add", "--cacheinfo", "160000,\(commit),vendor/lib"], in: moduleFolder)
+    try f.git(["commit", "-q", "-m", "submodule"], in: moduleFolder)
+    // An empty gitlink does not stop Git removing the tree, so it is no refusal.
+    try wtExpect(!(try f.service.cleanupPreview(withModule, livePaneFolders: [], otherRuntimeStateFiles: []).refusals.contains { $0.contains("submodules") }),
+                 "an unpopulated gitlink refused removal")
+    let library = moduleFolder.appendingPathComponent("vendor/lib", isDirectory: true)
+    try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+    try f.git(["init", "-q", "-b", "main"], in: library)
+    let populated = try f.service.cleanupPreview(withModule, livePaneFolders: [], otherRuntimeStateFiles: [])
+    try wtExpect(populated.refusals.contains { $0.contains("submodules") }, "a tree with a populated submodule was offered for removal: \(populated.refusals)")
+    _ = try wtRejects("this Git removed a worktree with a populated submodule") { try f.git(["worktree", "remove", withModule.path], in: f.repo) }
     // A sparse checkout's skip-worktree file that is not on disk holds nothing to lose.
     let sparse = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "gap/sparse", baseRef: "main"))
     try f.git(["update-index", "--skip-worktree", "src/main.swift"], in: URL(fileURLWithPath: sparse.path))
@@ -1143,6 +1169,16 @@ func worktreeCleanupGapChecks() throws {
     let unlinked = try f.service.prunePreview(in: f.repo.path)
     try wtExpect(unlinked.refusals.contains { $0.contains("still exists") }, "a folder that still exists did not refuse prune: \(unlinked.refusals)")
     try FileManager.default.moveItem(atPath: f.root.path + "/live-dot-git", toPath: live.path + "/.git")
+    // A tree linked by a relative pointer (worktree.useRelativePaths) is still found.
+    let relativeTree = f.repo.appendingPathComponent(".worktrees/relative", isDirectory: true)
+    try f.git(["worktree", "add", "-q", "--detach", relativeTree.path, "main"], in: f.repo)
+    let relativeAdmin = try f.git(["rev-parse", "--path-format=absolute", "--git-dir"], in: relativeTree)
+    try "gitdir: ../../.git/worktrees/\(URL(fileURLWithPath: relativeAdmin).lastPathComponent)\n".write(to: relativeTree.appendingPathComponent(".git"), atomically: true, encoding: .utf8)
+    try "/nonexistent/elsewhere/.git\n".write(toFile: relativeAdmin + "/gitdir", atomically: true, encoding: .utf8)
+    let relative = try f.service.prunePreview(in: f.repo.path)
+    try wtExpect(relative.refusals.contains { $0.contains("still links") }, "a tree linked by a relative pointer was not protected: \(relative.refusals)")
+    try "\(relativeTree.path)/.git\n".write(toFile: relativeAdmin + "/gitdir", atomically: true, encoding: .utf8)
+    try f.git(["worktree", "remove", "--force", relativeTree.path], in: f.repo) // the fixture's Git, never Parley's
     let ready = try f.service.prunePreview(in: f.repo.path)
     try wtExpect(ready.refusals.isEmpty && ready.adminNames == [gone.lastPathComponent], "the stale entry alone was not ready to prune: \(ready)")
     let pruned = try f.service.prune(in: f.repo.path, acknowledgedNames: ready.adminNames)
