@@ -1765,11 +1765,10 @@ final class AppModel: ObservableObject {
             guard !branch.isEmpty, branch != "HEAD", branch != "(detached)" else {
                 throw ReviewedCommandRunError.invalid("This worktree is on a detached HEAD, so there is no branch to merge. Check out or create a branch in it first.")
             }
-            try WorktreeNaming.validateBranch(branch)
+            let argv = try WorktreeIntegration.mergeArgv(branch: branch)
             guard let workspace = activeWorkspace ?? workspaces.first else {
                 throw ReviewedCommandRunError.invalid("Open a workspace first; the run's Shell pane needs one.")
             }
-            let argv = ["/usr/bin/git", "merge", "--no-ff", "--no-edit", "--end-of-options", branch]
             let run = try core.commandRuns.propose(argv: argv, folder: primaryPath, workspaceID: workspace.workspaceID, workspaceName: workspace.name)
             commandRuns = core.commandRuns.runs()
             DispatchQueue.main.async { [weak self] in
@@ -2211,7 +2210,6 @@ final class AppModel: ObservableObject {
             let candidates = entry.linked.filter { tree in
                 tree.pruneReason == nil && [.integrated, .unused].contains(self.worktreeManagerRow(for: tree).state)
             }
-            let statesByPath = Dictionary(uniqueKeysWithValues: candidates.map { ($0.path, self.worktreeManagerRow(for: $0).state) })
             guard !candidates.isEmpty else {
                 let none = NSAlert()
                 none.messageText = "Nothing to remove"
@@ -2237,16 +2235,25 @@ final class AppModel: ObservableObject {
             }
             let folders: [String]
             do { folders = try self.livePaneFoldersForCleanup() } catch { NSAlert(error: error).runModal(); return }
+            // Labels come from facts read now, beside each preview, not from
+            // the board's cached reading: a tree that gained work since the
+            // board last read it is skipped rather than called Unused.
             let previews = await Task.detached(priority: .userInitiated) { [service, records, folders, stateFiles] in
-                records.map { record in Result { try service.cleanupPreview(record, livePaneFolders: folders, otherRuntimeStateFiles: stateFiles) }.map { WorktreeBulkRemovalPlan.Item(record: record, preview: $0) } }
+                records.map { record in
+                    Result { try service.cleanupPreview(record, livePaneFolders: folders, otherRuntimeStateFiles: stateFiles) }
+                        .map { (preview: $0, state: WorktreeBulkRemovalPlan.freshState(record: record, facts: service.facts(for: record))) }
+                }
             }.value
             var items: [WorktreeBulkRemovalPlan.Item] = []
             var unreadable: [String] = []
             for (record, result) in zip(records, previews) {
                 switch result {
-                case let .success(item):
-                    items.append(WorktreeBulkRemovalPlan.Item(record: item.record, preview: item.preview,
-                        state: statesByPath[item.record.path] ?? statesByPath.first { Self.samePathSpelling($0.key, item.record.path) }?.value ?? .integrated))
+                case let .success(read):
+                    guard let state = read.state else {
+                        unreadable.append("\(record.branch): no longer reads Integrated or Unused")
+                        continue
+                    }
+                    items.append(WorktreeBulkRemovalPlan.Item(record: record, preview: read.preview, state: state))
                 case let .failure(error): unreadable.append("\(record.branch): \(error.localizedDescription)")
                 }
             }
@@ -2290,7 +2297,7 @@ final class AppModel: ObservableObject {
                 let record = item.record
                 let acknowledged = item.preview.ignoredPaths
                 let outcome = await Task.detached(priority: .userInitiated) { [service, record, acknowledged, currentFolders, stateFiles] in
-                    Result { try service.remove(record, acknowledgedIgnoredPaths: acknowledged, livePaneFolders: currentFolders, otherRuntimeStateFiles: stateFiles) }
+                    Result { try service.remove(record, confirmed: .removeTree, acknowledgedIgnoredPaths: acknowledged, livePaneFolders: currentFolders, otherRuntimeStateFiles: stateFiles) }
                 }.value
                 switch outcome {
                 case let .success(removal):
@@ -2635,8 +2642,9 @@ final class AppModel: ObservableObject {
                 return
             }
             let acknowledged = preview.ignoredPaths
-            let outcome = await Task.detached(priority: .userInitiated) { [service, record, acknowledged, currentFolders, stateFiles] in
-                Result { try service.remove(record, acknowledgedIgnoredPaths: acknowledged, livePaneFolders: currentFolders, otherRuntimeStateFiles: stateFiles) }
+            let confirmed: WorktreeCleanupAction = preview.decision == .clearRecordOnly ? .clearRecordOnly : .removeTree
+            let outcome = await Task.detached(priority: .userInitiated) { [service, record, confirmed, acknowledged, currentFolders, stateFiles] in
+                Result { try service.remove(record, confirmed: confirmed, acknowledgedIgnoredPaths: acknowledged, livePaneFolders: currentFolders, otherRuntimeStateFiles: stateFiles) }
             }.value
             let result = NSAlert()
             switch outcome {

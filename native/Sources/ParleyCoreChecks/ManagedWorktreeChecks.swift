@@ -261,7 +261,7 @@ func managedWorktreeCleanupChecks() throws {
         try fixture.service.cleanupPreview(record, livePaneFolders: panes, otherRuntimeStateFiles: states)
     }
     func removal(panes: [String] = noPanes, states: [URL] = [], acknowledged: [String] = []) -> String {
-        do { _ = try fixture.service.remove(record, acknowledgedIgnoredPaths: acknowledged, livePaneFolders: panes, otherRuntimeStateFiles: states); return "" }
+        do { _ = try fixture.service.remove(record, confirmed: .removeTree, acknowledgedIgnoredPaths: acknowledged, livePaneFolders: panes, otherRuntimeStateFiles: states); return "" }
         catch { return error.localizedDescription }
     }
 
@@ -321,7 +321,7 @@ func managedWorktreeCleanupChecks() throws {
     try FileManager.default.removeItem(at: tree.appendingPathComponent("late.txt"))
 
     // Success: tree gone, record gone, branch retained, nothing forced.
-    let outcome = try fixture.service.remove(record, acknowledgedIgnoredPaths: [".env", "build/"], livePaneFolders: [], otherRuntimeStateFiles: [])
+    let outcome = try fixture.service.remove(record, confirmed: .removeTree, acknowledgedIgnoredPaths: [".env", "build/"], livePaneFolders: [], otherRuntimeStateFiles: [])
     try wtExpect(outcome.removedPath == record.path && outcome.recordRemoved && !FileManager.default.fileExists(atPath: record.path), "removal did not remove the tree: \(outcome)")
     try wtExpect(try fixture.git(["rev-parse", "--verify", "refs/heads/feat/clean"], in: fixture.repo).count == 40, "the branch was deleted with the worktree")
     try wtExpect(!(try fixture.store.records().contains { $0.id == record.id }), "the record survived removal")
@@ -446,7 +446,7 @@ func managedWorktreeNestedCleanupChecks() throws {
     try wtExpect(preview.refusals.contains { $0.contains("another registered worktree") && $0.contains(inner.path) }, "outer cleanup did not refuse the nested worktree: \(preview.refusals)")
     try wtExpect(preview.facts.nestedWorktreePaths == [inner.path], "nested worktree facts were not reported: \(preview.facts.nestedWorktreePaths)")
     let refusal = try wtRejects("outer removal proceeded over a nested worktree") {
-        _ = try fixture.service.remove(outer, acknowledgedIgnoredPaths: preview.ignoredPaths, livePaneFolders: [], otherRuntimeStateFiles: [])
+        _ = try fixture.service.remove(outer, confirmed: .removeTree, acknowledgedIgnoredPaths: preview.ignoredPaths, livePaneFolders: [], otherRuntimeStateFiles: [])
     }
     try wtExpect(refusal.contains("another registered worktree"), "the removal refusal did not name the nested tree: \(refusal)")
     try wtExpect(FileManager.default.fileExists(atPath: valuable.path), "the nested uncommitted file was deleted")
@@ -476,7 +476,7 @@ func managedWorktreeNestedCleanupChecks() throws {
     let corruptPreview = try fixture.service.cleanupPreview(second, livePaneFolders: [], otherRuntimeStateFiles: [])
     try wtExpect(corruptPreview.refusals.contains { $0.contains("records could not be read") }, "a corrupt record store did not refuse cleanup: \(corruptPreview.refusals)")
     let corruptRefusal = try wtRejects("removal proceeded with an unreadable record store") {
-        _ = try fixture.service.remove(second, acknowledgedIgnoredPaths: corruptPreview.ignoredPaths, livePaneFolders: [], otherRuntimeStateFiles: [])
+        _ = try fixture.service.remove(second, confirmed: .removeTree, acknowledgedIgnoredPaths: corruptPreview.ignoredPaths, livePaneFolders: [], otherRuntimeStateFiles: [])
     }
     try wtExpect(corruptRefusal.contains("records could not be read"), "the corrupt-store refusal did not explain itself: \(corruptRefusal)")
     try wtExpect(FileManager.default.fileExists(atPath: foreignNotes.path) && FileManager.default.fileExists(atPath: second.path), "the foreign nested tree or its parent was deleted despite the unreadable store")
@@ -487,7 +487,7 @@ func managedWorktreeNestedCleanupChecks() throws {
     let deletedPreview = try fixture.service.cleanupPreview(second, livePaneFolders: [], otherRuntimeStateFiles: [])
     try wtExpect(deletedPreview.refusals.contains { $0.contains("record of this worktree is missing") }, "a deleted record store did not refuse cleanup: \(deletedPreview.refusals)")
     let deletedRefusal = try wtRejects("removal proceeded after the record store was deleted") {
-        _ = try fixture.service.remove(second, acknowledgedIgnoredPaths: deletedPreview.ignoredPaths, livePaneFolders: [], otherRuntimeStateFiles: [])
+        _ = try fixture.service.remove(second, confirmed: .removeTree, acknowledgedIgnoredPaths: deletedPreview.ignoredPaths, livePaneFolders: [], otherRuntimeStateFiles: [])
     }
     try wtExpect(deletedRefusal.contains("missing"), "the deleted-store refusal did not explain itself: \(deletedRefusal)")
     try wtExpect(FileManager.default.fileExists(atPath: foreignNotes.path) && FileManager.default.fileExists(atPath: second.path), "the foreign nested tree or its parent was deleted despite the missing record")
@@ -595,19 +595,19 @@ func managedWorktreeRemovalOutcomeChecks() throws {
     }
     let hookError = try fixture.wrappedService(mode: "remove-hook-error")
     let first = try mergedTree("feat/rm-a")
-    let outcomeA = try hookError.service.remove(first, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
+    let outcomeA = try hookError.service.remove(first, confirmed: .removeTree, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
     try wtExpect(outcomeA.state == .removed && outcomeA.recordRemoved && !FileManager.default.fileExists(atPath: first.path) && outcomeA.detail.contains("exit status 1"),
         "a nonzero exit with the tree gone was not reported as removed: \(outcomeA)")
 
     let noop = try fixture.wrappedService(mode: "remove-noop")
     let second = try mergedTree("feat/rm-b")
-    let outcomeB = try noop.service.remove(second, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
+    let outcomeB = try noop.service.remove(second, confirmed: .removeTree, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
     try wtExpect(outcomeB.state == .retained && !outcomeB.recordRemoved && FileManager.default.fileExists(atPath: second.path)
         && (try fixture.store.records().contains { $0.id == second.id }), "a success status with the tree still registered was not reported as retained: \(outcomeB)")
 
     let slow = try fixture.wrappedService(mode: "remove-timeout", mutationTimeout: 1)
     let third = try mergedTree("feat/rm-c")
-    let outcomeC = try slow.service.remove(third, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
+    let outcomeC = try slow.service.remove(third, confirmed: .removeTree, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
     try wtExpect(outcomeC.state == .removed && outcomeC.recordRemoved && outcomeC.detail.contains("timed out"), "a timed-out removal was not reconciled: \(outcomeC)")
 
     // Record-only cleanup: the tree vanished outside Parley; the preview says
@@ -617,7 +617,7 @@ func managedWorktreeRemovalOutcomeChecks() throws {
     let logged = try fixture.wrappedService(mode: "remove-unlisted")
     let stalePreview = try logged.service.cleanupPreview(stale, livePaneFolders: [], otherRuntimeStateFiles: [])
     try wtExpect(stalePreview.refusals.isEmpty && stalePreview.decision == .clearRecordOnly, "an already-removed tree was not offered as record-only cleanup: \(stalePreview.refusals)")
-    let outcomeD = try logged.service.remove(stale, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
+    let outcomeD = try logged.service.remove(stale, confirmed: .clearRecordOnly, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
     try wtExpect(outcomeD.state == .removed && outcomeD.recordRemoved && outcomeD.detail.contains("already"), "record-only cleanup did not clear the record: \(outcomeD)")
     let calls = (try? String(contentsOf: logged.log, encoding: .utf8)) ?? ""
     try wtExpect(!calls.contains("worktree remove"), "record-only cleanup reran git worktree remove")
@@ -631,7 +631,7 @@ func managedWorktreeRemovalOutcomeChecks() throws {
     try wtExpect(occupiedPreview.decision != .clearRecordOnly && occupiedPreview.refusals.contains { $0.contains("not a directory") },
         "a file occupying the recorded path was treated as an absent folder: \(occupiedPreview.refusals)")
     _ = try wtRejects("record-only cleanup ran over a file at the recorded path") {
-        _ = try fixture.service.remove(occupied, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
+        _ = try fixture.service.remove(occupied, confirmed: .clearRecordOnly, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
     }
     try wtExpect((try fixture.store.records().contains { $0.id == occupied.id }) && FileManager.default.fileExists(atPath: occupied.path),
         "the record or the occupying file was removed")
@@ -647,7 +647,7 @@ func managedWorktreeRemovalOutcomeChecks() throws {
     try wtExpect(hiddenPreview.decision != .clearRecordOnly && hiddenPreview.refusals.contains { $0.contains("could not be inspected") },
         "an uninspectable path was treated as absent: \(hiddenPreview.refusals)")
     _ = try wtRejects("record-only cleanup ran over an uninspectable path") {
-        _ = try fixture.service.remove(hidden, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
+        _ = try fixture.service.remove(hidden, confirmed: .clearRecordOnly, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
     }
     try wtExpect(try fixture.store.records().contains { $0.id == hidden.id }, "the record was cleared without a confirmed absence")
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent)
@@ -728,6 +728,7 @@ func workbenchFolderReservationChecks() throws {
 
 @MainActor
 let managedWorktreeChecks: [(String, () throws -> Void)] = [
+    ("worktree low findings of the 22 September review", worktreeLowFindingChecks),
     ("worktree cleanup closes the paths that lost unshown work", worktreeCleanupGapChecks),
     ("worktree lifecycle malformed runtime state is unknown", worktreeUnknownRuntimeChecks),
     ("worktree lifecycle permission guidance respects vendor boundaries", worktreePermissionGuidanceChecks),
@@ -949,13 +950,13 @@ func managedWorktreeTrackedRemovalChecks() throws {
     let dirty = try f.service.cleanupPreview(tracked, livePaneFolders: [], otherRuntimeStateFiles: [])
     try wtExpect(dirty.refusals.contains { $0.contains("untracked files") }, "a dirty tracked tree was not refused: \(dirty.refusals)")
     _ = try wtRejects("a dirty tracked tree was removed") {
-        _ = try f.service.remove(tracked, acknowledgedIgnoredPaths: dirty.ignoredPaths, livePaneFolders: [], otherRuntimeStateFiles: [])
+        _ = try f.service.remove(tracked, confirmed: .removeTree, acknowledgedIgnoredPaths: dirty.ignoredPaths, livePaneFolders: [], otherRuntimeStateFiles: [])
     }
     try FileManager.default.removeItem(at: notes)
     let live = try f.service.cleanupPreview(tracked, livePaneFolders: [treePath + "/src"], otherRuntimeStateFiles: [])
     try wtExpect(live.refusals.contains { $0.contains("live pane") }, "a pane inside a tracked tree was not refused: \(live.refusals)")
     // Clean again: removed through Git, record cleared, branch kept.
-    let outcome = try f.service.remove(tracked, acknowledgedIgnoredPaths: preview.ignoredPaths, livePaneFolders: [], otherRuntimeStateFiles: [])
+    let outcome = try f.service.remove(tracked, confirmed: .removeTree, acknowledgedIgnoredPaths: preview.ignoredPaths, livePaneFolders: [], otherRuntimeStateFiles: [])
     try wtExpect(outcome.state == .removed && outcome.recordRemoved, "tracked removal did not complete: \(outcome.detail)")
     try wtExpect(!FileManager.default.fileExists(atPath: treePath), "the tracked tree's folder remains")
     try wtExpect(try f.store.record(path: treePath) == nil, "the tracked record was not cleared")
@@ -1017,7 +1018,7 @@ func managedWorktreeBranchDeletionChecks() throws {
     guard case let .refused(reason) = try f.service.deleteBranch("feat/unmerged", expectedCommit: try f.service.branchDeletionPreview("feat/unmerged", in: f.repo.path).commit, in: f.repo.path) else { throw NSError(domain: "ManagedWorktree", code: 1, userInfo: [NSLocalizedDescriptionKey: "a checked-out branch was deleted"]) }
     try wtExpect(reason.contains("feat/unmerged"), "Git's refusal was not shown: \(reason)")
     _ = try wtRejects("Parley removed a tree with an unmerged commit") {
-        _ = try f.service.remove(tree, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
+        _ = try f.service.remove(tree, confirmed: .removeTree, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
     }
     // A stale entry still holds its branch for Git; the preview says so and Git refuses until it is pruned.
     let held = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "feat/held", baseRef: "main"))
@@ -1058,7 +1059,7 @@ func worktreeBulkRemovalPlanChecks() throws {
     // An unused tree (clean, at its base) passes the same preview and keeps the state it was proposed for.
     let unused = WorktreeBulkRemovalPlan.Item(record: clean, preview: try f.service.cleanupPreview(clean, livePaneFolders: [], otherRuntimeStateFiles: []), state: .unused)
     try wtExpect(unused.passes && unused.state == .unused && items[0].state == .integrated, "an unused tree did not pass the bulk plan with its state")
-    let removed = try f.service.remove(clean, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
+    let removed = try f.service.remove(clean, confirmed: .removeTree, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
     try wtExpect(WorktreeBulkRemovalPlan.shouldContinue(after: removed.state), "a confirmed removal stopped the run")
     try wtExpect(!WorktreeBulkRemovalPlan.shouldContinue(after: .uncertain), "an uncertain outcome did not stop the run")
     try wtExpect(!WorktreeBulkRemovalPlan.shouldContinue(after: .retained), "a retained tree did not stop the run")
@@ -1163,4 +1164,60 @@ func worktreeCleanupGapChecks() throws {
     for index in 0..<60 { try FileManager.default.createDirectory(at: deps.appendingPathComponent("dir-\(index)"), withIntermediateDirectories: true) }
     let manyDirectories = try small.cleanupPreview(heavy, livePaneFolders: [], otherRuntimeStateFiles: [])
     try wtExpect(manyDirectories.refusals.contains { $0.contains("too large") }, "an over-budget walk was not a refusal in the preview: \(manyDirectories.refusals)")
+}
+
+/// Review of 22 September 2026, b1cb3901: the worktree low findings.
+func worktreeLowFindingChecks() throws {
+    let f = try WorktreeFixture()
+    defer { f.cleanup() }
+    // (1) Integrate names the branch by its full ref: Git prefers a tag.
+    let argv = try WorktreeIntegration.mergeArgv(branch: "v2")
+    try wtExpect(argv.last == "refs/heads/v2" && argv.contains("--end-of-options"), "Integrate's argv does not name the branch's full ref: \(argv)")
+    _ = try wtRejects("an option-shaped branch reached Integrate's argv") { _ = try WorktreeIntegration.mergeArgv(branch: "--upload-pack=x") }
+    // (2) A tree on branch v2 beside a tag v2 still reads its branch and upstream.
+    let tree = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "v2", baseRef: "main"))
+    let folder = URL(fileURLWithPath: tree.path)
+    let branchCommit = try f.commit("v2 work", in: folder, contents: "print(5)\n")
+    try f.git(["tag", "v2", "main"], in: f.repo)
+    try wtExpect(try f.git(["rev-parse", argv.last!], in: f.repo) == branchCommit
+                 && (try f.git(["rev-parse", "v2"], in: f.repo)) != branchCommit, "the full ref did not resolve to the branch over the tag")
+    let remote = f.root.appendingPathComponent("low-remote.git")
+    try f.git(["init", "-q", "--bare", remote.path], in: f.root)
+    try f.git(["remote", "add", "origin", remote.path], in: f.repo)
+    try f.git(["push", "-q", "-u", "origin", "refs/heads/v2:refs/heads/v2"], in: folder)
+    let facts = f.service.facts(for: tree)
+    try wtExpect(facts.currentBranch == "v2" && facts.hasUpstream == true, "a branch sharing a tag's name lost its name or upstream: \(facts)")
+    try wtExpect(try f.service.cleanupPreview(tree, livePaneFolders: [], otherRuntimeStateFiles: []).facts.hasUpstream, "cleanup read no upstream for v2")
+    // (4) The bulk label comes from fresh facts.
+    try wtExpect(WorktreeBulkRemovalPlan.freshState(record: tree, facts: facts) == nil, "a tree with its own unmerged commit was labelled for bulk removal")
+    let unused = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "low/unused", baseRef: "main"))
+    try wtExpect(WorktreeBulkRemovalPlan.freshState(record: unused, facts: f.service.facts(for: unused)) == .unused, "a clean tree at its base did not read Unused")
+    try "draft\n".write(to: URL(fileURLWithPath: unused.path).appendingPathComponent("draft.txt"), atomically: true, encoding: .utf8)
+    try wtExpect(WorktreeBulkRemovalPlan.freshState(record: unused, facts: f.service.facts(for: unused)) == nil, "a tree with an untracked file read Unused")
+    // (6) A path that begins with a combining mark survives the status parse.
+    let combining = "\u{301}accent.txt"
+    try "x\n".write(to: URL(fileURLWithPath: unused.path).appendingPathComponent(combining), atomically: true, encoding: .utf8)
+    let untracked = try f.service.cleanupPreview(unused, livePaneFolders: [], otherRuntimeStateFiles: []).facts.untrackedPaths
+    try wtExpect(untracked.contains(combining), "a name beginning with a combining mark was cut: \(untracked.map { Array($0.unicodeScalars) })")
+    // (7) A present tree needs no recovery scan.
+    try wtExpect(try f.service.recoveryCandidates(tree).isEmpty, "a present tree was offered a relocation")
+    // (3) A confirmed record-only clear never becomes a removal. A tracked
+    // tree has no creation marker, so only this binding catches it.
+    let trackedPath = f.root.appendingPathComponent("low-tracked")
+    try f.git(["worktree", "add", "-q", "-b", "low/vanished", trackedPath.path, "main"], in: f.repo)
+    let vanished = try f.service.attach(existingPath: trackedPath.path, in: f.repo.path, baseRef: nil)
+    try f.git(["worktree", "remove", vanished.path], in: f.repo)
+    try wtExpect(try f.service.cleanupPreview(vanished, livePaneFolders: [], otherRuntimeStateFiles: []).decision == .clearRecordOnly,
+                 "the vanished tree was not a record-only case")
+    try f.git(["worktree", "add", "-q", vanished.path, "low/vanished"], in: f.repo)
+    let reappeared = try wtRejects("a confirmed record-only clear removed a tree that came back") {
+        _ = try f.service.remove(vanished, confirmed: .clearRecordOnly, acknowledgedIgnoredPaths: [], livePaneFolders: [], otherRuntimeStateFiles: [])
+    }
+    try wtExpect(reappeared.contains("again") && FileManager.default.fileExists(atPath: vanished.path), "the reappeared tree was touched: \(reappeared)")
+    // (5) A permission denial is unknown, never Missing.
+    let parent = folder.deletingLastPathComponent().path
+    try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: parent)
+    let denied = f.service.facts(for: tree)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent)
+    try wtExpect(denied.registered == nil, "a folder behind a permission denial read as \(String(describing: denied.registered)), not unknown")
 }

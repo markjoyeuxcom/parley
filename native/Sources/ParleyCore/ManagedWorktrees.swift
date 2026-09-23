@@ -211,6 +211,25 @@ public final class ManagedWorktreeStore: @unchecked Sendable {
 /// Branch names Parley will pass to Git: a strict subset of what Git accepts,
 /// validated before any process runs so option injection, traversal and
 /// control characters never reach argv.
+/// What the person confirmed in a cleanup preview. Removal re-reads every
+/// fact and refuses when the tree it would act on is not the one confirmed:
+/// a confirmed "clear the record, no Git command" never becomes a removal.
+public enum WorktreeCleanupAction: Equatable, Sendable {
+    case removeTree
+    case clearRecordOnly
+}
+
+/// Integrate…'s reviewed command. The branch is passed as its full ref,
+/// because Git resolves a short name to a same-named tag before the branch
+/// (`refs/tags/<name>` comes before `refs/heads/<name>`), and the merge
+/// would then integrate the tag's commit.
+public enum WorktreeIntegration {
+    public static func mergeArgv(branch: String) throws -> [String] {
+        try WorktreeNaming.validateBranch(branch)
+        return ["/usr/bin/git", "merge", "--no-ff", "--no-edit", "--end-of-options", "refs/heads/\(branch)"]
+    }
+}
+
 public enum WorktreeNaming {
     public static let maximumBranchLength = 120
 
@@ -850,6 +869,8 @@ public struct ManagedWorktreeService: Sendable {
         public let forgottenFolders: [String]
         public let forgottenBranches: [String]
         public let remaining: [String]
+        /// Entries whose state after the prune could not be read.
+        public let unknown: [String]
         public let detail: String
     }
 
@@ -921,18 +942,22 @@ public struct ManagedWorktreeService: Sendable {
         let result = try runObserving(in: preview.repositoryToplevel, ["worktree", "prune"], timeout: mutationTimeout)
         let identity = try identity(of: repositoryFolder)
         let admin = URL(fileURLWithPath: identity.commonDirectory).appendingPathComponent("worktrees", isDirectory: true)
-        let forgotten = preview.entries.filter { Self.itemState(at: admin.appendingPathComponent($0.adminName).path) == .absent }
-        let remaining = preview.adminNames.filter { name in !forgotten.contains { $0.adminName == name } }
+        let states = Dictionary(uniqueKeysWithValues: preview.entries.map { ($0.adminName, Self.itemState(at: admin.appendingPathComponent($0.adminName).path)) })
+        let forgotten = preview.entries.filter { states[$0.adminName] == .absent }
+        let unknown = preview.entries.filter { states[$0.adminName] == .unknown }.map(\.adminName)
+        let remaining = preview.adminNames.filter { name in states[name] != .absent && !unknown.contains(name) }
         let detail: String
         if result.status == 0 {
             detail = "Git forgot \(forgotten.count) of \(preview.entries.count) entr\(preview.entries.count == 1 ? "y" : "ies"). No folder or branch changed."
+                + (unknown.isEmpty ? "" : " Whether \(unknown.joined(separator: ", ")) \(unknown.count == 1 ? "is" : "are") gone could not be read.")
         } else {
             let text = result.stderrText.trimmingCharacters(in: .whitespacesAndNewlines)
             detail = (result.status == 124 ? "git worktree prune timed out after \(Int(mutationTimeout)) seconds" : "git worktree prune reported exit status \(result.status)")
-                + (text.isEmpty ? "" : ": " + text) + ". \(forgotten.count) entr\(forgotten.count == 1 ? "y is" : "ies are") gone."
+                + (text.isEmpty ? "" : ": " + text) + ". \(forgotten.count) entr\(forgotten.count == 1 ? "y is" : "ies are") gone"
+                + (unknown.isEmpty ? "." : "; whether \(unknown.joined(separator: ", ")) \(unknown.count == 1 ? "is" : "are") gone could not be read.")
         }
         return PruneOutcome(forgottenNames: forgotten.map(\.adminName), forgottenFolders: forgotten.compactMap(\.folder),
-                            forgottenBranches: forgotten.compactMap(\.branch), remaining: remaining, detail: detail)
+                            forgottenBranches: forgotten.compactMap(\.branch), remaining: remaining, unknown: unknown, detail: detail)
     }
 
     public struct BranchDeletionPreview: Equatable, Sendable {
@@ -1023,13 +1048,18 @@ public struct ManagedWorktreeService: Sendable {
         func unknown(_ registered: Bool?) -> ManagedWorktreeFacts {
             ManagedWorktreeFacts(recordID: id, currentBranch: nil, head: nil, changedPathCount: nil, upstreamAheadCount: nil, hasUpstream: nil, registered: registered)
         }
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else { return unknown(false) }
+        // Only a confirmed "no such file" is Missing; a permission or privacy
+        // (TCC) denial, or something that is not a directory, is unknown.
+        switch Self.itemState(at: path) {
+        case .absent: return unknown(false)
+        case .unknown, .present(isDirectory: false): return unknown(nil)
+        case .present(isDirectory: true): break
+        }
         // A failed read is unknown; only Git's own listing may say "absent".
         guard let identity = try? identity(of: path), expectedCommonDirectory == nil || identity.commonDirectory == expectedCommonDirectory,
               let registry = try? registeredWorktrees(of: identity) else { return unknown(nil) }
         guard registry.contains(where: { $0.path == path }) else { return unknown(false) }
-        let branch = (try? run(in: path, ["rev-parse", "--abbrev-ref", "HEAD"], timeout: readTimeout))?.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let branch = currentBranch(in: path).map { $0 ?? "HEAD" }
         let head = (try? run(in: path, ["rev-parse", "HEAD"], timeout: readTimeout))?.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
         let status = try? statusEntries(in: path)
         let upstream = upstreamState(in: path)
@@ -1089,12 +1119,14 @@ public struct ManagedWorktreeService: Sendable {
     /// `git worktree remove` with no `--force` and reports what is observed
     /// afterwards. The branch is never deleted. A tree that is already gone
     /// clears only Parley's record and runs no Git command.
-    public func remove(_ record: ManagedWorktreeRecord, acknowledgedIgnoredPaths: [String], livePaneFolders: [String],
+    public func remove(_ record: ManagedWorktreeRecord, confirmed: WorktreeCleanupAction, acknowledgedIgnoredPaths: [String], livePaneFolders: [String],
                        otherRuntimeStateFiles: [URL]) throws -> WorktreeRemovalOutcome {
         let facts = try cleanupFacts(record, livePaneFolders: livePaneFolders, otherRuntimeStateFiles: otherRuntimeStateFiles)
         switch WorktreeCleanupPolicy.decision(for: facts) {
         case let .refuse(reasons):
             throw ManagedWorktreeError.refused(reasons)
+        case .removeTree where confirmed == .clearRecordOnly:
+            throw ManagedWorktreeError.refused(["a worktree is at \(record.path) again since the preview said its folder was gone; review it again before anything is removed"])
         case .clearRecordOnly:
             do {
                 try store.remove(id: record.id)
@@ -1366,15 +1398,18 @@ public struct ManagedWorktreeService: Sendable {
     private func statusEntries(in folder: String) throws -> (modified: [String], untracked: [String], ignored: [String]) {
         let output = try run(in: folder, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching"] + GitReadBoundary.statusArguments,
                              timeout: readTimeout, environment: filterFreeEnvironment(in: folder, base: readEnvironment))
-        let tokens = output.stdout.split(separator: 0, omittingEmptySubsequences: false).map { String(decoding: $0, as: UTF8.self) }
+        // Split and slice bytes: a path that begins with a combining mark
+        // would join the separating space into one Character, and a
+        // Character-based dropFirst(3) would cut into the name.
+        let tokens = output.stdout.split(separator: 0, omittingEmptySubsequences: false).map { Array($0) }
         var modified: [String] = [], untracked: [String] = [], ignored: [String] = []
         var index = 0
         while index < tokens.count {
             let token = tokens[index]
             index += 1
             guard token.count >= 4 else { continue }
-            let code = String(token.prefix(2))
-            let path = String(token.dropFirst(3))
+            let code = String(decoding: token[0..<2], as: UTF8.self)
+            let path = String(decoding: token[3...], as: UTF8.self)
             if code.hasPrefix("R") || code.hasPrefix("C") { index += 1 } // rename/copy carries the origin path next
             switch code {
             case "!!": ignored.append(path)
@@ -1389,13 +1424,21 @@ public struct ManagedWorktreeService: Sendable {
     /// as "no upstream". `ahead == nil` with an upstream means the count failed.
     struct UpstreamState: Equatable { let hasUpstream: Bool?; let ahead: Int? }
 
+    /// The checked-out branch's short name: `.some(nil)` on a detached HEAD,
+    /// nil when Git could not answer. Read from the full ref rather than with
+    /// `--short`, which answers `heads/v2` when a tag `v2` also exists.
+    private func currentBranch(in folder: String) -> String?? {
+        guard let lookup = try? runAllowingFailure(in: folder, ["symbolic-ref", "--quiet", "HEAD"], timeout: readTimeout) else { return nil }
+        if lookup.status == 1 { return .some(nil) }
+        guard lookup.status == 0 else { return nil }
+        let ref = lookup.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ref.hasPrefix("refs/heads/"), ref.count > "refs/heads/".count else { return nil }
+        return .some(String(ref.dropFirst("refs/heads/".count)))
+    }
+
     private func upstreamState(in folder: String) -> UpstreamState {
-        guard let branchLookup = try? runAllowingFailure(in: folder, ["symbolic-ref", "--quiet", "--short", "HEAD"], timeout: readTimeout) else {
-            return UpstreamState(hasUpstream: nil, ahead: nil)
-        }
-        if branchLookup.status == 1 { return UpstreamState(hasUpstream: false, ahead: nil) } // detached HEAD: no upstream by definition
-        guard branchLookup.status == 0 else { return UpstreamState(hasUpstream: nil, ahead: nil) }
-        let branch = branchLookup.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let lookup = currentBranch(in: folder) else { return UpstreamState(hasUpstream: nil, ahead: nil) }
+        guard let branch = lookup else { return UpstreamState(hasUpstream: false, ahead: nil) } // detached HEAD: no upstream by definition
         // The configured upstream is read from config, so a tracking branch whose
         // remote or remote-tracking ref is missing counts as configured-but-unknown.
         guard !branch.isEmpty, let configured = try? runAllowingFailure(in: folder, ["config", "--get", "branch.\(branch).merge"], timeout: readTimeout) else {
@@ -1485,7 +1528,9 @@ extension ManagedWorktreeService {
     /// A same-branch directory is not evidence of a move. Match the original
     /// opaque marker within the same repository, and refuse ambiguous matches.
     public func recoveryCandidates(_ record: ManagedWorktreeRecord) throws -> [String] {
-        guard record.parleyCreated, record.creationToken != nil else { return [] }
+        // Relinking is only ever offered for a record whose folder is gone, so
+        // a present tree needs no scan of every other registered tree.
+        guard record.parleyCreated, record.creationToken != nil, Self.itemState(at: record.path) == .absent else { return [] }
         let identity = GitRepositoryIdentity(commonDirectory: record.commonDirectory, toplevel: record.commonDirectory)
         return try registeredWorktrees(of: identity).filter { item in
             guard item.path != record.path, !item.isPrunable, !item.isPrimary,

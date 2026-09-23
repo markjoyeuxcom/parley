@@ -1187,7 +1187,7 @@ primary's HEAD and the tree clean) or Idle. The facts pass also reads
 primary checkout's HEAD; a failed read stays nil and is shown as unknown,
 never as zero. Nothing about the board is stored. **Integrate…** is not
 offered on a tree that already reads Integrated. It proposes
-`git merge --no-ff --no-edit --end-of-options <branch>` in the primary
+`git merge --no-ff --no-edit --end-of-options refs/heads/<branch>` in the primary
 checkout as a person-proposed reviewed command run (see Reviewed command
 runs); when that run ends the facts are re-read for every record so the row
 can read Integrated, after which the existing removal policy passes on its
@@ -1815,3 +1815,22 @@ Worktree Predict reads identity without creating a tracking record. Integrate
 validates the branch before proposing argv. A bare Git registry entry is labelled
 as bare, never as a primary checkout; a repository without a primary checkout
 cannot be an implicit Integrate destination.
+
+The worktree low findings of the 22 September review (b1cb3901), fixed on
+23 September 2026:
+- Integrate names the branch by its full ref (`WorktreeIntegration.mergeArgv`),
+  because Git resolves a short name to a same-named tag first.
+- The current branch is read from `symbolic-ref --quiet HEAD` with
+  `refs/heads/` stripped, never `--short` or `--abbrev-ref`, which answer
+  `heads/v2` beside a tag `v2` and lost the upstream.
+- `remove` takes the action the person confirmed (`WorktreeCleanupAction`);
+  a confirmed record-only clear refuses if a tree is back at the path.
+- Remove integrated and unused… labels each tree from facts read beside its
+  fresh preview (`WorktreeBulkRemovalPlan.freshState`) and skips one that no
+  longer reads either.
+- A permission or privacy denial reads unknown, never Missing.
+- Status porcelain is sliced as bytes, so a path beginning with a combining
+  mark keeps its first letter.
+- The relocation scan runs only for a record whose folder is gone, and Finish
+  inspects the row it opened on first.
+- A post-prune state that cannot be read is reported as unknown.

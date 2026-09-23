@@ -19,7 +19,13 @@ test('low review worktree actions validate integration and predict without attac
   assert.match(prediction, /service\.mergePreview\(path: tree\.path/)
   assert.doesNotMatch(prediction, /ensureWorktreeRecord/)
   const integration = source.slice(source.indexOf('func proposeWorktreeIntegration('), source.indexOf('func integrateWorktreeFromManager('))
-  assert.match(integration, /try WorktreeNaming\.validateBranch\(branch\)/)
+  // The branch is validated and named by its full ref inside mergeArgv
+  // (checked in Swift by the worktree low-finding checks).
+  assert.match(integration, /try WorktreeIntegration\.mergeArgv\(branch: branch\)/)
+  const worktrees = readFileSync(join(repositoryRoot, 'native/Sources/ParleyCore/ManagedWorktrees.swift'), 'utf8')
+  const mergeArgv = worktrees.slice(worktrees.indexOf('public static func mergeArgv('), worktrees.indexOf('public static func mergeArgv(') + 400)
+  assert.match(mergeArgv, /try WorktreeNaming\.validateBranch\(branch\)/)
+  assert.match(mergeArgv, /"refs\/heads\/\\\(branch\)"/)
 })
 
 test('the native permission review uses the selected vendor bypass disclosure', () => {
