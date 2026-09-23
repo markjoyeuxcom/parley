@@ -46,11 +46,15 @@ private struct TransportFixture {
         let request = endpoint.appendingPathComponent("inbox", isDirectory: true).appendingPathComponent(id, isDirectory: true)
         try FileManager.default.createDirectory(at: request, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         for (name, value) in [("command", command), ("token", token), ("target", ""), ("item", item),
-                              ("idempotency-key", "wait-check-\(id.prefix(12))"), ("body", body), ("ready", "ready")] {
+                              ("idempotency-key", "wait-check-\(id.prefix(12))"), ("body", body)] {
             let file = request.appendingPathComponent(name)
             try Data(value.utf8).write(to: file)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         }
+        // `ready` goes last and is not touched afterwards: the transport may
+        // claim the request the moment it appears (a chmod after it raced a
+        // fast claim on the CI runner).
+        try Data("ready".utf8).write(to: request.appendingPathComponent("ready"))
         return endpoint.appendingPathComponent("outbox", isDirectory: true).appendingPathComponent(id, isDirectory: true)
     }
 
