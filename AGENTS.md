@@ -1603,7 +1603,14 @@ empty source workspace); revalidate topology
 after confirmation. Team templates and configuration clone were removed in the
 September 2026 reduction; saved layouts remain. Saved agent leaves and their
 default folder use the reviewed launch folder, while Shell leaves keep their
-current folder.
+current folder. A restored layout reopens with the automation policy it was
+saved with; `createWorkspaceLocked` takes the policy as a required argument
+(until 23 September 2026 every restore reopened as Ask and Delegate). A
+restore validates that every pane it replaces may end, builds and saves
+against a snapshot it puts back on any failure, and ends the replaced panes
+only after the new state is saved. Closing a workspace checks every pane
+(`requireTerminableLocked`) before ending any, so a container not confirmed
+stopped refuses the close without ending its siblings.
 
 ## External integration boundaries
 
