@@ -29,20 +29,52 @@ public indirect enum NativeLayoutNode: Codable, Equatable, Sendable {
     }
 
     /// Splits the target leaf in the given direction, placing the new leaf
-    /// after it. Returns nil when the target is absent.
+    /// after it. Returns nil when the target is absent or is the new leaf.
+    /// A leaf already in the tree moves rather than repeats: the one-second
+    /// refresh can reconcile a new pane in (a team container member, while
+    /// Docker preparation is awaited) before its placement is recorded, and
+    /// two leaves for one pane would mount one retained Ghostty view twice.
     public func inserting(_ newLeaf: String, after target: String, direction: SplitDirection) -> NativeLayoutNode? {
+        guard newLeaf != target else { return nil }
+        let base = leaves.contains(newLeaf) ? removing(newLeaf) : self
+        return base?.placing(newLeaf, after: target, direction: direction)
+    }
+
+    private func placing(_ newLeaf: String, after target: String, direction: SplitDirection) -> NativeLayoutNode? {
         switch self {
         case let .leaf(paneID):
             guard paneID == target else { return nil }
             return .split(direction: direction, first: self, second: .leaf(newLeaf))
         case let .split(splitDirection, first, second):
-            if let replaced = first.inserting(newLeaf, after: target, direction: direction) {
+            if let replaced = first.placing(newLeaf, after: target, direction: direction) {
                 return .split(direction: splitDirection, first: replaced, second: second)
             }
-            if let replaced = second.inserting(newLeaf, after: target, direction: direction) {
+            if let replaced = second.placing(newLeaf, after: target, direction: direction) {
                 return .split(direction: splitDirection, first: first, second: replaced)
             }
             return nil
+        }
+    }
+
+    /// The tree with each leaf kept at its first occurrence only; a later
+    /// repeat collapses into its sibling. Nil only for an empty result.
+    public func deduplicated() -> NativeLayoutNode? {
+        var seen: Set<String> = []
+        return keepingFirst(&seen)
+    }
+
+    private func keepingFirst(_ seen: inout Set<String>) -> NativeLayoutNode? {
+        switch self {
+        case let .leaf(paneID):
+            return seen.insert(paneID).inserted ? self : nil
+        case let .split(direction, first, second):
+            let keptFirst = first.keepingFirst(&seen)
+            let keptSecond = second.keepingFirst(&seen)
+            switch (keptFirst, keptSecond) {
+            case let (kept?, nil), let (nil, kept?): return kept
+            case let (keptA?, keptB?): return .split(direction: direction, first: keptA, second: keptB)
+            case (nil, nil): return nil
+            }
         }
     }
 
@@ -68,10 +100,13 @@ public indirect enum NativeLayoutNode: Codable, Equatable, Sendable {
         }
     }
 
-    /// Aligns the tree with the live leaf set: vanished leaves collapse away
-    /// and unknown leaves join at the root, side by side.
+    /// Aligns the tree with the live leaf set: repeated leaves keep their
+    /// first place, vanished leaves collapse away and unknown leaves join at
+    /// the root, side by side.
     public static func reconciled(_ tree: NativeLayoutNode?, with liveLeaves: [String]) -> NativeLayoutNode? {
-        var result = tree
+        // A tree stored with a repeated leaf (before 23 September 2026) is
+        // repaired here, so the next refresh persists the corrected tree.
+        var result = tree?.deduplicated()
         if let existing = result {
             for leaf in existing.leaves where !liveLeaves.contains(leaf) {
                 result = result?.removing(leaf)
