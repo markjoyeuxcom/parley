@@ -6275,10 +6275,17 @@ final class AppModel: ObservableObject {
             }
         case let .changed(review):
             // The agent changed the draft while it was being edited. Show it as
-            // it is now; the person's edits stay available to copy.
-            presentContextReview(review)
-            offerContextSendCopy(draft: draft, title: "\(review.sourcePaneName) changed this draft while you edited it",
-                detail: failure + "\n\nNothing was sent. The draft is open as \(review.sourcePaneName) left it" + (review.state == .awaitingReview ? ", now asking for your review" : "") + ". Copy your edited text below to bring your changes across.")
+            // it is now, unless another pack is open; the person's edits stay
+            // available to copy either way.
+            let title = "\(review.sourcePaneName) changed this draft while you edited it"
+            if contextPackDraft.map({ $0.pack.parts.isEmpty }) ?? true {
+                presentContextReview(review)
+                offerContextSendCopy(draft: draft, title: title,
+                    detail: failure + "\n\nNothing was sent. The draft is open as \(review.sourcePaneName) left it" + (review.state == .awaitingReview ? ", now asking for your review" : "") + ". Copy your edited text to bring your changes across.")
+            } else {
+                offerContextSendCopy(draft: draft, title: title,
+                    detail: failure + "\n\nNothing was sent. Another pack is open, so \(review.sourcePaneName)'s draft was not opened; it is in the Context menu. Copy your edited text to keep your changes.")
+            }
         case let .copyOnly(reason):
             offerContextSendCopy(draft: draft, title: "Parley could not confirm this context reached \(target.displayName)",
                 detail: failure + "\n\n" + reason + " It was not reopened for sending, so it cannot go twice; check \(target.displayName) and Status Center first.")
@@ -6290,10 +6297,16 @@ final class AppModel: ObservableObject {
         alert.messageText = title
         alert.informativeText = detail
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
+        // Copying is the default: Return, the reflex after an error, must not
+        // be the key that discards the only remaining copy of the edits.
         alert.addButton(withTitle: "Copy Pack Text")
-        guard alert.runModal() == .alertSecondButtonReturn else { return }
-        let text = (try? contextPackBuilder?.render(draft.pack)) ?? draft.pack.parts.map(\.text).joined(separator: "\n\n")
+        alert.addButton(withTitle: "Don't Copy")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let text = (try? contextPackBuilder?.render(draft.pack)) ?? {
+            let note = draft.pack.note.trimmingCharacters(in: .whitespacesAndNewlines)
+            let parts = draft.pack.parts.map(\.text).joined(separator: "\n\n")
+            return note.isEmpty ? parts : note + "\n\n" + parts
+        }()
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
@@ -8313,9 +8326,11 @@ final class AppModel: ObservableObject {
         alert.messageText = title
         alert.informativeText = detail
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
+        // Copying is the default, as for a context pack: Return must not be
+        // the key that discards the only remaining copy of the draft.
         alert.addButton(withTitle: "Copy Draft Text")
-        if alert.runModal() == .alertSecondButtonReturn {
+        alert.addButton(withTitle: "Don't Copy")
+        if alert.runModal() == .alertFirstButtonReturn {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
         }
