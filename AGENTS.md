@@ -842,6 +842,25 @@ Cancel ran it as a command, a password reaching shell history.
 `ApprovedCommandTerminalChecks` pins both. A command that needs a prompt now
 fails and says so, so the person runs it themselves in a Shell.
 
+The approval preview's argument editor is `PlainTextEditor` (ParleyUI), an
+AppKit text view with every automatic substitution, correction and detector
+off. Every box whose text is approved or sent uses it: the Command Result
+capture's argument lines, the context pack's part, selection and
+instruction editors, the team objective and the handoff composer (which
+asks for focus through `focusRequest`, set to the draft id, in place of
+`@FocusState`). Only the voice transcript and Status Center's verdict note
+remain SwiftUI editors. Each `PlainTextEditor` keeps its own undo manager,
+cleared whenever its text is replaced from outside, and each context pack
+part has its own editor (`.id(part.id)`): a reused text view otherwise
+replayed the previous content's undo at offsets past the new text's end. A SwiftUI `TextEditor` leaves macOS
+smart quotes on, so on 23 September 2026 (v0.1.61) a closing `"` became `”`
+and approval failed with "The data couldn't be read because it isn't in the
+correct format". `ReviewedCommand.display` writes slashes as they are rather
+than `\/`, and `ReviewedCommand.parseDisplay` names a typographic quote in
+its error only when straightening the quotes makes the array parse, never
+rewriting it, because an argument may contain one.
+`CommandRunArgvEditorChecks` pins all three.
+
 Per-run approval is the default. Optional exact-command session trust is native,
 off by default, memory-only, revocable and visibly disclosed. It keys exact argv,
 canonical folder and source generation and includes mutable code with human file
@@ -1562,6 +1581,23 @@ completed (naming the handoff) once the Ask is accepted, handed back to
 busy target, for instance), and `.failed` when delivery itself fails. The
 call returns with the answer or the consultation timeout, which is why it is
 a tracked request and runs off the main actor.
+
+Sending an agent-staged draft (approving the agent's waiting Ask or
+sending it as the person's own Ask) closes the sheet before the tracked
+request runs, so a failure used to lose the person's edits (844fa81d). After
+any failed send the app reads the review fresh and `ContextSendRecovery`
+decides. If the review is still `.draft` or `.awaitingReview` and unchanged
+apart from what was sent (same revision, or the stored parts and note equal
+the sent pack), nothing was delivered: the edits reopen at the review's
+current revision, state and target, and a resend is accepted. If the agent
+changed the draft meanwhile (added a part, or turned it into an Ask; the
+core's stale-revision refusal), the draft opens as the agent left it and the
+edits are offered to copy, because reopening the old copy at the new
+revision would drop the agent's part or approve a request the person never
+saw. A `.completed` review was delivered and says so. Anything else, or an
+unreadable review, offers the edits to copy and never reopens them for a
+second send. `ContextSendRecoveryChecks` drives every case through a real
+broker.
 
 Every UI control request that uses `trackedResponseTimeout` (Ask, Ask-many,
 request changes, busy-draft send, context approve and context complete) runs

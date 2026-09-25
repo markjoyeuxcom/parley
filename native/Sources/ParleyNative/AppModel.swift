@@ -6141,7 +6141,7 @@ final class AppModel: ObservableObject {
                     approve: isAwaitingAgent,
                     reviewID: reviewID,
                     expectedUpdatedAt: expectedUpdatedAt,
-                    pack: draft.pack,
+                    draft: draft,
                     target: target
                 )
                 return
@@ -6186,9 +6186,10 @@ final class AppModel: ObservableObject {
         approve: Bool,
         reviewID: String,
         expectedUpdatedAt: Date,
-        pack: ContextPack,
+        draft: ActiveContextPack,
         target: WorkbenchPane
     ) {
+        let pack = draft.pack
         let idempotencyKey = UUID().uuidString.lowercased()
         Task { [weak self] in
             do {
@@ -6228,9 +6229,86 @@ final class AppModel: ObservableObject {
                 }
             } catch {
                 self?.refreshStatusCenterQuietly()
-                NSAlert(error: error).runModal()
+                // The sheet closed before the send; what becomes of the
+                // person's edits is decided from the review read fresh now.
+                let fresh = await Task.detached(priority: .userInitiated) { try? relayClient.contextReviews() }.value
+                self?.recoverContextSend(draft: draft, target: target,
+                                         decision: ContextSendRecovery.decide(reviewID: reviewID, sent: pack, sentRevision: expectedUpdatedAt, fresh: fresh),
+                                         failure: error.localizedDescription, approve: approve, idempotencyKey: idempotencyKey)
             }
         }
+    }
+
+    /// After a failed send of an agent-staged draft: reopens the person's
+    /// edits when nothing was delivered, and otherwise offers them as text to
+    /// copy rather than as a draft that could be sent twice
+    /// (`ContextSendRecovery`).
+    private func recoverContextSend(draft: ActiveContextPack, target: WorkbenchPane, decision: ContextSendRecovery,
+                                    failure: String, approve: Bool, idempotencyKey: String) {
+        switch decision {
+        case .delivered:
+            let alert = NSAlert()
+            alert.messageText = "Delivered to \(target.displayName), but the send did not finish"
+            alert.informativeText = failure + "\n\nThe context reached \(target.displayName), so it was not reopened. Its handoff is in Status Center."
+            alert.alertStyle = .informational
+            alert.runModal()
+            try? refresh()
+            if approve { terminalHandle.focus() } else { revealCompletedUIAsk(idempotencyKey: idempotencyKey) }
+        case let .reopen(review):
+            // An empty pack opened since then is not a draft to protect.
+            if contextPackDraft.map({ $0.pack.parts.isEmpty }) ?? true {
+                var restored = draft
+                restored.reviewState = review.state
+                restored.reviewUpdatedAt = review.updatedAt
+                restored.requestedTargetPaneID = review.requestedTargetPaneID
+                updateContextPackMeasurement(&restored)
+                contextPackDraft = restored
+                contextPackPresented = true
+                let alert = NSAlert()
+                alert.messageText = "Nothing was sent to \(target.displayName)"
+                alert.informativeText = failure + "\n\nYour edited pack is open again."
+                alert.alertStyle = .warning
+                alert.runModal()
+            } else {
+                offerContextSendCopy(draft: draft, title: "Nothing was sent to \(target.displayName)",
+                    detail: failure + "\n\nAnother pack is open, so your edits were not reopened. The agent's draft is still in the Context menu; copy your edited text below if you want it.")
+            }
+        case let .changed(review):
+            // The agent changed the draft while it was being edited. Show it as
+            // it is now, unless another pack is open; the person's edits stay
+            // available to copy either way.
+            let title = "\(review.sourcePaneName) changed this draft while you edited it"
+            if contextPackDraft.map({ $0.pack.parts.isEmpty }) ?? true {
+                presentContextReview(review)
+                offerContextSendCopy(draft: draft, title: title,
+                    detail: failure + "\n\nNothing was sent. The draft is open as \(review.sourcePaneName) left it" + (review.state == .awaitingReview ? ", now asking for your review" : "") + ". Copy your edited text to bring your changes across.")
+            } else {
+                offerContextSendCopy(draft: draft, title: title,
+                    detail: failure + "\n\nNothing was sent. Another pack is open, so \(review.sourcePaneName)'s draft was not opened; it is in the Context menu. Copy your edited text to keep your changes.")
+            }
+        case let .copyOnly(reason):
+            offerContextSendCopy(draft: draft, title: "Parley could not confirm this context reached \(target.displayName)",
+                detail: failure + "\n\n" + reason + " It was not reopened for sending, so it cannot go twice; check \(target.displayName) and Status Center first.")
+        }
+    }
+
+    private func offerContextSendCopy(draft: ActiveContextPack, title: String, detail: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.alertStyle = .warning
+        // Copying is the default: Return, the reflex after an error, must not
+        // be the key that discards the only remaining copy of the edits.
+        alert.addButton(withTitle: "Copy Pack Text")
+        alert.addButton(withTitle: "Don't Copy")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let text = (try? contextPackBuilder?.render(draft.pack)) ?? {
+            let note = draft.pack.note.trimmingCharacters(in: .whitespacesAndNewlines)
+            let parts = draft.pack.parts.map(\.text).joined(separator: "\n\n")
+            return note.isEmpty ? parts : note + "\n\n" + parts
+        }()
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     func compareWithContextPack() {
@@ -8248,9 +8326,11 @@ final class AppModel: ObservableObject {
         alert.messageText = title
         alert.informativeText = detail
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "OK")
+        // Copying is the default, as for a context pack: Return must not be
+        // the key that discards the only remaining copy of the draft.
         alert.addButton(withTitle: "Copy Draft Text")
-        if alert.runModal() == .alertSecondButtonReturn {
+        alert.addButton(withTitle: "Don't Copy")
+        if alert.runModal() == .alertFirstButtonReturn {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(text, forType: .string)
         }

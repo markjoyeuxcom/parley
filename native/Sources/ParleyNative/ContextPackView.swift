@@ -1,4 +1,5 @@
 import ParleyCore
+import ParleyUI
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -236,9 +237,10 @@ struct ContextPackView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                 }
-                TextEditor(text: partTextBinding(part.id))
-                    .font(.body.monospaced())
-                    .textSelection(.enabled)
+                // One editor per part: its undo history belongs to that part's text.
+                PlainTextEditor(text: partTextBinding(part.id), accessibilityLabel: "Part text")
+                    .id(part.id)
+                    .frame(minHeight: 120)
                     .border(Color.secondary.opacity(0.25))
                 HStack {
                     if part.isEdited {
@@ -273,8 +275,8 @@ struct ContextPackView: View {
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
             }
-            TextEditor(text: noteBinding)
-                .font(.body)
+            PlainTextEditor(text: noteBinding, accessibilityLabel: "Pack instruction",
+                            font: .systemFont(ofSize: NSFont.systemFontSize))
                 .frame(minHeight: 72, maxHeight: 110)
                 .border(Color.secondary.opacity(0.25))
             Text("This instruction is part of the pack and must be present before Ask or Compare is enabled.")
@@ -425,8 +427,7 @@ private struct VendorToolEvidenceCaptureView: View {
                 }
                 if kind == .browserSelection {
                     LabeledContent("Selected text") {
-                        TextEditor(text: $selectedText)
-                            .font(.body.monospaced())
+                        PlainTextEditor(text: $selectedText, accessibilityLabel: "Selected text")
                             .frame(minHeight: 150)
                             .border(Color.secondary.opacity(0.25))
                     }
@@ -552,8 +553,7 @@ private struct ContextCommandCaptureView: View {
                         .textSelection(.enabled)
                 }
                 LabeledContent("Arguments") {
-                    TextEditor(text: $argumentLines)
-                        .font(.body.monospaced())
+                    PlainTextEditor(text: $argumentLines, accessibilityLabel: "Command arguments, one per line")
                         .frame(minHeight: 150)
                         .border(Color.secondary.opacity(0.25))
                 }
