@@ -5157,6 +5157,35 @@ public enum RelayShim {
       [ $((now - modified)) -le 3 ]
     }
 
+    # One stale reading is not a stopped broker. The Mac's wall clock moves on
+    # through sleep before the transport's timer runs again, and App Nap can
+    # hold that timer back, so stale readings are counted and wake the
+    # transport (about once a second): an entry made and removed in the inbox
+    # makes its watcher run a tick at once. The transport skips hidden
+    # entries. mkdir and rmdir are in the container utility contract; `:` with
+    # a redirection is a special builtin, whose failure would end the shell.
+    wake_transport() {
+      /bin/mkdir "$inbox/.wake-$$" 2>/dev/null || true
+      /bin/rmdir "$inbox/.wake-$$" 2>/dev/null || true
+    }
+
+    # Before anything is written: a fresh heartbeat, or one that becomes
+    # fresh within about five seconds of this command's own time. A refusal
+    # therefore still means nothing was sent. An endpoint that vanishes
+    # meanwhile (its pane restarted or closed) is final at once.
+    broker_is_running() {
+      stale_readings=0
+      until heartbeat_is_fresh; do
+        [ -d "$endpoint" ] && [ ! -L "$endpoint" ] || return 1
+        stale_readings=$((stale_readings + 1))
+        [ "$stale_readings" -le 20 ] || return 1
+        if [ $((stale_readings % 4)) -eq 1 ]; then
+          wake_transport
+        fi
+        /bin/sleep 0.25
+      done
+    }
+
     cleanup_directory() {
       directory="$1"
       [ -n "$directory" ] || return 0
@@ -5191,7 +5220,14 @@ public enum RelayShim {
     }
 
     post() {
-      if ! protected_directory "$endpoint" || ! protected_directory "$inbox" || ! protected_directory "$outbox" || ! heartbeat_is_fresh; then
+      if ! protected_directory "$endpoint" || ! protected_directory "$inbox" || ! protected_directory "$outbox" || ! broker_is_running; then
+        echo "the Parley relay broker is not running" >&2
+        return 2
+      fi
+      # Checked again after a wait, so the request goes into directories
+      # checked just now rather than up to five seconds ago.
+      if [ "$stale_readings" -gt 0 ] \
+        && { ! protected_directory "$endpoint" || ! protected_directory "$inbox" || ! protected_directory "$outbox"; }; then
         echo "the Parley relay broker is not running" >&2
         return 2
       fi
@@ -5214,6 +5250,7 @@ public enum RelayShim {
 
       ask_id_reported=0
       checks=0
+      stale_readings=0
       while :; do
         if [ "$ask_id_reported" -eq 0 ] \
           && { [ "$command" = "ask" ] || [ "$command" = "context-ask" ] || [ "$command" = "request-run" ] || [ "$command" = "team-request" ] || [ "$command" = "team-add" ]; } \
@@ -5261,7 +5298,9 @@ public enum RelayShim {
         checks=$((checks + 1))
         # Every 50 ms for the first second, where nearly every reply lands,
         # then every 250 ms: a long wait must not start twenty processes a
-        # second. The broker's heartbeat is checked about once a second.
+        # second. The broker's heartbeat is checked about once a second; a
+        # vanished endpoint is final, a stale or missing heartbeat only after
+        # five readings in a row (see wake_transport).
         if [ "$checks" -le 20 ]; then
           heartbeat_every=20
           pause=0.05
@@ -5269,9 +5308,25 @@ public enum RelayShim {
           heartbeat_every=4
           pause=0.25
         fi
-        if [ $((checks % heartbeat_every)) -eq 0 ] && ! heartbeat_is_fresh; then
-          echo "the Parley relay broker stopped before replying" >&2
-          return 2
+        if [ $((checks % heartbeat_every)) -eq 0 ]; then
+          if [ ! -d "$endpoint" ] || [ -L "$endpoint" ]; then
+            echo "the Parley relay broker stopped before replying" >&2
+            return 2
+          fi
+          if heartbeat_is_fresh; then
+            stale_readings=0
+          else
+            stale_readings=$((stale_readings + 1))
+            if [ "$stale_readings" -ge 5 ]; then
+              # `post` runs in a pipeline subshell, where the script's EXIT
+              # trap never fires, so clean up here: a broker that comes back
+              # must not act on a request the agent was told had failed.
+              cleanup
+              echo "the Parley relay broker stopped before replying" >&2
+              return 2
+            fi
+            wake_transport
+          fi
         fi
         /bin/sleep "$pause"
       done

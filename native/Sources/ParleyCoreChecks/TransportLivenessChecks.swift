@@ -1,0 +1,420 @@
+import Darwin
+import Dispatch
+import Foundation
+import ParleyCore
+
+private func livenessExpect(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
+    if try !condition() { throw NSError(domain: "TransportLiveness", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+}
+
+private func livenessEventually(within seconds: Double, _ condition: () -> Bool) -> Bool {
+    let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(seconds * 1_000_000_000)
+    while !condition() {
+        if DispatchTime.now().uptimeNanoseconds > deadline { return false }
+        usleep(20_000)
+    }
+    return true
+}
+
+/// The system clocks with offsets a check can move: a sleep moves wall and
+/// monotonic time forward and leaves awake time alone; a clock step moves
+/// wall time alone.
+private final class SimulatedClocks: @unchecked Sendable {
+    private let lock = NSLock()
+    private var wallOffset: TimeInterval = 0
+    private var monotonicOffset: UInt64 = 0
+    /// While set, the next wall-clock read (on the transport's queue) waits here.
+    private var hold: DispatchSemaphore?
+    let held = DispatchSemaphore(value: 0)
+
+    var clocks: RelayTransportClocks {
+        RelayTransportClocks(
+            wall: { [self] in
+                if let hold = lock.withLock({ () -> DispatchSemaphore? in defer { self.hold = nil }; return self.hold }) {
+                    held.signal()
+                    hold.wait()
+                }
+                return Date().addingTimeInterval(lock.withLock { wallOffset })
+            },
+            monotonic: { [self] in RelayTransportClocks.system.monotonic() &+ lock.withLock { monotonicOffset } },
+            awake: { RelayTransportClocks.system.awake() })
+    }
+
+    func sleep(_ seconds: TimeInterval) {
+        lock.withLock { wallOffset += seconds; monotonicOffset &+= UInt64(seconds * 1_000_000_000) }
+    }
+
+    func stepWall(_ seconds: TimeInterval) { lock.withLock { wallOffset += seconds } }
+
+    /// Holds the transport's next tick until the returned semaphore is signalled.
+    func holdNextTick() -> DispatchSemaphore {
+        let release = DispatchSemaphore(value: 0)
+        lock.withLock { hold = release }
+        return release
+    }
+}
+
+/// One pane's endpoint with the real shim and no transport: the check plays
+/// the broker, so it decides exactly when the heartbeat is fresh, stale or
+/// gone, and when a reply appears.
+private struct LivenessFixture {
+    let directory: URL
+    let credentials: RelayCredentials
+    let token: String
+    let transportDirectory: URL
+    let endpoint: URL
+    let shim: URL
+
+    init(_ name: String) throws {
+        directory = URL(fileURLWithPath: "/tmp/parley-\(name)-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+        token = try credentials.token(for: "pane")
+        transportDirectory = directory.appendingPathComponent("agent-transport", isDirectory: true)
+        endpoint = try RelayFileTransport.prepareEndpoint(runtimeDirectory: transportDirectory, paneToken: token)
+        shim = try RelayShim.install(in: directory, transportDirectory: transportDirectory).appendingPathComponent("parley")
+    }
+
+    func cleanup() { try? FileManager.default.removeItem(at: directory) }
+
+    var inbox: URL { endpoint.appendingPathComponent("inbox", isDirectory: true) }
+    var heartbeat: URL { endpoint.appendingPathComponent("heartbeat") }
+
+    /// A heartbeat last written `age` seconds ago, as the transport leaves it
+    /// when its timer has not run since.
+    func writeHeartbeat(age: TimeInterval) throws {
+        let written = Date().addingTimeInterval(-age)
+        try Data(String(Int(written.timeIntervalSince1970)).utf8).write(to: heartbeat, options: [.atomic])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600, .modificationDate: written], ofItemAtPath: heartbeat.path)
+    }
+
+    /// Request directories the shim finished writing (hidden entries are not requests).
+    func readyRequests() -> [URL] {
+        let entries = (try? FileManager.default.contentsOfDirectory(at: inbox, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
+        return entries.filter { FileManager.default.fileExists(atPath: $0.appendingPathComponent("ready").path) }
+    }
+
+    func reply(to request: URL, status: Int, body: String) throws {
+        let response = endpoint.appendingPathComponent("outbox", isDirectory: true).appendingPathComponent(request.lastPathComponent, isDirectory: true)
+        try FileManager.default.createDirectory(at: response, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        try Data(String(status).utf8).write(to: response.appendingPathComponent("status"))
+        try Data(body.utf8).write(to: response.appendingPathComponent("body"))
+        try Data("ready".utf8).write(to: response.appendingPathComponent("ready"))
+    }
+
+    func run(_ arguments: [String]) -> ShimRun {
+        ShimRun(shim: shim, arguments: arguments, token: token)
+    }
+}
+
+private final class ShimRun: @unchecked Sendable {
+    private let lock = NSLock()
+    private var output: CommandOutput?
+    private var failure: Error?
+    private var elapsed = 0.0
+    private let done = DispatchSemaphore(value: 0)
+
+    init(shim: URL, arguments: [String], token: String) {
+        let environment = ProcessInfo.processInfo.environment.merging(["PARLEY_RELAY_TOKEN": token]) { _, supplied in supplied }
+        Thread { [self] in
+            let started = DispatchTime.now().uptimeNanoseconds
+            var result: CommandOutput?
+            var error: Error?
+            do {
+                result = try ProcessCommandRunner(timeout: 30).run(executable: URL(fileURLWithPath: "/bin/sh"),
+                    arguments: [shim.path] + arguments, environment: environment, input: nil)
+            } catch let caught { error = caught }
+            let seconds = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000
+            lock.withLock { output = result; failure = error; elapsed = seconds }
+            done.signal()
+        }.start()
+    }
+
+    var finished: Bool { lock.withLock { output != nil || failure != nil } }
+    var stderr: String { lock.withLock { output?.stderrText ?? "" } }
+
+    func wait(_ seconds: Double) throws -> (output: CommandOutput, seconds: Double) {
+        try livenessExpect(done.wait(timeout: .now() + seconds) == .success, "the shim did not return within \(seconds) s")
+        return try lock.withLock {
+            guard let output else { throw failure ?? NSError(domain: "TransportLiveness", code: 2) }
+            return (output, elapsed)
+        }
+    }
+}
+
+/// Counts writes to one directory, the way the transport's inbox watcher sees them.
+private final class DirectoryEvents: @unchecked Sendable {
+    private let source: DispatchSourceFileSystemObject
+    private let lock = NSLock()
+    private var events = 0
+
+    init(_ directory: URL) throws {
+        let descriptor = open(directory.path, O_EVTONLY | O_DIRECTORY | O_CLOEXEC)
+        try livenessExpect(descriptor >= 0, "could not watch \(directory.path)")
+        source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: [.write, .link], queue: .global())
+        source.setEventHandler { [weak self] in self?.lock.withLock { self?.events += 1 } }
+        source.setCancelHandler { close(descriptor) }
+        source.resume()
+    }
+
+    var count: Int { lock.withLock { events } }
+    func cancel() { source.cancel() }
+}
+
+/// Observed on 23 September 2026: a `parley wait` failed with "the Parley
+/// relay broker stopped before replying" the second the Mac woke from sleep.
+/// The broker was fine. The wall clock had moved on and the transport's timer
+/// had not yet run, so the heartbeat read stale once. A stale reading must
+/// wake the transport and be waited out, before sending and while waiting.
+func checkShimWaitsOutAStaleHeartbeatBeforeSending() throws {
+    let fixture = try LivenessFixture("stale-send")
+    defer { fixture.cleanup() }
+    try fixture.writeHeartbeat(age: 60)
+    let events = try DirectoryEvents(fixture.inbox)
+    defer { events.cancel() }
+    let run = fixture.run(["whoami"])
+    try livenessExpect(livenessEventually(within: 4) { events.count > 0 || run.finished },
+                       "the shim did not wake the transport through its inbox while the heartbeat was stale")
+    try livenessExpect(!run.finished, "the shim gave up on a stale heartbeat reading at once: \(run.stderr)")
+    try livenessExpect(fixture.readyRequests().isEmpty, "the shim sent a request while the heartbeat was stale")
+    try fixture.writeHeartbeat(age: 0)
+    var request: URL?
+    try livenessExpect(livenessEventually(within: 3) { request = fixture.readyRequests().first; return request != nil },
+                       "the shim never sent its request once the heartbeat was fresh")
+    try fixture.reply(to: request!, status: 200, body: "{\"ok\":true}")
+    let (output, _) = try run.wait(10)
+    try livenessExpect(output.status == 0 && output.stdoutText == "{\"ok\":true}",
+                       "the shim did not complete after the heartbeat recovered: status \(output.status), stderr \(output.stderrText)")
+}
+
+func checkShimWaitsOutAStaleHeartbeatWhileWaiting() throws {
+    let fixture = try LivenessFixture("stale-wait")
+    defer { fixture.cleanup() }
+    try fixture.writeHeartbeat(age: 0)
+    let run = fixture.run(["status"])
+    var request: URL?
+    try livenessExpect(livenessEventually(within: 3) { request = fixture.readyRequests().first; return request != nil },
+                       "the shim never sent its request")
+    try fixture.writeHeartbeat(age: 60)
+    Thread.sleep(forTimeInterval: 2.5)
+    try livenessExpect(!run.finished, "the shim reported the broker stopped on a stale heartbeat while waiting: \(run.stderr)")
+    try fixture.writeHeartbeat(age: 0)
+    try fixture.reply(to: request!, status: 200, body: "[]")
+    let (output, _) = try run.wait(10)
+    try livenessExpect(output.status == 0 && output.stdoutText == "[]",
+                       "the shim did not collect its reply after the heartbeat recovered: status \(output.status), stderr \(output.stderrText)")
+}
+
+/// Tolerance must not turn a real stop into a hang: a heartbeat that stays
+/// stale, or goes away because the transport stopped, is still reported,
+/// and a missing endpoint is reported at once. "Not running" still means
+/// nothing was sent.
+func checkShimStillReportsAStoppedBroker() throws {
+    let neverFresh = try LivenessFixture("stopped-send")
+    defer { neverFresh.cleanup() }
+    try neverFresh.writeHeartbeat(age: 60)
+    let stopped = try LivenessFixture("stopped-wait")
+    defer { stopped.cleanup() }
+    try stopped.writeHeartbeat(age: 0)
+    let refused = neverFresh.run(["whoami"])
+    let waiting = stopped.run(["status"])
+    try livenessExpect(livenessEventually(within: 3) { !stopped.readyRequests().isEmpty }, "the waiting shim never sent its request")
+    // What RelayFileTransport.stop() does.
+    try FileManager.default.removeItem(at: stopped.heartbeat)
+
+    let (refusal, refusalSeconds) = try refused.wait(15)
+    try livenessExpect(refusal.status == 2 && refusal.stderrText.contains("the Parley relay broker is not running"),
+                       "a heartbeat that never recovered was not reported: status \(refusal.status), stderr \(refusal.stderrText)")
+    try livenessExpect(refusalSeconds < 10, "reporting a stopped broker took \(refusalSeconds) s")
+    try livenessExpect(neverFresh.readyRequests().isEmpty, "a refused command still sent its request")
+    let (abandoned, abandonedSeconds) = try waiting.wait(15)
+    try livenessExpect(abandoned.status == 2 && abandoned.stderrText.contains("the Parley relay broker stopped before replying"),
+                       "a transport that stopped was not reported: status \(abandoned.status), stderr \(abandoned.stderrText)")
+    try livenessExpect(abandonedSeconds < 12, "reporting a transport that stopped took \(abandonedSeconds) s")
+    // `post` runs in a pipeline subshell, where the script's EXIT trap never
+    // fires (in macOS sh or dash): the shim must clean up itself, or a broker
+    // that comes back acts on a request the agent was told had failed.
+    try livenessExpect(stopped.readyRequests().isEmpty, "a shim that reported the broker stopped left its request in the inbox")
+
+    let gone = try LivenessFixture("stopped-gone")
+    defer { gone.cleanup() }
+    try FileManager.default.removeItem(at: gone.endpoint)
+    let (missing, missingSeconds) = try gone.run(["whoami"]).wait(10)
+    try livenessExpect(missing.status == 2 && missing.stderrText.contains("the Parley relay broker is not running"),
+                       "a missing endpoint was not reported: status \(missing.status), stderr \(missing.stderrText)")
+    // At once, against the five seconds a stale heartbeat is given.
+    try livenessExpect(missingSeconds < 3, "a missing endpoint took \(missingSeconds) s to report")
+
+    // An endpoint pruned while the shim waits for a fresh heartbeat (its pane
+    // restarted or closed) is final at once, as it is while waiting for a reply.
+    let vanishing = try LivenessFixture("stopped-vanish")
+    defer { vanishing.cleanup() }
+    try vanishing.writeHeartbeat(age: 60)
+    let vanishRun = vanishing.run(["whoami"])
+    Thread.sleep(forTimeInterval: 0.6)
+    let removedAt = DispatchTime.now().uptimeNanoseconds
+    try FileManager.default.removeItem(at: vanishing.endpoint)
+    let (vanished, _) = try vanishRun.wait(10)
+    let afterRemoval = Double(DispatchTime.now().uptimeNanoseconds - removedAt) / 1_000_000_000
+    try livenessExpect(vanished.status == 2 && vanished.stderrText.contains("the Parley relay broker is not running"),
+                       "an endpoint removed during the wait was not reported: status \(vanished.status), stderr \(vanished.stderrText)")
+    try livenessExpect(afterRemoval < 3, "an endpoint removed during the wait took \(afterRemoval) s to report")
+}
+
+/// The transport decided a heartbeat was due by comparing wall-clock times,
+/// so a clock stepped backwards stopped every heartbeat until the clock
+/// caught up, and every shim then read the broker as stopped.
+func checkTransportHeartbeatSurvivesAClockStepBack() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-clockstep-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let token = try credentials.token(for: "pane")
+    let transportDirectory = directory.appendingPathComponent("agent-transport", isDirectory: true)
+    let endpoint = try RelayFileTransport.prepareEndpoint(runtimeDirectory: transportDirectory, paneToken: token)
+    let simulated = SimulatedClocks()
+    let broker = RelayBroker(credentials: credentials, panes: { [] }, paste: { _, _ in }, submit: { _, _ in })
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory,
+                                       clocks: simulated.clocks)
+    try transport.start()
+    defer { transport.stop() }
+    let heartbeat = endpoint.appendingPathComponent("heartbeat")
+    func written() -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: heartbeat.path))?[.modificationDate] as? Date
+    }
+    try livenessExpect(livenessEventually(within: 3) { written() != nil }, "the transport wrote no heartbeat")
+    simulated.stepWall(-3600)
+    let stepped = Date()
+    try livenessExpect(livenessEventually(within: 4) { (written() ?? .distantPast) > stepped },
+                       "the heartbeat stopped after the wall clock stepped back an hour")
+}
+
+/// After the Mac wakes, the wall clock has moved on by the whole sleep while
+/// every process was frozen. A request a shim was still writing, and a reply
+/// a shim had not yet collected, then looked abandoned at the transport's
+/// first tick and were deleted from under the shim: the request failed, and
+/// a `parley wait` whose reply went polled for it forever.
+func checkWakeDoesNotAgeOutRequestsInUse() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-wakeage-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let token = try credentials.token(for: "pane")
+    let transportDirectory = directory.appendingPathComponent("agent-transport", isDirectory: true)
+    let endpoint = try RelayFileTransport.prepareEndpoint(runtimeDirectory: transportDirectory, paneToken: token)
+    let simulated = SimulatedClocks()
+    let pane = WorkbenchPane(id: "pane", kind: .claude, customName: "pane", terminalTitle: "", cwd: "/private/pane", currentCommand: "x",
+                             isActive: false, workspaceID: "@wake", relayEnabled: true, protocolVersion: AgentProtocol.version,
+                             workspaceName: "Wake", inputAvailable: true)
+    let broker = RelayBroker(credentials: credentials, panes: { [pane] }, paste: { _, _ in }, submit: { _, _ in })
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory,
+                                       clocks: simulated.clocks)
+    try transport.start()
+    defer { transport.stop() }
+
+    // A shim part-way through writing a request, and a reply nobody has collected yet.
+    let request = endpoint.appendingPathComponent("inbox").appendingPathComponent(UUID().uuidString.lowercased())
+    try FileManager.default.createDirectory(at: request, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    for (name, value) in [("command", "whoami"), ("token", token), ("target", ""), ("item", ""), ("idempotency-key", "wake-age"), ("body", "")] {
+        try Data(value.utf8).write(to: request.appendingPathComponent(name))
+    }
+    let reply = endpoint.appendingPathComponent("outbox").appendingPathComponent(UUID().uuidString.lowercased())
+    try FileManager.default.createDirectory(at: reply, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    for name in ["status", "body", "ready"] { try Data("200".utf8).write(to: reply.appendingPathComponent(name)) }
+    Thread.sleep(forTimeInterval: 0.5)
+
+    // The Mac slept for an hour: wall and monotonic time moved, awake time did not.
+    simulated.sleep(3600)
+    Thread.sleep(forTimeInterval: 2.2)
+    try livenessExpect(FileManager.default.fileExists(atPath: request.path), "a request still being written was deleted as abandoned after a wake")
+    try livenessExpect(FileManager.default.fileExists(atPath: reply.path), "an uncollected reply was deleted as stale at the first tick after a wake")
+
+    // The shim finishes its request, and it is served.
+    try Data("ready".utf8).write(to: request.appendingPathComponent("ready"))
+    let served = endpoint.appendingPathComponent("outbox").appendingPathComponent(request.lastPathComponent).appendingPathComponent("ready")
+    try livenessExpect(livenessEventually(within: 3) { FileManager.default.fileExists(atPath: served.path) },
+                       "the request finished after the wake was never served")
+}
+
+/// `stop()` cancelled the timer and removed the heartbeats, but a tick
+/// already running could write a heartbeat afterwards, telling every shim
+/// that a stopped transport was alive (the container transport check caught
+/// it intermittently). A tick is held mid-flight here while `stop()` runs.
+func checkStoppedTransportLeavesNoHeartbeat() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-stoprace-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let transportDirectory = directory.appendingPathComponent("agent-transport", isDirectory: true)
+    let endpoint = try RelayFileTransport.prepareEndpoint(runtimeDirectory: transportDirectory, paneToken: try credentials.token(for: "pane"))
+    let heartbeat = endpoint.appendingPathComponent("heartbeat")
+    let simulated = SimulatedClocks()
+    let broker = RelayBroker(credentials: credentials, panes: { [] }, paste: { _, _ in }, submit: { _, _ in })
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory,
+                                       clocks: simulated.clocks)
+    try transport.start()
+    try livenessExpect(FileManager.default.fileExists(atPath: heartbeat.path), "the transport started without a heartbeat")
+
+    let release = simulated.holdNextTick()
+    try livenessExpect(simulated.held.wait(timeout: .now() + 3) == .success, "no tick ran")
+    simulated.sleep(10) // the held tick will find a heartbeat due
+    let stopped = DispatchSemaphore(value: 0)
+    Thread { transport.stop(); stopped.signal() }.start()
+    Thread.sleep(forTimeInterval: 0.3)
+    release.signal()
+    try livenessExpect(stopped.wait(timeout: .now() + 5) == .success, "stop() never returned")
+    Thread.sleep(forTimeInterval: 0.3)
+    try livenessExpect(!FileManager.default.fileExists(atPath: heartbeat.path), "a tick running during stop() wrote a heartbeat after it")
+}
+
+/// Every start or restart rotates the pane's capability and prepares a new
+/// endpoint, and every stop or close forgets it, but only `start()` removed
+/// endpoints. A long session kept every retired one, heartbeated and watched,
+/// and past 256 the listing began dropping live panes.
+func checkRetiredEndpointsArePruned() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-prune-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentialsFile = directory.appendingPathComponent("relay-tokens.json")
+    let credentials = try RelayCredentials(file: credentialsFile)
+    let transportDirectory = directory.appendingPathComponent("agent-transport", isDirectory: true)
+    _ = try RelayFileTransport.prepareEndpoint(runtimeDirectory: transportDirectory, paneToken: try credentials.token(for: "pane"))
+    let broker = RelayBroker(credentials: credentials, panes: { [] }, paste: { _, _ in }, submit: { _, _ in })
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory)
+    try transport.start()
+    defer { transport.stop() }
+    func endpoints() -> Set<String> {
+        Set(((try? FileManager.default.contentsOfDirectory(atPath: transportDirectory.path)) ?? []).filter { $0.count == 48 })
+    }
+
+    // Five restarts of one pane, and a second pane that is then closed.
+    var current = ""
+    for _ in 0..<5 {
+        current = try credentials.rotate("pane")
+        _ = try RelayFileTransport.prepareEndpoint(runtimeDirectory: transportDirectory, paneToken: current)
+    }
+    let closed = try credentials.token(for: "closed")
+    _ = try RelayFileTransport.prepareEndpoint(runtimeDirectory: transportDirectory, paneToken: closed)
+    try credentials.forget("closed")
+    try livenessExpect(livenessEventually(within: 4) { endpoints() == [current] },
+                       "retired endpoints were kept: \(endpoints().count) endpoints for one live pane")
+    let live = transportDirectory.appendingPathComponent(current).appendingPathComponent("heartbeat")
+    try livenessExpect(livenessEventually(within: 3) { FileManager.default.fileExists(atPath: live.path) }, "the live endpoint lost its heartbeat")
+
+    // Credentials that cannot be read prune nothing: unknown is not retired.
+    let unknown = String(repeating: "c", count: 48)
+    _ = try RelayFileTransport.prepareEndpoint(runtimeDirectory: transportDirectory, paneToken: unknown)
+    try Data("not json".utf8).write(to: credentialsFile)
+    Thread.sleep(forTimeInterval: 2.2)
+    try livenessExpect(endpoints() == [current, unknown], "endpoints were pruned while the credentials could not be read: \(endpoints())")
+}
+
+@MainActor let transportLivenessChecks: [(String, () throws -> Void)] = [
+    ("the shim waits out a stale heartbeat before sending", checkShimWaitsOutAStaleHeartbeatBeforeSending),
+    ("the shim waits out a stale heartbeat while waiting for a reply", checkShimWaitsOutAStaleHeartbeatWhileWaiting),
+    ("the shim still reports a stopped broker", checkShimStillReportsAStoppedBroker),
+    ("the transport heartbeat survives a wall clock step back", checkTransportHeartbeatSurvivesAClockStepBack),
+    ("a wake does not age out requests and replies still in use", checkWakeDoesNotAgeOutRequestsInUse),
+    ("a stopped transport leaves no heartbeat", checkStoppedTransportLeavesNoHeartbeat),
+    ("retired transport endpoints are pruned", checkRetiredEndpointsArePruned),
+]

@@ -127,6 +127,27 @@ func checkContainerTransportSpike(image: String, docker: String) throws {
     _ = try invoke(sourceToken, ["context", "draft", "--name", "Linux probe", "--file", file.path])
     _ = try invoke(sourceToken, ["context", "list"])
     print("PASS Docker Linux context staging and list")
+    // A heartbeat that is gone for a moment (the transport held back, or the
+    // Mac just woke) is waited out, and the shim's wake entry, written inside
+    // the Linux VM, reaches the Mac's inbox watcher through the bind mount.
+    transport.stop()
+    let inbox = transportRoot.appendingPathComponent(sourceToken).appendingPathComponent("inbox")
+    let inboxDescriptor = open(inbox.path, O_EVTONLY | O_DIRECTORY | O_CLOEXEC)
+    try containerExpect(inboxDescriptor >= 0, "could not watch the source inbox")
+    final class Wakes: @unchecked Sendable { let lock = NSLock(); var count = 0 }
+    let wakes = Wakes()
+    let watcher = DispatchSource.makeFileSystemObjectSource(fileDescriptor: inboxDescriptor, eventMask: [.write, .link], queue: .global())
+    watcher.setEventHandler { wakes.lock.withLock { wakes.count += 1 } }
+    watcher.setCancelHandler { close(inboxDescriptor) }
+    watcher.resume()
+    defer { watcher.cancel() }
+    let stalled = ContainerPendingInvocation { try invoke(sourceToken, ["whoami"]) }
+    stalled.start()
+    Thread.sleep(forTimeInterval: 2)
+    try containerExpect(wakes.lock.withLock { wakes.count } > 0, "the Linux shim's wake entry never reached the Mac's inbox watcher")
+    try transport.start()
+    try containerExpect(try stalled.wait().contains(source.id), "the Linux shim did not complete once the transport was back")
+    print("PASS Docker Linux shim waits out a missing heartbeat and wakes the Mac's transport")
     if image == "parley-container-spike:local" {
         let service = try ContainerPaneService(directory: directory.appendingPathComponent("containers"), environment: environment)
         defer {

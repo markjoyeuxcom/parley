@@ -250,6 +250,53 @@ are flowing and backs off to 250 ms after ten quiet ticks
 once on a write, so an idle app neither scans inboxes twenty times a second
 nor makes an agent wait on the backed-off timer.
 
+Liveness is the endpoint's `heartbeat` file, rewritten once a second, and it
+must survive sleep and clock changes (26 September 2026, 117580ad). On 23
+September a `parley wait` failed with "stopped before replying" the second
+the Mac woke: the wall clock had moved on before the transport's timer ran,
+and the shim read one stale heartbeat as a stopped broker. The shim now
+treats a stale or missing heartbeat as a reason to wake the transport, by
+making and removing a hidden entry in its own inbox so the watcher runs a
+tick at once, and reports the broker stopped only after about five seconds
+of readings in a row that stay stale; a vanished endpoint is final at once.
+Before sending, a refusal still means nothing was written. App Nap is not
+disabled: that inbox wake is an event, not the timer App Nap holds back.
+Every age the transport compares uses a clock chosen for it, never a wall-clock
+difference: a heartbeat is due by `CLOCK_MONOTONIC`, which counts through
+sleep and never steps back (a backward step used to stop every heartbeat
+until the clock caught up); a request still being written ages on
+`CLOCK_UPTIME_RAW`, which stops during sleep, so a shim frozen part-way gets
+its full 30 seconds after a wake; and an uncollected reply, old by its file
+time, is removed only after it has also stayed stale for up to 30 seconds of
+awake time, because after a long sleep every reply looks old and a `parley
+wait` whose reply was deleted polled for it forever. All three clocks are
+injected as `RelayTransportClocks`, so `TransportLivenessChecks` models a
+sleep (wall and monotonic jump, awake time does not) and a clock step (wall
+alone moves). `stop()` cancels the watchers inside a barrier on the
+transport's queue and every tick returns once the transport is stopped: a
+tick already running used to write a heartbeat after `stop()` removed it,
+so shims read a stopped transport as alive. Heartbeats are written per
+endpoint, so one pane that broke its own (a container can put a directory
+in its place) cannot stop the others'. `post` runs in a pipeline subshell,
+where the script's `EXIT` trap never fires in macOS `sh` or dash, so the
+shim cleans up its own request before reporting "stopped before replying";
+a broker that comes back must not act on a request the agent was told had
+failed. Not yet handled: a transport restart discards requests whose shims
+are still waiting, and those shims then wait forever, because the request
+leaves the filesystem while it is processed and nothing marks the restart.
+
+Every start or restart rotates a pane's capability and prepares a new
+endpoint, and every stop or close forgets it. Until 26 September 2026
+(f658a60c) only the transport's `start()` removed endpoints, so a long session
+kept every retired one, heartbeated and watched each second, and the listing
+of the first 256 could start dropping live panes. Each heartbeat now prunes
+endpoints whose capability is no longer stored. The folders are listed
+before the capabilities are read: an endpoint is prepared only after its
+capability is stored, so a pane starting at that moment is never pruned.
+Capabilities that cannot be read prune nothing. `start()` uses the same
+prune, and removes leftover exchange files entry by entry, so something a
+pane left that cannot be removed no longer stops the coordination core.
+
 Sparkle.framework is the sole application-update mechanism. Its bundled helper
 processes may run transiently only during an explicit update check or
 person-approved installation; they are not a Parley daemon, coordination core
@@ -1789,7 +1836,11 @@ the file, and `cfprefsd` can write an emptied domain back after the check
 returns — so deleting the file is not enough on its own. Name such a domain
 fixed rather than per-run and clear it on the way in as well as out, so the
 count is bounded however many times the suite runs. A UUID per run accumulated
-1,626 files before anyone looked.
+1,626 files before anyone looked. The same goes for
+`RelayFileTransport.runtimeDirectory(applicationDirectory:)`: it is the real
+runtime path under `/private/tmp`, and a fixture that used it for its
+transport left one folder per run (51 by 26 September 2026, c2c4c1c8). A
+fixture's transport lives inside the fixture's own folder.
 
 The checks binary is an unbundled executable, so AppKit gives it a prohibited
 activation policy: none of its windows can become key, and a window-state check
