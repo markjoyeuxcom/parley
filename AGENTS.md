@@ -258,9 +258,15 @@ and the shim read one stale heartbeat as a stopped broker. The shim now
 treats a stale or missing heartbeat as a reason to wake the transport, by
 making and removing a hidden entry in its own inbox so the watcher runs a
 tick at once, and reports the broker stopped only after about five seconds
-of readings in a row that stay stale; a vanished endpoint is final at once.
-Before sending, a refusal still means nothing was written. App Nap is not
-disabled: that inbox wake is an event, not the timer App Nap holds back.
+of readings in a row; a vanished endpoint is final at once. Before sending,
+a refusal still means nothing was written, and a heartbeat seen to change
+counts as running even when it is not recent by the shim's clock. While
+waiting for a reply, the shim follows only whether the heartbeat's time
+changes between readings a second apart, never how it compares with
+`date`: a container's VM clock can disagree with the Mac that wrote it,
+and after a clock stepped back a dead broker's future-dated heartbeat read
+as fresh forever (Agy's review of MR !110). App Nap is not disabled: that
+inbox wake is an event, not the timer App Nap holds back.
 Every age the transport compares uses a clock chosen for it, never a wall-clock
 difference: a heartbeat is due by `CLOCK_MONOTONIC`, which counts through
 sleep and never steps back (a backward step used to stop every heartbeat

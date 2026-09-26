@@ -196,13 +196,41 @@ func checkShimWaitsOutAStaleHeartbeatWhileWaiting() throws {
     try livenessExpect(livenessEventually(within: 3) { request = fixture.readyRequests().first; return request != nil },
                        "the shim never sent its request")
     try fixture.writeHeartbeat(age: 60)
-    Thread.sleep(forTimeInterval: 2.5)
+    // Past the reading that used to end the wait, well inside the five the shim now allows.
+    Thread.sleep(forTimeInterval: 1.8)
     try livenessExpect(!run.finished, "the shim reported the broker stopped on a stale heartbeat while waiting: \(run.stderr)")
     try fixture.writeHeartbeat(age: 0)
     try fixture.reply(to: request!, status: 200, body: "[]")
     let (output, _) = try run.wait(10)
     try livenessExpect(output.status == 0 && output.stdoutText == "[]",
                        "the shim did not collect its reply after the heartbeat recovered: status \(output.status), stderr \(output.stderrText)")
+}
+
+/// A container's shim compares a heartbeat the Mac wrote with the Linux VM's
+/// clock, and the two can disagree by more than the three seconds a fresh
+/// heartbeat is allowed. A heartbeat seen to change is a running transport
+/// whatever either clock says.
+func checkShimTrustsAnAdvancingHeartbeat() throws {
+    let fixture = try LivenessFixture("advancing")
+    defer { fixture.cleanup() }
+    // Written just now by a clock a minute behind this one.
+    try fixture.writeHeartbeat(age: 60)
+    let run = fixture.run(["whoami"])
+    Thread.sleep(forTimeInterval: 0.6)
+    try fixture.writeHeartbeat(age: 59)
+    var request: URL?
+    try livenessExpect(livenessEventually(within: 3) { request = fixture.readyRequests().first; return request != nil || run.finished },
+                       "the shim never sent although the heartbeat advanced")
+    try livenessExpect(request != nil, "the shim refused a transport whose heartbeat advanced: \(run.stderr)")
+    // It keeps advancing, a minute behind, while the shim waits for the reply.
+    for age in stride(from: 58.0, through: 55.0, by: -1) {
+        Thread.sleep(forTimeInterval: 1)
+        try fixture.writeHeartbeat(age: age)
+    }
+    try livenessExpect(!run.finished, "the shim gave up on a transport whose heartbeat kept advancing: \(run.stderr)")
+    try fixture.reply(to: request!, status: 200, body: "{}")
+    let (output, _) = try run.wait(10)
+    try livenessExpect(output.status == 0 && output.stdoutText == "{}", "the shim did not complete: status \(output.status), stderr \(output.stderrText)")
 }
 
 /// Tolerance must not turn a real stop into a hang: a heartbeat that stays
@@ -216,8 +244,14 @@ func checkShimStillReportsAStoppedBroker() throws {
     let stopped = try LivenessFixture("stopped-wait")
     defer { stopped.cleanup() }
     try stopped.writeHeartbeat(age: 0)
+    // Agy's review of MR !110: after the clock steps back, a dead broker's last
+    // heartbeat is dated in the future and read as fresh forever.
+    let future = try LivenessFixture("stopped-future")
+    defer { future.cleanup() }
+    try future.writeHeartbeat(age: -3600)
     let refused = neverFresh.run(["whoami"])
     let waiting = stopped.run(["status"])
+    let stranded = future.run(["status"])
     try livenessExpect(livenessEventually(within: 3) { !stopped.readyRequests().isEmpty }, "the waiting shim never sent its request")
     // What RelayFileTransport.stop() does.
     try FileManager.default.removeItem(at: stopped.heartbeat)
@@ -235,6 +269,10 @@ func checkShimStillReportsAStoppedBroker() throws {
     // fires (in macOS sh or dash): the shim must clean up itself, or a broker
     // that comes back acts on a request the agent was told had failed.
     try livenessExpect(stopped.readyRequests().isEmpty, "a shim that reported the broker stopped left its request in the inbox")
+    let (outlived, outlivedSeconds) = try stranded.wait(15)
+    try livenessExpect(outlived.status == 2 && outlived.stderrText.contains("the Parley relay broker stopped before replying"),
+                       "a dead broker whose heartbeat is dated in the future was not reported: status \(outlived.status), stderr \(outlived.stderrText)")
+    try livenessExpect(outlivedSeconds < 12, "reporting a dead broker with a future heartbeat took \(outlivedSeconds) s")
 
     let gone = try LivenessFixture("stopped-gone")
     defer { gone.cleanup() }
@@ -413,6 +451,7 @@ func checkRetiredEndpointsArePruned() throws {
     ("the shim waits out a stale heartbeat before sending", checkShimWaitsOutAStaleHeartbeatBeforeSending),
     ("the shim waits out a stale heartbeat while waiting for a reply", checkShimWaitsOutAStaleHeartbeatWhileWaiting),
     ("the shim still reports a stopped broker", checkShimStillReportsAStoppedBroker),
+    ("the shim trusts a heartbeat it sees advancing whatever the clocks say", checkShimTrustsAnAdvancingHeartbeat),
     ("the transport heartbeat survives a wall clock step back", checkTransportHeartbeatSurvivesAClockStepBack),
     ("a wake does not age out requests and replies still in use", checkWakeDoesNotAgeOutRequestsInUse),
     ("a stopped transport leaves no heartbeat", checkStoppedTransportLeavesNoHeartbeat),
