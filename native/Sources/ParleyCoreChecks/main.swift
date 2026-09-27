@@ -9322,6 +9322,7 @@ private func checkContextReviewTransportBoundsAndEscaping() throws {
 
 private func checkContextReviewShimRoundTrip() throws {
     let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
     let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
     let claudeToken = try credentials.token(for: "%1")
     let codexToken = try credentials.token(for: "%2")
@@ -9340,7 +9341,9 @@ private func checkContextReviewShimRoundTrip() throws {
         consultationTimeout: 3,
         contextReviewStore: reviewStore
     )
-    let transportDirectory = RelayFileTransport.runtimeDirectory(applicationDirectory: directory)
+    // Inside the fixture, never the real runtime path under /private/tmp:
+    // that one outlived every run (c2c4c1c8).
+    let transportDirectory = directory.appendingPathComponent("agent-transport", isDirectory: true)
     let shimDirectory = try RelayShim.install(in: directory, transportDirectory: transportDirectory)
     let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory)
     try transport.start()
@@ -10328,7 +10331,7 @@ if let image = argument(named: "--container-transport-spike") {
 let onlyFilter = argument(named: "--only")?.lowercased()
 let skipFilters = (argument(named: "--skip") ?? "").lowercased()
     .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-let allChecks = (voiceChecks + containerPaneChecks + checks + reviewRegressionChecks + repositoryReviewChecks + approvalHandlingChecks + folderListChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + worktreeBoardChecks + worktreeRepositoryChecks + emptyWorkspaceChecks + relayTicketChecks + protocolDriftChecks + auxiliaryWindowChecks + helpAuditChecks + terminalTypeChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + askCorrelationChecks + gitReadBoundaryChecks + codexTOMLChecks + relayTextLimitChecks + boundedWaitChecks + paneReachingRequestChecks + delegationIdChecks + reviewedAskDraftChecks + deliveryFocusChecks + processExitChecks + paneShortcutChecks + approvedCommandTerminalChecks + layoutLeafChecks + workspaceRestoreChecks + commandRunArgvEditorChecks + contextSendRecoveryChecks + statusSnapshotChecks + brokerRevisionChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
+let allChecks = (voiceChecks + containerPaneChecks + checks + reviewRegressionChecks + repositoryReviewChecks + approvalHandlingChecks + folderListChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + worktreeBoardChecks + worktreeRepositoryChecks + emptyWorkspaceChecks + relayTicketChecks + protocolDriftChecks + auxiliaryWindowChecks + helpAuditChecks + terminalTypeChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + askCorrelationChecks + gitReadBoundaryChecks + codexTOMLChecks + relayTextLimitChecks + boundedWaitChecks + paneReachingRequestChecks + delegationIdChecks + reviewedAskDraftChecks + deliveryFocusChecks + processExitChecks + paneShortcutChecks + approvedCommandTerminalChecks + layoutLeafChecks + workspaceRestoreChecks + commandRunArgvEditorChecks + contextSendRecoveryChecks + transportLivenessChecks + statusSnapshotChecks + brokerRevisionChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
     onlyFilter.map { name.lowercased().contains($0) } ?? true
 }
 var skippedCount = 0
