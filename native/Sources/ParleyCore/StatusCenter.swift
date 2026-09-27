@@ -171,6 +171,48 @@ public struct StatusCenterSnapshot: Equatable, Sendable {
     }
 }
 
+/// Status Center's body reads its snapshot about twenty times and once more
+/// per row, and each read sorted every handoff and timeline event: with
+/// 250–500 retained handoffs, 20–40 ms of main-thread work per publish
+/// (review of 22 September 2026, 02e8932f). The projection is a pure function
+/// of its inputs, so one snapshot per scope is kept for the current input
+/// generation, which the owner bumps whenever any input changes; a new
+/// generation drops every scope.
+public struct StatusSnapshotCache: Sendable {
+    public struct Scope: Hashable, Sendable {
+        public let workspaceID: String?
+        public let includeDismissed: Bool
+
+        public init(workspaceID: String?, includeDismissed: Bool) {
+            self.workspaceID = workspaceID
+            self.includeDismissed = includeDismissed
+        }
+    }
+
+    private var generation: Int?
+    private var byScope: [Scope: StatusCenterSnapshot] = [:]
+    /// Projections computed so far (diagnostics and checks).
+    public private(set) var computeCount = 0
+
+    public init() {}
+
+    public mutating func snapshot(
+        generation: Int,
+        scope: Scope,
+        compute: () -> StatusCenterSnapshot
+    ) -> StatusCenterSnapshot {
+        if self.generation != generation {
+            self.generation = generation
+            byScope.removeAll(keepingCapacity: true)
+        }
+        if let cached = byScope[scope] { return cached }
+        let computed = compute()
+        computeCount += 1
+        byScope[scope] = computed
+        return computed
+    }
+}
+
 /// Local presentation preferences may hide routine completed records, but
 /// never live work, failures, or a result the person has not viewed. The
 /// durable handoff journal is untouched.
