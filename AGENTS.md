@@ -243,8 +243,18 @@ control socket, but its one-second tick first asks the in-process broker for
 `stateRevision()`, which every mutation of what the tick reads advances
 (`noteChangeLocked` at each broadcast site plus read marks, busy drafts and
 activity); an unchanged revision skips the five round trips, and
-`RelayPollPolicy` forces a fetch every fifteen ticks as a safety net. The
-agent file transport polls each endpoint inbox every 50 ms while requests
+`RelayPollPolicy` forces a fetch every fifteen ticks as a safety net.
+Status Center's two-second history fetch (500 handoffs and 500 activity
+records) takes the same gate, recording a revision only for history it
+applied and forgetting it wherever the tick forgets its own (a broker built
+by core recovery counts from zero again). Its snapshot is cached per scope (workspace, dismissed shown) and
+`statusInputGeneration` (`StatusSnapshotCache`), because the body reads it
+about twenty times per render and once more per row, and each read used to
+sort every handoff and timeline event (02e8932f, 26 September 2026). Every
+value `AppModel.statusSnapshot` passes to the projection must bump that
+generation in its `didSet`, or Status Center shows stale work;
+`StatusSnapshotChecks` reads AppModel's source and fails on an input that
+does not. The agent file transport polls each endpoint inbox every 50 ms while requests
 are flowing and backs off to 250 ms after ten quiet ticks
 (`TransportPollSchedule`), with a vnode watcher per inbox that wakes it at
 once on a write, so an idle app neither scans inboxes twenty times a second

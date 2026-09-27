@@ -195,7 +195,7 @@ struct PaletteCommand: Identifiable, Sendable {
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var panes: [WorkbenchPane] = [] {
-        didSet { attentionInputGeneration &+= 1; voiceController?.reconcile(panes: panes) }
+        didSet { attentionInputGeneration &+= 1; statusInputGeneration &+= 1; voiceController?.reconcile(panes: panes) }
     }
     @Published private(set) var workspaces: [WorkbenchWorkspace] = []
     @Published private(set) var commandRuns: [ReviewedCommandRun] = []
@@ -217,7 +217,7 @@ final class AppModel: ObservableObject {
     }
     @Published private(set) var consultations: [RelayConsultation] = []
     @Published private(set) var handoffs: [RelayHandoff] = [] {
-        didSet { attentionInputGeneration &+= 1 }
+        didSet { attentionInputGeneration &+= 1; statusInputGeneration &+= 1 }
     }
     @Published private(set) var unreadHandoffs: [RelayHandoff] = [] {
         didSet { attentionInputGeneration &+= 1 }
@@ -229,9 +229,11 @@ final class AppModel: ObservableObject {
     var latestKnownHandoffs: [RelayHandoff] { ReviewedAskHistory.newestPerHandoff(statusHandoffs, handoffs) }
 
     @Published private(set) var statusHandoffs: [RelayHandoff] = [] {
-        didSet { attentionInputGeneration &+= 1 }
+        didSet { attentionInputGeneration &+= 1; statusInputGeneration &+= 1 }
     }
-    @Published private(set) var statusActivityEvents: [RelayActivityEvent] = []
+    @Published private(set) var statusActivityEvents: [RelayActivityEvent] = [] {
+        didSet { statusInputGeneration &+= 1 }
+    }
     @Published private(set) var reviewedBusyDrafts: [ReviewedBusyDraft] = []
     @Published private(set) var controller: WorkbenchController?
     @Published private(set) var recentFolders: [String] = []
@@ -259,7 +261,9 @@ final class AppModel: ObservableObject {
     /// revision changes when the capture lands, and a pack sent now would
     /// miss the source being added.
     var contextPackCaptureRunning: Bool { contextCaptureInFlight || contextCommandCapturing }
-    @Published private(set) var coreAvailable = false
+    @Published private(set) var coreAvailable = false {
+        didSet { statusInputGeneration &+= 1 }
+    }
     /// Whether the peer-verified ticket socket is listening; the launch
     /// review's attestation line reads this at review time.
     var ticketSocketListening: Bool { residentCore?.ticketServer.isListening ?? false }
@@ -268,7 +272,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var historyPersistenceError: String?
     @Published private(set) var terminalError: String?
     @Published private(set) var notificationWorkspaceNames: Set<String> = []
-    @Published private(set) var dismissedHandoffIDs: Set<String> = []
+    @Published private(set) var dismissedHandoffIDs: Set<String> = [] {
+        didSet { statusInputGeneration &+= 1 }
+    }
     @Published private(set) var runtimeReadiness: RuntimeReadinessSnapshot?
     @Published private(set) var runtimeReadinessChecking = false
     @Published private(set) var vendorCompatibility: VendorCompatibilitySnapshot?
@@ -408,6 +414,10 @@ final class AppModel: ObservableObject {
     private var relayTicksSinceFetch = 0
     private var relayRefreshInFlight = false
     private var statusHistoryRefreshInFlight = false
+    /// The same gate for Status Center's two-second history fetch (500
+    /// handoffs and 500 activity records): unchanged broker state skips it.
+    private var lastAppliedStatusRevision: UInt64?
+    private var statusTicksSinceFetch = 0
     /// Bumped only when fetched history actually changed the model, so views
     /// can reconcile selection against the fetched state without idle publishes.
     @Published private(set) var statusHistoryRevision = 0
@@ -430,6 +440,11 @@ final class AppModel: ObservableObject {
     /// cache below is keyed on it so one sidebar pass shares one projection.
     private var attentionInputGeneration = 0
     private var attentionCache = PaneAttentionCache()
+    /// Bumped whenever any input of Status Center's snapshot changes; the
+    /// snapshot cache below is keyed on it, so a render projects each scope
+    /// once however many times the view reads it.
+    private var statusInputGeneration = 0
+    private var statusSnapshotCache = StatusSnapshotCache()
     private var paneStatePublishScheduled = false
     private var quickRelayTargetHistory = QuickRelayTargetHistory()
     private var attentionCycleCursorID: String?
@@ -3808,7 +3823,10 @@ final class AppModel: ObservableObject {
         if includingRelay {
             refreshGate.invalidate()
             // A direct mutation or explicit refresh: the next tick must fetch.
+            // So must the status history fetch; a new broker (core recovery)
+            // also counts its revision from zero again.
             lastAppliedRelayRevision = nil
+            lastAppliedStatusRevision = nil
         }
         refreshCommandRuns()
         refreshTeamSessions()
@@ -4031,6 +4049,13 @@ final class AppModel: ObservableObject {
         let persistence = residentCore?.historyPersistenceError
         if historyPersistenceError != persistence { historyPersistenceError = persistence }
         guard let relayClient, !statusHistoryRefreshInFlight else { return }
+        // Handoffs, activity and retention all advance the broker's revision;
+        // `RelayPollPolicy` still fetches every fifteenth tick as a safety net.
+        let revision = residentCore?.broker.stateRevision()
+        if let revision, !RelayPollPolicy.shouldFetch(revision: revision, lastApplied: lastAppliedStatusRevision, ticksSinceFetch: statusTicksSinceFetch) {
+            statusTicksSinceFetch += 1
+            return
+        }
         statusHistoryRefreshInFlight = true
         let token = refreshGate.token()
         let client = relayClient
@@ -4045,7 +4070,12 @@ final class AppModel: ObservableObject {
                 guard let self else { return }
                 self.statusHistoryRefreshInFlight = false
                 guard case let .success(fetched) = result else { return }
-                _ = self.applyFetchedStatusHistory(fetched, token: token)
+                // Only history that was applied counts: a stale token was
+                // discarded, so the next tick must fetch again.
+                if self.applyFetchedStatusHistory(fetched, token: token) {
+                    self.lastAppliedStatusRevision = revision
+                    self.statusTicksSinceFetch = 0
+                }
             }
         }
     }
@@ -4258,15 +4288,20 @@ final class AppModel: ObservableObject {
     }
 
     func statusSnapshot(workspaceID: String?, includeDismissed: Bool = false) -> StatusCenterSnapshot {
-        StatusCenterProjection.snapshot(
-            panes: panes,
-            handoffs: latestKnownHandoffs,
-            activityEvents: statusActivityEvents,
-            workspaceID: workspaceID,
-            coreAvailable: coreAvailable,
-            dismissedHandoffIDs: dismissedHandoffIDs,
-            includeDismissed: includeDismissed
-        )
+        statusSnapshotCache.snapshot(
+            generation: statusInputGeneration,
+            scope: .init(workspaceID: workspaceID, includeDismissed: includeDismissed)
+        ) {
+            StatusCenterProjection.snapshot(
+                panes: panes,
+                handoffs: latestKnownHandoffs,
+                activityEvents: statusActivityEvents,
+                workspaceID: workspaceID,
+                coreAvailable: coreAvailable,
+                dismissedHandoffIDs: dismissedHandoffIDs,
+                includeDismissed: includeDismissed
+            )
+        }
     }
 
 
