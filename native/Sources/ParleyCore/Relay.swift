@@ -1787,6 +1787,8 @@ public final class RelayBroker: @unchecked Sendable {
             updated.gitFactsAtDelegation = gitAtDelegation
             handoffRecords[handoff.id] = updated
             handoffJournal?.record(updated)
+            // A reader may have fetched the record during the capture.
+            noteChangeLocked()
         }
         consultationCondition.unlock()
 
@@ -3807,6 +3809,7 @@ public final class RelayBroker: @unchecked Sendable {
                 origin: .human,
                 allowsSafeRetry: true
             )
+            noteChangeLocked()
             consultationCondition.unlock()
             return RelayTextResponse(status: 409, text: "The original source or target pane is no longer available.")
         }
