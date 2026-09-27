@@ -85,6 +85,11 @@ public final class RelayFileTransport: @unchecked Sendable {
     /// Uncollected replies already older than `staleResponseAge` by their
     /// file time, by first sighting in awake time.
     private var staleSince: [String: UInt64] = [:]
+    /// A shim's hidden inbox scratch (a staged body, a wake entry) by path:
+    /// its modification time when last seen, and since when (awake time)
+    /// it has not changed. The tick never lists hidden entries, so this is
+    /// what removes the scratch of a shim that was killed.
+    private var scratchSince: [String: (modified: Date, since: UInt64)] = [:]
     public static let pendingFollowUpWindow: TimeInterval = 0.25
     public let abandonedRequestAge: TimeInterval
     /// Requests that can block for minutes. They count against
@@ -251,6 +256,7 @@ public final class RelayFileTransport: @unchecked Sendable {
             pruneRetiredEndpoints()
             writeHeartbeats()
             removeStaleResponses(now: now, uptime: uptime)
+            removeDeadShimScratch(uptime: uptime)
         }
         var activity = false
         // A request directory that exists but has no `ready` marker yet: the
@@ -647,6 +653,31 @@ public final class RelayFileTransport: @unchecked Sendable {
         lock.withLock { staleSince = stillStale }
     }
 
+    /// Scratch that has not changed for `staleResponseAge` of awake time
+    /// belongs to a shim that is gone: a producer still writing a body keeps
+    /// changing it, and a wake entry lasts microseconds.
+    private func removeDeadShimScratch(uptime: UInt64) {
+        let age = UInt64(staleResponseAge * 1_000_000_000)
+        var seen: [String: (modified: Date, since: UInt64)] = [:]
+        let previous = lock.withLock { scratchSince }
+        for endpoint in endpointDirectories() {
+            let inbox = endpoint.appendingPathComponent("inbox", isDirectory: true)
+            guard let entries = try? fileManager.contentsOfDirectory(at: inbox, includingPropertiesForKeys: nil, options: []) else { continue }
+            for entry in entries {
+                let name = entry.lastPathComponent
+                guard name.hasPrefix(".body-") || name.hasPrefix(".wake-"),
+                      let modified = (try? fileManager.attributesOfItem(atPath: entry.path))?[.modificationDate] as? Date else { continue }
+                let since = previous[entry.path].flatMap { $0.modified == modified ? $0.since : nil } ?? uptime
+                if uptime &- since >= age {
+                    try? fileManager.removeItem(at: entry)
+                } else {
+                    seen[entry.path] = (modified, since)
+                }
+            }
+        }
+        lock.withLock { scratchSince = seen }
+    }
+
     private func responseDirectory(requestID: String, endpoint: URL) throws -> URL {
         let outbox = endpoint.appendingPathComponent("outbox", isDirectory: true)
         let directory = outbox.appendingPathComponent(requestID, isDirectory: true)
@@ -704,8 +735,9 @@ public final class RelayFileTransport: @unchecked Sendable {
     /// Entry by entry: something a pane left that cannot be removed (a
     /// container can write into its own endpoint) must not stop the core.
     /// Hidden inbox entries are a live shim's scratch (a body it is still
-    /// reading, a wake entry) and are left to it; the whole endpoint goes
-    /// when its pane restarts.
+    /// reading, a wake entry) and are left to it, or to the scratch sweep. A
+    /// finished reply (`ready` present) is kept for the shim still waiting on
+    /// it; the stale-reply sweep removes it if nobody collects it.
     private func discardStaleExchangeFiles() {
         for endpoint in endpointDirectories() {
             for name in ["inbox", "processing", "outbox"] {
@@ -715,7 +747,9 @@ public final class RelayFileTransport: @unchecked Sendable {
                     includingPropertiesForKeys: nil,
                     options: []
                 )) ?? []
-                for entry in entries where !(name == "inbox" && entry.lastPathComponent.hasPrefix(".")) {
+                for entry in entries {
+                    if name == "inbox", entry.lastPathComponent.hasPrefix(".") { continue }
+                    if name == "outbox", fileManager.fileExists(atPath: entry.appendingPathComponent("ready").path) { continue }
                     try? fileManager.removeItem(at: entry)
                 }
             }

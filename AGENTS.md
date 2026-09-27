@@ -317,9 +317,22 @@ stdin into a hidden `.body-<id>` in its inbox before the request folder
 exists, and copies it in once the request is written (`mv` is not in the
 container utility contract): a producer slower than the 30-second
 abandonment age used to lose the folder it was still filling (review of 22
-September, db7c3b52). A refusal removes the staged body, so "not running"
-still means nothing was sent, and `start()` leaves hidden inbox entries,
-which are a live shim's scratch, to that shim.
+September, db7c3b52). Liveness is checked before stdin is read (with no
+broker, an endless producer used to be read forever) and, when the transport
+instance has changed or gone meanwhile, again after it. A heartbeat with no
+readable instance is not yet a running broker: the instance is the baseline
+a restart is noticed by. A request still in the inbox when a new instance
+appears was written after that transport discarded the old ones, so the shim
+keeps waiting; otherwise "restarted before replying" says delivery is
+unknown, because an old worker may have finished first. Every write before
+`ready` is checked, and a refusal removes the staged body, so "not running"
+and "could not write the request" still mean nothing was sent. `start()`
+leaves hidden inbox entries, a live shim's scratch, to that shim, and keeps
+finished replies (`ready` present) for the shim still waiting on them. Once a
+second the transport removes scratch whose modification time has not
+changed for the reply age in awake time: a producer still writing keeps
+changing its staged body, and a killed shim's body and wake entries are
+otherwise never listed by the tick.
 
 Every start or restart rotates a pane's capability and prepares a new
 endpoint, and every stop or close forgets it. Until 26 September 2026

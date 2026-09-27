@@ -552,7 +552,140 @@ func checkSlowProducerKeepsItsRequest() throws {
     try livenessExpect(leftovers.isEmpty, "the relay left entries in the inbox: \(leftovers)")
 }
 
+/// Runs the fixture's shim with `producer` piped into it.
+private func runShim(_ fixture: LivenessFixture, _ arguments: [String], producer: String, timeout: TimeInterval = 20) throws -> (output: CommandOutput, seconds: Double) {
+    let environment = ProcessInfo.processInfo.environment.merging(["PARLEY_RELAY_TOKEN": fixture.token]) { _, supplied in supplied }
+    let started = DispatchTime.now().uptimeNanoseconds
+    let output = try ProcessCommandRunner(timeout: timeout).run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: ["-c", "\(producer) | /bin/sh \"$0\" \"$@\"", fixture.shim.path] + arguments,
+        environment: environment, input: nil)
+    return (output, Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000)
+}
+
+/// The fresh-context review of the staged body: reading stdin first meant a
+/// shim with no running broker read an endless producer forever. Liveness is
+/// checked before stdin is read, and again after.
+func checkShimReadsStdinOnlyForARunningBroker() throws {
+    let fixture = try LivenessFixture("endless")
+    defer { fixture.cleanup() }
+    // The endpoint remains after Parley quits; the heartbeat does not.
+    let (output, seconds) = try runShim(fixture, ["relay", "target"], producer: "/usr/bin/yes")
+    try livenessExpect(output.status == 2 && output.stderrText.contains("the Parley relay broker is not running"),
+                       "an endless producer with no broker was not refused: status \(output.status), stderr \(output.stderrText.prefix(300))")
+    try livenessExpect(seconds < 12, "refusing took \(seconds) s")
+    let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: fixture.inbox.path)) ?? []
+    try livenessExpect(leftovers.isEmpty, "the refusal left entries in the inbox: \(leftovers)")
+}
+
+/// A heartbeat whose instance cannot be read gives no baseline to notice a
+/// restart by; sending then could hang the way 0b58a71e did.
+func checkShimSendsNothingWithoutAnInstance() throws {
+    let fixture = try LivenessFixture("noinstance")
+    defer { fixture.cleanup() }
+    try fixture.writeHeartbeat(age: 0, instance: "")
+    let (output, _) = try fixture.run(["whoami"]).wait(15)
+    try livenessExpect(output.status == 2 && output.stderrText.contains("the Parley relay broker is not running"),
+                       "a heartbeat with no instance was taken as a running broker: status \(output.status), stderr \(output.stderrText)")
+    try livenessExpect(fixture.readyRequests().isEmpty, "a request was sent with no instance to watch")
+}
+
+/// A request still in the inbox when the new instance appears was written
+/// after that transport's start discarded the old ones, so it will be
+/// processed: the shim keeps waiting rather than reporting a restart.
+func checkShimKeepsWaitingForARequestTheRestartKept() throws {
+    let fixture = try LivenessFixture("restart-kept")
+    defer { fixture.cleanup() }
+    try fixture.writeHeartbeat(age: 0, instance: "instance-before")
+    let run = fixture.run(["status"])
+    var request: URL?
+    try livenessExpect(livenessEventually(within: 3) { request = fixture.readyRequests().first; return request != nil },
+                       "the shim never sent its request")
+    final class Beating: @unchecked Sendable { let lock = NSLock(); var on = true }
+    let beating = Beating()
+    Thread {
+        while beating.lock.withLock({ beating.on }) {
+            try? fixture.writeHeartbeat(age: 0, instance: "instance-after")
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+    }.start()
+    defer { beating.lock.withLock { beating.on = false } }
+    Thread.sleep(forTimeInterval: 2.5)
+    try livenessExpect(!run.finished, "the shim reported a restart although its request was still waiting to be processed: \(run.stderr)")
+    try fixture.reply(to: request!, status: 200, body: "[]")
+    let (output, _) = try run.wait(10)
+    try livenessExpect(output.status == 0 && output.stdoutText == "[]", "the shim did not collect its reply: status \(output.status), stderr \(output.stderrText)")
+}
+
+/// A shim killed while its producer runs, or its wake entry, leaves hidden
+/// scratch in its inbox, which the tick never lists. It is removed once it
+/// has not changed for the reply age in awake time; a body still growing is not.
+func checkTransportSweepsDeadShimScratch() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-scratch-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let transportDirectory = directory.appendingPathComponent("agent-transport", isDirectory: true)
+    let endpoint = try RelayFileTransport.prepareEndpoint(runtimeDirectory: transportDirectory, paneToken: try credentials.token(for: "pane"))
+    let inbox = endpoint.appendingPathComponent("inbox")
+    let broker = RelayBroker(credentials: credentials, panes: { [] }, paste: { _, _ in }, submit: { _, _ in })
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory, staleResponseAge: 1)
+    try transport.start()
+    defer { transport.stop() }
+    let dead = inbox.appendingPathComponent(".body-\(UUID().uuidString.lowercased())")
+    let growing = inbox.appendingPathComponent(".body-\(UUID().uuidString.lowercased())")
+    let wake = inbox.appendingPathComponent(".wake-99999")
+    try Data("abandoned".utf8).write(to: dead)
+    try Data("a".utf8).write(to: growing)
+    try FileManager.default.createDirectory(at: wake, withIntermediateDirectories: false)
+    let handle = try FileHandle(forWritingTo: growing)
+    defer { try? handle.close() }
+    var gone = false
+    let deadline = DispatchTime.now().uptimeNanoseconds + 6_000_000_000
+    while DispatchTime.now().uptimeNanoseconds < deadline {
+        try handle.seekToEnd(); try handle.write(contentsOf: Data("a".utf8))
+        if !FileManager.default.fileExists(atPath: dead.path) && !FileManager.default.fileExists(atPath: wake.path) { gone = true; break }
+        Thread.sleep(forTimeInterval: 0.3)
+    }
+    try livenessExpect(gone, "a dead shim's staged body or wake entry was never removed")
+    try livenessExpect(FileManager.default.fileExists(atPath: growing.path), "a body still being written was removed")
+}
+
+/// Core recovery restarts the transport while shims wait. A reply the old
+/// transport finished belongs to a live shim, which collects it; only
+/// half-finished work is discarded.
+func checkRestartKeepsFinishedReplies() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-keepreply-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let transportDirectory = directory.appendingPathComponent("agent-transport", isDirectory: true)
+    let endpoint = try RelayFileTransport.prepareEndpoint(runtimeDirectory: transportDirectory, paneToken: try credentials.token(for: "pane"))
+    let broker = RelayBroker(credentials: credentials, panes: { [] }, paste: { _, _ in }, submit: { _, _ in })
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory)
+    try transport.start()
+    transport.stop()
+    let outbox = endpoint.appendingPathComponent("outbox")
+    func reply(_ files: [String]) throws -> URL {
+        let folder = outbox.appendingPathComponent(UUID().uuidString.lowercased())
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        for name in files { try Data("x".utf8).write(to: folder.appendingPathComponent(name)) }
+        return folder
+    }
+    let finished = try reply(["status", "body", "ready"])
+    let unfinished = try reply(["accepted", "handoff-id"])
+    try transport.start()
+    defer { transport.stop() }
+    try livenessExpect(FileManager.default.fileExists(atPath: finished.path), "a restart discarded a finished reply a shim may still collect")
+    try livenessExpect(!FileManager.default.fileExists(atPath: unfinished.path), "a restart kept an unfinished reply")
+}
+
 @MainActor let transportLivenessChecks: [(String, () throws -> Void)] = [
+    ("the shim reads stdin only for a running broker", checkShimReadsStdinOnlyForARunningBroker),
+    ("the shim sends nothing without an instance to watch", checkShimSendsNothingWithoutAnInstance),
+    ("the shim keeps waiting for a request the restart kept", checkShimKeepsWaitingForARequestTheRestartKept),
+    ("the transport sweeps a dead shim's scratch", checkTransportSweepsDeadShimScratch),
+    ("a transport restart keeps finished replies", checkRestartKeepsFinishedReplies),
     ("a slow producer keeps its request", checkSlowProducerKeepsItsRequest),
     ("the shim waits out a stale heartbeat before sending", checkShimWaitsOutAStaleHeartbeatBeforeSending),
     ("the shim waits out a stale heartbeat while waiting for a reply", checkShimWaitsOutAStaleHeartbeatWhileWaiting),
