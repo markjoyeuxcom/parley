@@ -44,58 +44,189 @@ func checkStatusSnapshotIsComputedOncePerGeneration() throws {
     try snapshotExpect(read == project("@one", false) && cache.computeCount == 5, "a workspace scope was not projected for itself")
 }
 
+/// A small reader for the parts of AppModel's source the wiring check needs.
+/// Comments are removed first (string literals are kept intact), and every
+/// body is taken by balancing its delimiters, so formatting, a `willSet`
+/// beside the `didSet` or a comment naming a property does not change the
+/// verdict (Agy's review of MR !111).
+private struct SwiftSourceReader {
+    let text: String
+
+    init(_ source: String) {
+        var output = ""
+        var index = source.startIndex
+        var inString = false
+        var multiline = false
+        func starts(_ token: String, at position: String.Index) -> Bool { source[position...].hasPrefix(token) }
+        while index < source.endIndex {
+            let character = source[index]
+            if inString {
+                if multiline, starts("\"\"\"", at: index) {
+                    output += "\"\"\""; index = source.index(index, offsetBy: 3); inString = false; continue
+                }
+                if character == "\\" {
+                    output.append(character); index = source.index(after: index)
+                    if index < source.endIndex { output.append(source[index]); index = source.index(after: index) }
+                    continue
+                }
+                if !multiline, character == "\"" { inString = false }
+                output.append(character); index = source.index(after: index); continue
+            }
+            if starts("//", at: index) {
+                while index < source.endIndex, source[index] != "\n" { index = source.index(after: index) }
+                continue
+            }
+            if starts("/*", at: index) {
+                guard let close = source.range(of: "*/", range: index..<source.endIndex) else { break }
+                index = close.upperBound; continue
+            }
+            if starts("\"\"\"", at: index) {
+                output += "\"\"\""; index = source.index(index, offsetBy: 3); inString = true; multiline = true; continue
+            }
+            if character == "\"" { inString = true; multiline = false }
+            output.append(character); index = source.index(after: index)
+        }
+        text = output
+    }
+
+    /// The text between the delimiter at `open` and its matching close.
+    func balanced(at open: String.Index) -> Substring? {
+        let pairs: [Character: Character] = ["{": "}", "(": ")", "[": "]"]
+        guard let close = pairs[text[open]] else { return nil }
+        var depth = 0
+        var index = open
+        while index < text.endIndex {
+            if text[index] == text[open] { depth += 1 } else if text[index] == close {
+                depth -= 1
+                if depth == 0 { return text[text.index(after: open)..<index] }
+            }
+            index = text.index(after: index)
+        }
+        return nil
+    }
+
+    /// The bodies of `final class AppModel` and every `extension AppModel`.
+    func memberRegions(of type: String) -> [Substring] {
+        let pattern = try! NSRegularExpression(pattern: "(?:final class|extension) \(type)\\b[^{]*\\{")
+        return pattern.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { match in
+            Range(match.range, in: text).flatMap { balanced(at: text.index(before: $0.upperBound)) }
+        }
+    }
+
+    /// Top-level comma-separated parts of a delimited list.
+    static func topLevelParts(_ list: Substring) -> [Substring] {
+        var parts: [Substring] = []
+        var depth = 0
+        var start = list.startIndex
+        for index in list.indices {
+            switch list[index] {
+            case "(", "[", "{": depth += 1
+            case ")", "]", "}": depth -= 1
+            case "," where depth == 0:
+                parts.append(list[start..<index]); start = list.index(after: index)
+            default: break
+            }
+        }
+        parts.append(list[start...])
+        return parts
+    }
+}
+
 /// The cache is only as good as its generation: every value AppModel passes
 /// into the projection must bump `statusInputGeneration` when it changes, or
 /// Status Center shows stale work. This reads AppModel's source so an input
-/// added to `statusSnapshot` without a bump fails here.
+/// added to `statusSnapshot` without a bump fails here, following computed
+/// properties to the stored ones they read.
 func checkStatusSnapshotInputsBumpTheGeneration() throws {
     let appModel = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("ParleyNative").appendingPathComponent("AppModel.swift")
-    let source = try String(contentsOf: appModel, encoding: .utf8)
-    guard let start = source.range(of: "func statusSnapshot(workspaceID: String?"),
-          let end = source.range(of: "\n    }\n", range: start.upperBound..<source.endIndex) else {
-        throw NSError(domain: "StatusSnapshot", code: 2, userInfo: [NSLocalizedDescriptionKey: "AppModel.statusSnapshot was not found"])
-    }
-    let body = String(source[start.upperBound..<end.lowerBound])
+    let reader = SwiftSourceReader(try String(contentsOf: appModel, encoding: .utf8))
+    let text = reader.text
+    let regions = reader.memberRegions(of: "AppModel")
+    try snapshotExpect(!regions.isEmpty, "AppModel's class body was not found")
+    func fail(_ message: String) -> NSError { NSError(domain: "StatusSnapshot", code: 2, userInfo: [NSLocalizedDescriptionKey: message]) }
+
+    guard let function = text.range(of: "func statusSnapshot(workspaceID: String?"),
+          let open = text[function.upperBound...].firstIndex(of: "{"),
+          let body = reader.balanced(at: open) else { throw fail("AppModel.statusSnapshot was not found") }
     try snapshotExpect(body.contains("statusSnapshotCache.snapshot(") && body.contains("generation: statusInputGeneration"),
                        "AppModel.statusSnapshot does not read through the generation-keyed cache")
-    // Every model value the projection call receives, as `label: value`.
-    // The call's arguments are plain names, so they end at its first parenthesis.
-    let projection = (body.components(separatedBy: "StatusCenterProjection.snapshot(").dropFirst().first ?? "").prefix { $0 != ")" }
-    let arguments = projection.components(separatedBy: ",").compactMap { part -> String? in
-        let pieces = part.split(separator: ":", maxSplits: 1)
-        guard pieces.count == 2 else { return nil }
-        return pieces[1].trimmingCharacters(in: CharacterSet(charactersIn: " \n)"))
+    guard let call = body.range(of: "StatusCenterProjection.snapshot("),
+          let arguments = reader.balanced(at: body.index(before: call.upperBound)) else {
+        throw fail("AppModel.statusSnapshot does not call StatusCenterProjection.snapshot")
+    }
+
+    /// A member of AppModel (class body or extension), at member level only.
+    func member(_ name: String) -> (region: Substring, start: String.Index)? {
+        let declaration = try! NSRegularExpression(pattern: "(?m)^    (?:@\\w+(?:\\([^)\\n]*\\))?\\s+|(?:private|fileprivate|internal|public|open)(?:\\(set\\))?\\s+|static\\s+|lazy\\s+|nonisolated\\s+)*var \(NSRegularExpression.escapedPattern(for: name))\\b")
+        for region in regions {
+            let string = String(region)
+            if let match = declaration.firstMatch(in: string, range: NSRange(string.startIndex..., in: string)),
+               let range = Range(match.range, in: string) {
+                let offset = string.distance(from: string.startIndex, to: range.upperBound)
+                return (region, region.index(region.startIndex, offsetBy: offset))
+            }
+        }
+        return nil
+    }
+    /// The accessor or observer block of a declaration (the first `{` on its
+    /// line, or one that starts the next line) and whether it has an initial
+    /// value. Swift types contain no braces.
+    func declaration(after start: String.Index, in region: Substring) -> (block: Substring?, initialValue: Bool) {
+        guard let lineEnd = region[start...].firstIndex(of: "\n") else { return (nil, false) }
+        let line = region[start..<lineEnd]
+        if let open = line.firstIndex(of: "{") {
+            return (reader.balanced(at: open), line[..<open].contains("="))
+        }
+        let next = region[region.index(after: lineEnd)...].drop { $0 == " " || $0 == "\n" }
+        return (next.first == "{" ? reader.balanced(at: next.startIndex) : nil, line.contains("="))
+    }
+    let identifier = try NSRegularExpression(pattern: "(?<![.\\w])[a-z][A-Za-z0-9_]*\\b")
+    func identifiers(in expression: Substring) -> [String] {
+        let string = String(expression)
+        return identifier.matches(in: string, range: NSRange(string.startIndex..., in: string)).compactMap {
+            Range($0.range, in: string).map { String(string[$0]) }
+        }
     }
     // Values that are this call's own parameters, not model state.
     let parameters: Set<String> = ["workspaceID", "includeDismissed"]
-    // A computed input (`var name: Type { … }` with no stored value) stands
-    // for the stored properties its body reads, read from its body so a later
-    // edit to it is followed too.
-    func storedInputs(of name: String) throws -> [String] {
-        let computed = try NSRegularExpression(pattern: "var \(NSRegularExpression.escapedPattern(for: name)): [^={\n]+\\{([^\n]*)\\}")
-        guard let match = computed.firstMatch(in: source, range: NSRange(source.startIndex..., in: source)),
-              let bodyRange = Range(match.range(at: 1), in: source) else { return [name] }
-        let identifiers = try NSRegularExpression(pattern: "\\b[a-z][A-Za-z0-9]*\\b")
-        let text = String(source[bodyRange])
-        return identifiers.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap { Range($0.range, in: text).map { String(text[$0]) } }
-            .filter { source.contains("private(set) var \($0):") || source.contains("private(set) var \($0) =") }
+    var stored: [String: Substring?] = [:]
+    var visited: Set<String> = []
+    func resolve(_ name: String) {
+        guard !parameters.contains(name), visited.insert(name).inserted, let (region, start) = member(name) else { return }
+        let (accessors, initialValue) = declaration(after: start, in: region)
+        if let accessors, !initialValue, !accessors.contains("didSet"), !accessors.contains("willSet") {
+            // Computed: it stands for whatever it reads.
+            for inner in identifiers(in: accessors) { resolve(inner) }
+        } else {
+            stored[name] = accessors
+        }
     }
-    let inputs = try arguments.filter { !parameters.contains($0) }.flatMap(storedInputs)
-    try snapshotExpect(inputs.count >= 6 && inputs.contains("statusHandoffs") && inputs.contains("handoffs"),
-                       "could not read the projection's inputs from AppModel.statusSnapshot: \(arguments) → \(inputs)")
-    for input in inputs {
-        let declaration = try NSRegularExpression(pattern: "var \(NSRegularExpression.escapedPattern(for: input))\\b[^\\n]*\\{\\s*\\n?\\s*didSet \\{[^}]*statusInputGeneration &\\+= 1")
-        try snapshotExpect(declaration.firstMatch(in: source, range: NSRange(source.startIndex..., in: source)) != nil,
-                           "AppModel.\(input) feeds Status Center's snapshot but its didSet does not bump statusInputGeneration")
+    let parts = SwiftSourceReader.topLevelParts(arguments)
+    for part in parts {
+        guard let colon = part.firstIndex(of: ":") else { throw fail("an unlabelled projection argument: \(part)") }
+        for name in identifiers(in: part[part.index(after: colon)...]) { resolve(name) }
+    }
+    try snapshotExpect(stored.count >= 6 && stored["statusHandoffs"] != nil && stored["handoffs"] != nil,
+                       "could not read the projection's inputs from AppModel.statusSnapshot: \(stored.keys.sorted())")
+    let bump = try NSRegularExpression(pattern: "statusInputGeneration\\s*&\\+=\\s*1")
+    for (name, accessors) in stored.sorted(by: { $0.key < $1.key }) {
+        guard let accessors, let didSet = accessors.range(of: "didSet"),
+              let open = accessors[didSet.upperBound...].firstIndex(of: "{"),
+              let observer = reader.balanced(at: open) else {
+            throw fail("AppModel.\(name) feeds Status Center's snapshot but has no didSet")
+        }
+        let string = String(observer)
+        try snapshotExpect(bump.firstMatch(in: string, range: NSRange(string.startIndex..., in: string)) != nil,
+                           "AppModel.\(name) feeds Status Center's snapshot but its didSet does not bump statusInputGeneration")
     }
 
     // The history fetch's revision gate: a new broker (core recovery) counts
     // its revision from zero again, so wherever the relay tick forgets its
-    // revision the status fetch must forget its own.
-    let relayResets = source.components(separatedBy: "lastAppliedRelayRevision = nil").count - 1
-    let statusResets = source.components(separatedBy: "lastAppliedStatusRevision = nil").count - 1
+    // revision the status fetch must forget its own. Counted without comments.
+    let relayResets = text.components(separatedBy: "lastAppliedRelayRevision = nil").count - 1
+    let statusResets = text.components(separatedBy: "lastAppliedStatusRevision = nil").count - 1
     try snapshotExpect(relayResets > 0 && statusResets == relayResets,
                        "the relay tick forgets its broker revision in \(relayResets) places and the status history fetch in \(statusResets)")
 }

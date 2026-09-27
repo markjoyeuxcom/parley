@@ -254,7 +254,12 @@ sort every handoff and timeline event (02e8932f, 26 September 2026). Every
 value `AppModel.statusSnapshot` passes to the projection must bump that
 generation in its `didSet`, or Status Center shows stale work;
 `StatusSnapshotChecks` reads AppModel's source and fails on an input that
-does not. The agent file transport polls each endpoint inbox every 50 ms while requests
+does not. Both gates trust the broker to advance its revision on every change
+the UI reads; two changes did not until 27 September 2026 (Agy's review of
+MR !111): a retry refused because its source or target pane had gone, which
+marks the handoff failed with target-unavailable attention, and the
+delegation-time Git facts attached in the second locked section of
+`handleDelegate`. `BrokerRevisionChecks` pins both. The agent file transport polls each endpoint inbox every 50 ms while requests
 are flowing and backs off to 250 ms after ten quiet ticks
 (`TransportPollSchedule`), with a vnode watcher per inbox that wakes it at
 once on a write, so an idle app neither scans inboxes twenty times a second
