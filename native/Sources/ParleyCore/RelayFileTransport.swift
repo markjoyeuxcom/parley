@@ -68,6 +68,11 @@ public final class RelayFileTransport: @unchecked Sendable {
     /// counting through sleep and never steps backwards. A wall-clock
     /// comparison stopped every heartbeat for as long as a clock stepped back.
     private var lastHeartbeat: UInt64?
+    /// Written as every heartbeat's content, new on every `start()`. A restart
+    /// discards the requests shims are still waiting on, and a request leaves
+    /// the filesystem while it is processed, so a shim learns its request is
+    /// gone only from the instance changing (0b58a71e).
+    private var instance = ""
     private var schedule = TransportPollSchedule()
     /// Request directories seen without their `ready` marker, by first
     /// sighting. A shim finishes writing within milliseconds; the fast
@@ -187,6 +192,7 @@ public final class RelayFileTransport: @unchecked Sendable {
     public func start() throws {
         try lock.withLock {
             guard timer == nil else { throw RelayFileTransportError.runtime("transport is already running") }
+            instance = UUID().uuidString.lowercased()
             try Self.prepareDirectory(runtimeDirectory, createParents: true, fileManager: fileManager)
             let retainedTokens = Set(try credentials.allTokens())
             for token in retainedTokens {
@@ -697,6 +703,9 @@ public final class RelayFileTransport: @unchecked Sendable {
 
     /// Entry by entry: something a pane left that cannot be removed (a
     /// container can write into its own endpoint) must not stop the core.
+    /// Hidden inbox entries are a live shim's scratch (a body it is still
+    /// reading, a wake entry) and are left to it; the whole endpoint goes
+    /// when its pane restarts.
     private func discardStaleExchangeFiles() {
         for endpoint in endpointDirectories() {
             for name in ["inbox", "processing", "outbox"] {
@@ -706,7 +715,7 @@ public final class RelayFileTransport: @unchecked Sendable {
                     includingPropertiesForKeys: nil,
                     options: []
                 )) ?? []
-                for entry in entries {
+                for entry in entries where !(name == "inbox" && entry.lastPathComponent.hasPrefix(".")) {
                     try? fileManager.removeItem(at: entry)
                 }
             }
@@ -732,10 +741,7 @@ public final class RelayFileTransport: @unchecked Sendable {
     /// container can put a directory in its place) must not stop the others'.
     private func writeHeartbeats() {
         for endpoint in endpointDirectories() {
-            try? writeProtected(
-                String(Int(clocks.wall().timeIntervalSince1970)),
-                to: heartbeat(in: endpoint)
-            )
+            try? writeProtected(instance, to: heartbeat(in: endpoint))
         }
         lastHeartbeat = clocks.monotonic()
     }

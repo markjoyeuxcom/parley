@@ -5171,6 +5171,16 @@ public enum RelayShim {
       fi
     }
 
+    # The transport instance that wrote the heartbeat, its content; empty
+    # when there is none. A restart discards the request this shim waits on,
+    # and nothing else says so: a request leaves the filesystem while it is
+    # processed. A different instance while waiting is therefore final.
+    heartbeat_instance() {
+      if [ -f "$endpoint/heartbeat" ] && [ ! -L "$endpoint/heartbeat" ]; then
+        /bin/cat "$endpoint/heartbeat" 2>/dev/null || true
+      fi
+    }
+
     # One stale reading is not a stopped broker. The Mac's wall clock moves on
     # through sleep before the transport's timer runs again, and App Nap can
     # hold that timer back, so stale readings are counted and wake the
@@ -5218,13 +5228,21 @@ public enum RelayShim {
       /bin/rmdir "$directory" 2>/dev/null || true
     }
 
+    # `post` always runs as a pipeline element, a subshell where no EXIT trap
+    # fires (in macOS sh or dash), so it calls `cleanup` itself on every path
+    # it controls. What a shim killed part-way leaves behind, the transport
+    # removes: a request with no `ready` after 30 seconds of awake time, a
+    # reply after ten minutes, and the whole endpoint when its pane restarts.
     request_dir=""
     response_dir=""
+    staged_body=""
     cleanup() {
       cleanup_directory "$request_dir"
       cleanup_directory "$response_dir"
+      case "$staged_body" in
+        "$inbox"/.body-*) /bin/rm -f "$staged_body" 2>/dev/null || true ;;
+      esac
     }
-    trap cleanup EXIT
 
     # A one-use ticket from the peer-verified ticket socket, when this pane can
     # reach it. The broker knows which panes must present one; a pane whose
@@ -5239,7 +5257,23 @@ public enum RelayShim {
     }
 
     post() {
-      if ! protected_directory "$endpoint" || ! protected_directory "$inbox" || ! protected_directory "$outbox" || ! broker_is_running; then
+      if ! protected_directory "$endpoint" || ! protected_directory "$inbox" || ! protected_directory "$outbox"; then
+        echo "the Parley relay broker is not running" >&2
+        return 2
+      fi
+
+      # The body is read before the request exists: a producer slower than
+      # the transport's abandonment age used to lose a request folder it was
+      # still filling. It waits hidden in the inbox, which the transport
+      # skips, and is copied in once the request is written; the folder then
+      # exists only for these local writes. `mv` is not in the container
+      # utility contract, so this copies rather than renames.
+      request_id="$(/usr/bin/uuidgen | /usr/bin/tr '[:upper:]' '[:lower:]')"
+      staged_body="$inbox/.body-$request_id"
+      /bin/cat > "$staged_body"
+
+      if ! broker_is_running; then
+        cleanup
         echo "the Parley relay broker is not running" >&2
         return 2
       fi
@@ -5247,11 +5281,12 @@ public enum RelayShim {
       # checked just now rather than up to five seconds ago.
       if [ "$stale_readings" -gt 0 ] \
         && { ! protected_directory "$endpoint" || ! protected_directory "$inbox" || ! protected_directory "$outbox"; }; then
+        cleanup
         echo "the Parley relay broker is not running" >&2
         return 2
       fi
 
-      request_id="$(/usr/bin/uuidgen | /usr/bin/tr '[:upper:]' '[:lower:]')"
+      sent_instance="$(heartbeat_instance)"
       request_dir="$inbox/$request_id"
       response_dir="$outbox/$request_id"
       /bin/mkdir "$request_dir"
@@ -5260,7 +5295,15 @@ public enum RelayShim {
       /usr/bin/printf '%s' "$item" > "$request_dir/item"
       /usr/bin/printf '%s' "$idempotency_key" > "$request_dir/idempotency-key"
       /usr/bin/printf '%s' "$pane_token" > "$request_dir/token"
-      /bin/cat > "$request_dir/body"
+      # Without `ready` nothing was sent, so a body that went missing (its
+      # endpoint was removed meanwhile) is still a clean refusal.
+      if ! /bin/cat "$staged_body" > "$request_dir/body" 2>/dev/null; then
+        cleanup
+        echo "the Parley relay broker is not running" >&2
+        return 2
+      fi
+      /bin/rm -f "$staged_body"
+      staged_body=""
       request_ticket
       if [ -n "$ticket" ]; then
         /usr/bin/printf '%s' "$ticket" > "$request_dir/ticket"
@@ -5304,12 +5347,10 @@ public enum RelayShim {
             # The broker's long-poll window passed with the work still open:
             # nothing to print; the caller asks again.
             cleanup
-            trap - EXIT
             return 75
           fi
           /bin/cat "$response_dir/body"
           cleanup
-          trap - EXIT
           case "$status" in
             2??) return 0 ;;
             *) return 22 ;;
@@ -5335,6 +5376,12 @@ public enum RelayShim {
             return 2
           fi
           beat="$(heartbeat_time)"
+          instance="$(heartbeat_instance)"
+          if [ -n "$sent_instance" ] && [ -n "$instance" ] && [ "$instance" != "$sent_instance" ]; then
+            cleanup
+            echo "the Parley relay broker restarted before replying" >&2
+            return 2
+          fi
           if [ "$beat" != 0 ] && [ "$beat" != "$last_beat" ]; then
             stale_readings=0
           else

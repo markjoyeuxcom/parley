@@ -287,9 +287,24 @@ in its place) cannot stop the others'. `post` runs in a pipeline subshell,
 where the script's `EXIT` trap never fires in macOS `sh` or dash, so the
 shim cleans up its own request before reporting "stopped before replying";
 a broker that comes back must not act on a request the agent was told had
-failed. Not yet handled: a transport restart discards requests whose shims
-are still waiting, and those shims then wait forever, because the request
-leaves the filesystem while it is processed and nothing marks the restart.
+failed. What a shim killed part-way leaves, the transport removes (a request
+with no `ready` after 30 seconds of awake time, a reply after ten minutes,
+the whole endpoint when its pane restarts); the script's top-level `EXIT`
+trap never did anything and is gone. Each heartbeat's content is the
+transport instance, new on every `start()`: a restart (core recovery)
+discards the requests shims are still waiting on, and a request leaves the
+filesystem while it is processed, so a shim that sees a different instance
+cleans up and reports "restarted before replying" instead of waiting forever
+(0b58a71e, 27 September 2026; the container transport check hung this way,
+with an empty endpoint, when the Linux VM still showed a heartbeat `stop()`
+had removed and the shim sent into the stopped transport). The shim reads
+stdin into a hidden `.body-<id>` in its inbox before the request folder
+exists, and copies it in once the request is written (`mv` is not in the
+container utility contract): a producer slower than the 30-second
+abandonment age used to lose the folder it was still filling (review of 22
+September, db7c3b52). A refusal removes the staged body, so "not running"
+still means nothing was sent, and `start()` leaves hidden inbox entries,
+which are a live shim's scratch, to that shim.
 
 Every start or restart rotates a pane's capability and prepares a new
 endpoint, and every stop or close forgets it. Until 26 September 2026

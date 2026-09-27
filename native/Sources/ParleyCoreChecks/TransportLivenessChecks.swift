@@ -81,10 +81,11 @@ private struct LivenessFixture {
     var heartbeat: URL { endpoint.appendingPathComponent("heartbeat") }
 
     /// A heartbeat last written `age` seconds ago, as the transport leaves it
-    /// when its timer has not run since.
-    func writeHeartbeat(age: TimeInterval) throws {
+    /// when its timer has not run since. Its content names the transport
+    /// instance that wrote it, which changes only when a transport restarts.
+    func writeHeartbeat(age: TimeInterval, instance: String = "fixture-instance") throws {
         let written = Date().addingTimeInterval(-age)
-        try Data(String(Int(written.timeIntervalSince1970)).utf8).write(to: heartbeat, options: [.atomic])
+        try Data(instance.utf8).write(to: heartbeat, options: [.atomic])
         try FileManager.default.setAttributes([.posixPermissions: 0o600, .modificationDate: written], ofItemAtPath: heartbeat.path)
     }
 
@@ -233,6 +234,64 @@ func checkShimTrustsAnAdvancingHeartbeat() throws {
     try livenessExpect(output.status == 0 && output.stdoutText == "{}", "the shim did not complete: status \(output.status), stderr \(output.stderrText)")
 }
 
+/// A transport restart (core recovery) discards every request its shims are
+/// still waiting on, and a request leaves the filesystem while it is being
+/// processed, so the shim cannot see that its request is gone; with the new
+/// transport's heartbeat advancing it waited forever (0b58a71e; the
+/// container transport check hung this way). The heartbeat names the
+/// transport instance, and a shim whose instance changes reports it.
+func checkShimReportsATransportRestart() throws {
+    let fixture = try LivenessFixture("restart")
+    defer { fixture.cleanup() }
+    try fixture.writeHeartbeat(age: 0, instance: "instance-before")
+    let run = fixture.run(["status"])
+    var request: URL?
+    try livenessExpect(livenessEventually(within: 3) { request = fixture.readyRequests().first; return request != nil },
+                       "the shim never sent its request")
+    // The restart: the request is discarded and a new instance writes heartbeats.
+    try FileManager.default.removeItem(at: request!)
+    let restartedAt = DispatchTime.now().uptimeNanoseconds
+    final class Beating: @unchecked Sendable { let lock = NSLock(); var on = true }
+    let beating = Beating()
+    Thread {
+        while beating.lock.withLock({ beating.on }) {
+            try? fixture.writeHeartbeat(age: 0, instance: "instance-after")
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+    }.start()
+    defer { beating.lock.withLock { beating.on = false } }
+    let (output, _) = try run.wait(12)
+    let afterRestart = Double(DispatchTime.now().uptimeNanoseconds - restartedAt) / 1_000_000_000
+    try livenessExpect(output.status == 2 && output.stderrText.contains("the Parley relay broker restarted before replying"),
+                       "a shim whose request a restart discarded did not report it: status \(output.status), stderr \(output.stderrText)")
+    try livenessExpect(afterRestart < 4, "reporting the restart took \(afterRestart) s")
+}
+
+/// The real transport names its instance in every heartbeat, the same
+/// instance for as long as it runs and a new one after a restart.
+func checkTransportHeartbeatNamesItsInstance() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-instance-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let transportDirectory = directory.appendingPathComponent("agent-transport", isDirectory: true)
+    let endpoint = try RelayFileTransport.prepareEndpoint(runtimeDirectory: transportDirectory, paneToken: try credentials.token(for: "pane"))
+    let heartbeat = endpoint.appendingPathComponent("heartbeat")
+    func content() -> String? { try? String(contentsOf: heartbeat, encoding: .utf8) }
+    func written() -> Date? { (try? FileManager.default.attributesOfItem(atPath: heartbeat.path))?[.modificationDate] as? Date }
+    let broker = RelayBroker(credentials: credentials, panes: { [] }, paste: { _, _ in }, submit: { _, _ in })
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory)
+    try transport.start()
+    let first = content()
+    let firstWritten = written() ?? .distantPast
+    try livenessExpect(livenessEventually(within: 3) { (written() ?? .distantPast) > firstWritten }, "the heartbeat was not rewritten")
+    try livenessExpect(first != nil && content() == first, "one transport wrote two instances: \(String(describing: first)) then \(String(describing: content()))")
+    transport.stop()
+    try transport.start()
+    defer { transport.stop() }
+    try livenessExpect(content() != nil && content() != first, "a restarted transport kept its instance: \(String(describing: content()))")
+}
+
 /// Tolerance must not turn a real stop into a hang: a heartbeat that stays
 /// stale, or goes away because the transport stopped, is still reported,
 /// and a missing endpoint is reported at once. "Not running" still means
@@ -261,6 +320,9 @@ func checkShimStillReportsAStoppedBroker() throws {
                        "a heartbeat that never recovered was not reported: status \(refusal.status), stderr \(refusal.stderrText)")
     try livenessExpect(refusalSeconds < 10, "reporting a stopped broker took \(refusalSeconds) s")
     try livenessExpect(neverFresh.readyRequests().isEmpty, "a refused command still sent its request")
+    // Nor anything else: the body it staged before the refusal is gone too.
+    let refusedLeftovers = (try? FileManager.default.contentsOfDirectory(atPath: neverFresh.inbox.path)) ?? []
+    try livenessExpect(refusedLeftovers.isEmpty, "a refused command left entries in its inbox: \(refusedLeftovers)")
     let (abandoned, abandonedSeconds) = try waiting.wait(15)
     try livenessExpect(abandoned.status == 2 && abandoned.stderrText.contains("the Parley relay broker stopped before replying"),
                        "a transport that stopped was not reported: status \(abandoned.status), stderr \(abandoned.stderrText)")
@@ -447,11 +509,57 @@ func checkRetiredEndpointsArePruned() throws {
     try livenessExpect(endpoints() == [current, unknown], "endpoints were pruned while the credentials could not be read: \(endpoints())")
 }
 
+/// Review of 22 September 2026 (db7c3b52): the shim created its request
+/// folder before reading stdin, so a producer slower than the transport's
+/// abandonment age lost its request: the transport removed the folder as a
+/// writer that had crashed, and the shim then failed writing into it.
+func checkSlowProducerKeepsItsRequest() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-slowbody-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    let sourceToken = try credentials.token(for: "source")
+    _ = try credentials.token(for: "target")
+    func pane(_ id: String, _ kind: PaneKind) -> WorkbenchPane {
+        WorkbenchPane(id: id, kind: kind, customName: id, terminalTitle: "", cwd: "/private/\(id)", currentCommand: kind.rawValue,
+                      isActive: false, workspaceID: "@slow", relayEnabled: true, protocolVersion: AgentProtocol.version,
+                      workspaceName: "Slow", inputAvailable: true)
+    }
+    final class Delivered: @unchecked Sendable { let lock = NSLock(); var text: String? }
+    let delivered = Delivered()
+    let broker = RelayBroker(credentials: credentials, panes: { [pane("source", .claude), pane("target", .codex)] },
+                             paste: { _, _ in }, submit: { _, text in delivered.lock.withLock { delivered.text = text } })
+    let transportDirectory = directory.appendingPathComponent("agent-transport", isDirectory: true)
+    for token in try credentials.allTokens() {
+        _ = try RelayFileTransport.prepareEndpoint(runtimeDirectory: transportDirectory, paneToken: token)
+    }
+    let shim = try RelayShim.install(in: directory, transportDirectory: transportDirectory).appendingPathComponent("parley")
+    // Abandonment after half a second of awake time, so a two-second producer is "slow".
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory, abandonedRequestAge: 0.5)
+    try transport.start()
+    defer { transport.stop() }
+
+    let environment = ProcessInfo.processInfo.environment.merging(["PARLEY_RELAY_TOKEN": sourceToken]) { _, supplied in supplied }
+    let output = try ProcessCommandRunner(timeout: 20).run(
+        executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: ["-c", "{ /bin/sleep 2; /usr/bin/printf 'slow report'; } | /bin/sh \"$0\" relay target", shim.path],
+        environment: environment, input: nil)
+    try livenessExpect(output.status == 0, "a slow producer's relay failed: status \(output.status), stderr \(output.stderrText)")
+    try livenessExpect(delivered.lock.withLock { delivered.text }?.hasSuffix("slow report") == true,
+                       "the relay did not deliver the slow producer's text: \(String(describing: delivered.lock.withLock { delivered.text }))")
+    let inbox = transportDirectory.appendingPathComponent(sourceToken).appendingPathComponent("inbox")
+    let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: inbox.path)) ?? []
+    try livenessExpect(leftovers.isEmpty, "the relay left entries in the inbox: \(leftovers)")
+}
+
 @MainActor let transportLivenessChecks: [(String, () throws -> Void)] = [
+    ("a slow producer keeps its request", checkSlowProducerKeepsItsRequest),
     ("the shim waits out a stale heartbeat before sending", checkShimWaitsOutAStaleHeartbeatBeforeSending),
     ("the shim waits out a stale heartbeat while waiting for a reply", checkShimWaitsOutAStaleHeartbeatWhileWaiting),
     ("the shim still reports a stopped broker", checkShimStillReportsAStoppedBroker),
     ("the shim trusts a heartbeat it sees advancing whatever the clocks say", checkShimTrustsAnAdvancingHeartbeat),
+    ("the shim reports a transport restart instead of waiting forever", checkShimReportsATransportRestart),
+    ("the transport heartbeat names its instance", checkTransportHeartbeatNamesItsInstance),
     ("the transport heartbeat survives a wall clock step back", checkTransportHeartbeatSurvivesAClockStepBack),
     ("a wake does not age out requests and replies still in use", checkWakeDoesNotAgeOutRequestsInUse),
     ("a stopped transport leaves no heartbeat", checkStoppedTransportLeavesNoHeartbeat),

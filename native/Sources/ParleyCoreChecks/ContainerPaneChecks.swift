@@ -141,13 +141,28 @@ func checkContainerTransportSpike(image: String, docker: String) throws {
     watcher.setCancelHandler { close(inboxDescriptor) }
     watcher.resume()
     defer { watcher.cancel() }
+    // The Linux VM can keep showing the removed heartbeat for a moment; a shim
+    // started inside that window sends at once and meets the restart below.
+    Thread.sleep(forTimeInterval: 1.5)
     let stalled = ContainerPendingInvocation { try invoke(sourceToken, ["whoami"]) }
     stalled.start()
     Thread.sleep(forTimeInterval: 2)
     try containerExpect(wakes.lock.withLock { wakes.count } > 0, "the Linux shim's wake entry never reached the Mac's inbox watcher")
     try transport.start()
-    try containerExpect(try stalled.wait().contains(source.id), "the Linux shim did not complete once the transport was back")
-    print("PASS Docker Linux shim waits out a missing heartbeat and wakes the Mac's transport")
+    // Either the shim waited and finished, or it had already sent and the
+    // restart discarded its request, which it must report. Never a hang.
+    do {
+        let identity = try stalled.wait()
+        try containerExpect(identity.contains(source.id), "the Linux shim did not complete once the transport was back")
+        print("PASS Docker Linux shim waits out a missing heartbeat and wakes the Mac's transport")
+    } catch let error as NSError where error.localizedDescription.contains("restarted before replying") {
+        print("PASS Docker Linux shim reports the transport restart that discarded its request (it had sent before the VM saw the heartbeat go)")
+    } catch {
+        let endpointRoot = transportRoot.appendingPathComponent(sourceToken)
+        let listing = (FileManager.default.enumerator(atPath: endpointRoot.path)?.allObjects as? [String] ?? []).sorted()
+        throw NSError(domain: "ContainerPaneChecks", code: 1, userInfo: [NSLocalizedDescriptionKey:
+            "the Linux shim neither completed nor reported the restart (\(error)); endpoint held: \(listing)"])
+    }
     if image == "parley-container-spike:local" {
         let service = try ContainerPaneService(directory: directory.appendingPathComponent("containers"), environment: environment)
         defer {
