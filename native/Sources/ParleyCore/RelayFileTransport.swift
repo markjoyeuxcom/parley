@@ -16,6 +16,32 @@ public enum RelayFileTransportError: LocalizedError {
     }
 }
 
+/// The three clocks the transport compares times on, each chosen for what it
+/// measures. Injectable so a check can model a sleep (wall and monotonic
+/// jump, awake time does not) or a clock step (wall alone moves).
+public struct RelayTransportClocks: Sendable {
+    /// Written into heartbeats and compared with reply file times.
+    public var wall: @Sendable () -> Date
+    /// Nanoseconds that keep counting through sleep and never step back:
+    /// when a heartbeat is due.
+    public var monotonic: @Sendable () -> UInt64
+    /// Nanoseconds that stop while the Mac sleeps: how long a shim, frozen
+    /// by that sleep too, has had to act.
+    public var awake: @Sendable () -> UInt64
+
+    public init(wall: @escaping @Sendable () -> Date, monotonic: @escaping @Sendable () -> UInt64, awake: @escaping @Sendable () -> UInt64) {
+        self.wall = wall
+        self.monotonic = monotonic
+        self.awake = awake
+    }
+
+    public static let system = RelayTransportClocks(
+        wall: { Date() },
+        monotonic: { clock_gettime_nsec_np(CLOCK_MONOTONIC) },
+        awake: { clock_gettime_nsec_np(CLOCK_UPTIME_RAW) }
+    )
+}
+
 /// A sandbox-compatible request/response door for commands issued from agent
 /// panes. Each pane receives one capability-named endpoint and its mandatory
 /// outer process sandbox denies every sibling endpoint. The native UI continues
@@ -33,18 +59,27 @@ public final class RelayFileTransport: @unchecked Sendable {
     /// token-only, exactly as before tickets existed.
     private let tickets: RelayTicketServer?
     private let fileManager: FileManager
+    private let clocks: RelayTransportClocks
     private let queue = DispatchQueue(label: "parley.native.agent-file-transport", qos: .utility)
     private let workers = DispatchGroup()
     private let lock = NSLock()
     private var timer: DispatchSourceTimer?
-    private var lastHeartbeat = Date.distantPast
+    /// When heartbeats were last written, on the monotonic clock, which keeps
+    /// counting through sleep and never steps backwards. A wall-clock
+    /// comparison stopped every heartbeat for as long as a clock stepped back.
+    private var lastHeartbeat: UInt64?
     private var schedule = TransportPollSchedule()
     /// Request directories seen without their `ready` marker, by first
     /// sighting. A shim finishes writing within milliseconds; the fast
     /// follow-up lasts `pendingFollowUpWindow`, after which the directory
     /// is polled at the normal cadence, and past `abandonedRequestAge` it is
-    /// discarded as a writer that crashed mid-request.
-    private var pendingSince: [String: Date] = [:]
+    /// discarded as a writer that crashed mid-request. Sightings are in
+    /// awake time, which stops while the Mac sleeps: a shim frozen part-way
+    /// through a request gets its full time once the Mac wakes.
+    private var pendingSince: [String: UInt64] = [:]
+    /// Uncollected replies already older than `staleResponseAge` by their
+    /// file time, by first sighting in awake time.
+    private var staleSince: [String: UInt64] = [:]
     public static let pendingFollowUpWindow: TimeInterval = 0.25
     public let abandonedRequestAge: TimeInterval
     /// Requests that can block for minutes. They count against
@@ -92,13 +127,15 @@ public final class RelayFileTransport: @unchecked Sendable {
         maximumBlockingRequests: Int = RelayFileTransport.defaultMaximumBlockingRequests,
         waitWindow: TimeInterval = RelayFileTransport.defaultWaitWindow,
         staleResponseAge: TimeInterval = RelayFileTransport.defaultStaleResponseAge,
-        maximumWorkerThreads: Int = RelayFileTransport.defaultMaximumWorkerThreads
+        maximumWorkerThreads: Int = RelayFileTransport.defaultMaximumWorkerThreads,
+        clocks: RelayTransportClocks = .system
     ) {
         self.broker = broker
         self.credentials = credentials
         self.tickets = tickets
         self.runtimeDirectory = runtimeDirectory
         self.fileManager = fileManager
+        self.clocks = clocks
         self.abandonedRequestAge = max(0.1, abandonedRequestAge)
         self.blockingGate = BlockingRequestGate(limit: maximumBlockingRequests)
         self.waitWindow = max(0.1, waitWindow)
@@ -159,9 +196,12 @@ public final class RelayFileTransport: @unchecked Sendable {
                     fileManager: fileManager
                 )
             }
-            try removeOrphanedEndpoints(retaining: retainedTokens)
-            try discardStaleExchangeFiles()
-            try writeHeartbeats()
+            // The same prune as every heartbeat: folders listed before the
+            // capabilities are read, and one that cannot be removed does not
+            // stop the core from starting.
+            pruneRetiredEndpoints()
+            discardStaleExchangeFiles()
+            writeHeartbeats()
 
             let source = DispatchSource.makeTimerSource(queue: queue)
             source.schedule(deadline: .now(), repeating: schedule.interval, leeway: .milliseconds(10))
@@ -175,8 +215,16 @@ public final class RelayFileTransport: @unchecked Sendable {
         lock.withLock {
             timer?.cancel()
             timer = nil
-            for watcher in inboxWatchers.values { watcher.cancel() }
-            inboxWatchers.removeAll()
+        }
+        // Cancelling does not wait for a tick already running, which could
+        // write a heartbeat after the removal below, telling shims a stopped
+        // transport is alive, or recreate the inbox watchers. On the serial
+        // queue no tick runs alongside this block, and none follows it.
+        queue.sync {
+            lock.withLock {
+                for watcher in inboxWatchers.values { watcher.cancel() }
+                inboxWatchers.removeAll()
+            }
         }
         for endpoint in endpointDirectories() {
             try? fileManager.removeItem(at: heartbeat(in: endpoint))
@@ -185,11 +233,18 @@ public final class RelayFileTransport: @unchecked Sendable {
     }
 
     private func serviceTick() {
-        lock.withLock { ticks += 1 }
-        let now = Date()
-        if now.timeIntervalSince(lastHeartbeat) >= 1 {
-            try? writeHeartbeats()
-            removeStaleResponses(now: now)
+        // A stopped transport writes nothing, whatever event arrives late.
+        guard lock.withLock({ () -> Bool in
+            guard timer != nil else { return false }
+            ticks += 1
+            return true
+        }) else { return }
+        let now = clocks.wall()
+        let uptime = clocks.awake()
+        if lastHeartbeat.map({ clocks.monotonic() &- $0 >= 1_000_000_000 }) ?? true {
+            pruneRetiredEndpoints()
+            writeHeartbeats()
+            removeStaleResponses(now: now, uptime: uptime)
         }
         var activity = false
         // A request directory that exists but has no `ready` marker yet: the
@@ -216,12 +271,12 @@ public final class RelayFileTransport: @unchecked Sendable {
                 guard Self.isRequestID(requestID) else { continue }
                 guard fileManager.fileExists(atPath: candidate.appendingPathComponent("ready").path) else {
                     seenWithoutReady.insert(requestID)
-                    let firstSeen = lock.withLock { () -> Date in
+                    let firstSeen = lock.withLock { () -> UInt64 in
                         if let existing = pendingSince[requestID] { return existing }
-                        pendingSince[requestID] = now
-                        return now
+                        pendingSince[requestID] = uptime
+                        return uptime
                     }
-                    let age = now.timeIntervalSince(firstSeen)
+                    let age = Double(uptime &- firstSeen) / 1_000_000_000
                     if age > abandonedRequestAge {
                         // The writer never finished; nothing was claimed or answered.
                         try? fileManager.removeItem(at: candidate)
@@ -561,8 +616,13 @@ public final class RelayFileTransport: @unchecked Sendable {
     /// Replies whose shim never collected them: a vendor killed the shim,
     /// typically while a wait or Ask was in progress. Only a finished reply
     /// (`ready` present) is removed; an Ask still in progress keeps its
-    /// acceptance files.
-    private func removeStaleResponses(now: Date) {
+    /// acceptance files. A file time also counts the time the Mac slept, so
+    /// after a wake every reply looks old, including one a shim frozen by
+    /// that sleep is about to collect; a reply is removed only once it has
+    /// also stayed stale for up to 30 seconds of awake time.
+    private func removeStaleResponses(now: Date, uptime: UInt64) {
+        let grace = UInt64(min(staleResponseAge, 30) * 1_000_000_000)
+        var stillStale: [String: UInt64] = [:]
         for endpoint in endpointDirectories() {
             let outbox = endpoint.appendingPathComponent("outbox", isDirectory: true)
             guard let replies = try? fileManager.contentsOfDirectory(at: outbox, includingPropertiesForKeys: nil, options: []) else { continue }
@@ -570,9 +630,15 @@ public final class RelayFileTransport: @unchecked Sendable {
                 let ready = reply.appendingPathComponent("ready")
                 guard let written = (try? fileManager.attributesOfItem(atPath: ready.path))?[.modificationDate] as? Date,
                       now.timeIntervalSince(written) > staleResponseAge else { continue }
-                try? fileManager.removeItem(at: reply)
+                let firstSeen = lock.withLock { staleSince[reply.path] } ?? uptime
+                if uptime &- firstSeen >= grace {
+                    try? fileManager.removeItem(at: reply)
+                } else {
+                    stillStale[reply.path] = firstSeen
+                }
             }
         }
+        lock.withLock { staleSince = stillStale }
     }
 
     private func responseDirectory(requestID: String, endpoint: URL) throws -> URL {
@@ -629,39 +695,52 @@ public final class RelayFileTransport: @unchecked Sendable {
         }
     }
 
-    private func discardStaleExchangeFiles() throws {
+    /// Entry by entry: something a pane left that cannot be removed (a
+    /// container can write into its own endpoint) must not stop the core.
+    private func discardStaleExchangeFiles() {
         for endpoint in endpointDirectories() {
             for name in ["inbox", "processing", "outbox"] {
                 let directory = endpoint.appendingPathComponent(name, isDirectory: true)
-                let entries = try fileManager.contentsOfDirectory(
+                let entries = (try? fileManager.contentsOfDirectory(
                     at: directory,
                     includingPropertiesForKeys: nil,
                     options: []
-                )
+                )) ?? []
                 for entry in entries {
-                    try fileManager.removeItem(at: entry)
+                    try? fileManager.removeItem(at: entry)
                 }
             }
         }
     }
 
-    private func removeOrphanedEndpoints(retaining tokens: Set<String>) throws {
-        for endpoint in endpointDirectories() where !tokens.contains(endpoint.lastPathComponent) {
-            try fileManager.removeItem(at: endpoint)
+    /// Every start or restart rotates a pane's capability and prepares a new
+    /// endpoint, and every stop or close forgets it; the endpoint a retired
+    /// capability named is removed here, once a second. The folders are
+    /// listed before the capabilities are read: an endpoint is prepared only
+    /// after its capability is stored, so one listed here is either among the
+    /// capabilities read afterwards or was retired in between. Capabilities
+    /// that cannot be read remove nothing.
+    private func pruneRetiredEndpoints() {
+        let listed = endpointDirectories(limit: nil)
+        guard !listed.isEmpty, let tokens = try? Set(credentials.allTokens()) else { return }
+        for endpoint in listed where !tokens.contains(endpoint.lastPathComponent) {
+            try? fileManager.removeItem(at: endpoint)
         }
     }
 
-    private func writeHeartbeats() throws {
+    /// Each endpoint on its own: a pane that broke its own heartbeat (a
+    /// container can put a directory in its place) must not stop the others'.
+    private func writeHeartbeats() {
         for endpoint in endpointDirectories() {
-            try writeProtected(
-                String(Int(Date().timeIntervalSince1970)),
+            try? writeProtected(
+                String(Int(clocks.wall().timeIntervalSince1970)),
                 to: heartbeat(in: endpoint)
             )
         }
-        lastHeartbeat = Date()
+        lastHeartbeat = clocks.monotonic()
     }
 
-    private func endpointDirectories() -> [URL] {
+    private func endpointDirectories(limit: Int? = 256) -> [URL] {
         guard let entries = try? fileManager.contentsOfDirectory(
             at: runtimeDirectory,
             includingPropertiesForKeys: nil,
@@ -670,7 +749,7 @@ public final class RelayFileTransport: @unchecked Sendable {
         return entries
             .filter { Self.isPaneCapability($0.lastPathComponent) }
             .filter { (try? validateDirectory($0)) != nil }
-            .prefix(256)
+            .prefix(limit ?? .max)
             .map { $0 }
     }
 
