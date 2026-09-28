@@ -332,7 +332,14 @@ finished replies (`ready` present) for the shim still waiting on them. Once a
 second the transport removes scratch whose modification time has not
 changed for the reply age in awake time: a producer still writing keeps
 changing its staged body, and a killed shim's body and wake entries are
-otherwise never listed by the tick.
+otherwise never listed by the tick. A producer silent for longer than that
+loses its staged body and the command refuses cleanly ("could not write the
+request, so nothing was sent"), a deliberate trade against scratch that
+would otherwise wait for its pane to restart. `post` traps INT, TERM and HUP
+and cleans up before exiting, so Ctrl-C or a tool timeout removes the staged
+body at once (checked under macOS `sh` and, for the pattern, dash); a signal
+already ignored when the shim starts cannot be trapped, and the sweep covers
+that case (Agy's review of MR !112).
 
 Every start or restart rotates a pane's capability and prepares a new
 endpoint, and every stop or close forgets it. Until 26 September 2026

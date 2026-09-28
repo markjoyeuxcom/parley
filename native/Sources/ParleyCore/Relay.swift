@@ -5288,6 +5288,12 @@ public enum RelayShim {
     }
 
     post() {
+      # Ctrl-C or a tool timeout's SIGTERM ends this subshell with no return
+      # path, so it cleans up first; a staged body would otherwise wait for
+      # the transport's ten-minute scratch sweep.
+      trap 'cleanup; exit 130' INT
+      trap 'cleanup; exit 143' TERM
+      trap 'cleanup; exit 129' HUP
       if ! protected_directory "$endpoint" || ! protected_directory "$inbox" || ! protected_directory "$outbox" || ! broker_is_running; then
         echo "the Parley relay broker is not running" >&2
         return 2

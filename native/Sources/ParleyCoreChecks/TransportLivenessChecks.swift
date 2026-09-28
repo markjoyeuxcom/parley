@@ -680,7 +680,74 @@ func checkRestartKeepsFinishedReplies() throws {
     try livenessExpect(!FileManager.default.fileExists(atPath: unfinished.path), "a restart kept an unfinished reply")
 }
 
+/// Agy's review of MR !112: a shim interrupted (Ctrl-C, a tool timeout's
+/// SIGTERM) while its producer was still writing left the staged body for
+/// the ten-minute scratch sweep. The pipeline runs in a process group of its
+/// own here, so the signal reaches it and nothing else.
+func checkInterruptedShimRemovesItsStagedBody() throws {
+    let fixture = try LivenessFixture("interrupted")
+    defer { fixture.cleanup() }
+    try fixture.writeHeartbeat(age: 0)
+    let pidFile = fixture.directory.appendingPathComponent("pipeline.pid")
+    let environment = ProcessInfo.processInfo.environment.merging(["PARLEY_RELAY_TOKEN": fixture.token]) { _, supplied in supplied }
+    final class Finished: @unchecked Sendable { let lock = NSLock(); var done = false }
+    let finished = Finished()
+    Thread {
+        // `set -m` gives the background pipeline its own process group.
+        _ = try? ProcessCommandRunner(timeout: 30).run(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            // `$!` is the pipeline's last process; its group is led by the first.
+            arguments: ["-c", "set -m; { /usr/bin/printf 'partial'; /bin/sleep 20; } | /bin/sh \"$0\" relay target & /bin/ps -o pgid= -p $! > \"$1\"; wait",
+                        fixture.shim.path, pidFile.path],
+            environment: environment, input: nil)
+        finished.lock.withLock { finished.done = true }
+    }.start()
+    func staged() -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: fixture.inbox.path)) ?? []).filter { $0.hasPrefix(".body-") }
+    }
+    try livenessExpect(livenessEventually(within: 5) { !staged().isEmpty && FileManager.default.fileExists(atPath: pidFile.path) },
+                       "the shim never staged its body")
+    var leader = ""
+    _ = livenessEventually(within: 2) {
+        leader = ((try? String(contentsOf: pidFile, encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return !leader.isEmpty
+    }
+    guard let group = Int32(leader), group > 1, group != getpgrp() else {
+        throw NSError(domain: "TransportLiveness", code: 3, userInfo: [NSLocalizedDescriptionKey: "no separate process group for the pipeline: \(leader)"])
+    }
+    defer {
+        kill(-group, SIGKILL)
+        _ = livenessEventually(within: 5) { finished.lock.withLock { finished.done } }
+    }
+    kill(-group, SIGTERM)
+    try livenessExpect(livenessEventually(within: 3) { staged().isEmpty }, "an interrupted shim left its staged body in the inbox: \(staged())")
+    try livenessExpect(fixture.readyRequests().isEmpty, "an interrupted shim sent its request")
+}
+
+/// The reply the old transport finished is still in the outbox when the new
+/// instance appears; the shim collects it, because it looks for its reply
+/// before it compares instances (Agy's review of MR !112 asked for the real
+/// shim here, not only the kept folder).
+func checkShimCollectsAReplyFinishedBeforeARestart() throws {
+    let fixture = try LivenessFixture("reply-restart")
+    defer { fixture.cleanup() }
+    try fixture.writeHeartbeat(age: 0, instance: "instance-before")
+    let run = fixture.run(["status"])
+    var request: URL?
+    try livenessExpect(livenessEventually(within: 3) { request = fixture.readyRequests().first; return request != nil },
+                       "the shim never sent its request")
+    // The old worker finished; then the restart: request gone, new instance.
+    try fixture.reply(to: request!, status: 200, body: "{\"finished\":true}")
+    try FileManager.default.removeItem(at: request!)
+    try fixture.writeHeartbeat(age: 0, instance: "instance-after")
+    let (output, _) = try run.wait(10)
+    try livenessExpect(output.status == 0 && output.stdoutText == "{\"finished\":true}",
+                       "the shim did not collect the reply finished before the restart: status \(output.status), stderr \(output.stderrText)")
+}
+
 @MainActor let transportLivenessChecks: [(String, () throws -> Void)] = [
+    ("an interrupted shim removes its staged body", checkInterruptedShimRemovesItsStagedBody),
+    ("the shim collects a reply finished before a restart", checkShimCollectsAReplyFinishedBeforeARestart),
     ("the shim reads stdin only for a running broker", checkShimReadsStdinOnlyForARunningBroker),
     ("the shim sends nothing without an instance to watch", checkShimSendsNothingWithoutAnInstance),
     ("the shim keeps waiting for a request the restart kept", checkShimKeepsWaitingForARequestTheRestartKept),
