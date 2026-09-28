@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Whether Claude Code's own sandbox is switched on for a folder, read from
@@ -5,6 +6,33 @@ import Foundation
 /// environment, the project's local settings, the project's shared settings,
 /// the person's settings. `enabled` is nil when nothing sets it or nothing
 /// could be read; unknown is never reported as off or on.
+/// One launch review's Claude sandbox fact. The review's ticket policy is
+/// evaluated about five times per render, and each read up to four settings
+/// files on the main actor (review of 22 September 2026, 96c795d7); the fact is
+/// read once per folder while the review is open. Only a Claude pane on this
+/// Mac has one.
+public final class ClaudeSandboxFactCache {
+    private let read: (String) -> ClaudeSandboxFact
+    private var folder: String?
+    private var cached: ClaudeSandboxFact?
+    /// Settings reads so far (checks).
+    public private(set) var reads = 0
+
+    public init(read: @escaping (String) -> ClaudeSandboxFact = { ClaudeHostConfiguration.sandbox(folder: $0) }) {
+        self.read = read
+    }
+
+    public func fact(kind: PaneKind, folder: String, inContainer: Bool) -> ClaudeSandboxFact? {
+        guard kind == .claude, !inContainer else { return nil }
+        if self.folder == folder, let cached { return cached }
+        let fact = read(folder)
+        reads += 1
+        self.folder = folder
+        cached = fact
+        return fact
+    }
+}
+
 public struct ClaudeSandboxFact: Equatable, Sendable {
     public let enabled: Bool?
     /// Where the value came from, for the review and for `whoami`.
@@ -53,13 +81,38 @@ public enum ClaudeHostConfiguration {
 
     /// `sandbox.enabled` from one settings file, or nil when the file is
     /// absent, unreadable, too large, not a JSON object, or silent on it.
-    static func enabled(in file: URL, fileManager: FileManager) -> Bool? {
-        guard let attributes = try? fileManager.attributesOfItem(atPath: file.path),
-              let size = attributes[.size] as? Int, size <= maximumSettingsBytes,
-              let data = fileManager.contents(atPath: file.path),
+    public static func enabled(in file: URL, fileManager: FileManager) -> Bool? {
+        guard let data = boundedRegularFile(file, maximumBytes: maximumSettingsBytes),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let sandbox = object["sandbox"] as? [String: Any],
               let enabled = sandbox["enabled"] as? Bool else { return nil }
         return enabled
+    }
+
+    /// The bytes of a regular file of at most `maximumBytes`, following a
+    /// symlink as Claude does, or nil. The project's `.claude` folder is the
+    /// agent's to write, so the size is checked on the opened descriptor, not
+    /// on the path (a symlink's own size said nothing of its target), and the
+    /// open never blocks: a FIFO there used to stall the launch review on the
+    /// main actor until a writer appeared (review of 22 September 2026,
+    /// 96c795d7).
+    static func boundedRegularFile(_ file: URL, maximumBytes: Int) -> Data? {
+        let descriptor = open(file.path, O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        defer { close(descriptor) }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG,
+              metadata.st_size <= off_t(maximumBytes) else { return nil }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
+        while data.count <= maximumBytes {
+            let count = read(descriptor, &buffer, buffer.count)
+            if count < 0, errno == EINTR { continue }
+            guard count >= 0 else { return nil }
+            if count == 0 { break }
+            data.append(contentsOf: buffer[0..<count])
+        }
+        // The file grew past the bound after the check.
+        return data.count <= maximumBytes ? data : nil
     }
 }

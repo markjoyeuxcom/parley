@@ -762,6 +762,16 @@ Giving up leaves a zombie until the process exits; a permanently blocked thread
 would be worse. Its primitives are injectable because that state cannot be
 created on demand, and a check that cannot fail is not coverage.
 
+Every command `ProcessCommandRunner` spawns leads its own process group
+(`POSIX_SPAWN_SETPGROUP`), and a timeout signals the group, never only the
+direct child: SIGTERM, then SIGKILL a second later whether or not the child
+has already exited, with the child kept unreaped (`waitid(..., WNOWAIT)`) until
+then so its pid, and so the group id, cannot be reused in between. A hook,
+filter or helper that ignored SIGTERM used to outlive a timed-out command
+(96c795d7, 28 September 2026). The context-pack Command Result runner uses
+Foundation's `Process`, whose child already leads its own group (checked
+per run, not assumed), and does the same.
+
 Reviewed command cancellation uses the same bounded reap and a monotonic
 deadline after SIGKILL; an unobserved exit returns no exit status and says
 completion is unknown. The transient Codex configuration query uses bounded
@@ -892,7 +902,11 @@ host pane whose own sandbox is switched on: `ClaudeHostConfiguration` reads
 `sandbox.enabled` where Claude reads it and in Claude's precedence (managed
 settings, `CLAUDE_CODE_FORCE_SANDBOX`, the project's `.claude/settings.local.json`,
 its `.claude/settings.json`, then `~/.claude/settings.json`; unreadable or
-silent files are skipped, unknown is never on or off), and that sandbox
+silent files are skipped, unknown is never on or off; each file is opened
+non-blocking and sized on the opened descriptor, because the project's
+`.claude` folder is the agent's to write and a symlink to a huge file or a
+FIFO there used to be read whole or to block the launch review, which now
+reads the fact once per folder through `ClaudeSandboxFactCache`), and that sandbox
 denies Unix sockets unless its `allowUnixSockets` list admits one, which
 Parley has not checked. The controller snapshots this fact at launch alongside
 the reviewed profile; later setting edits and terminal cwd reports cannot
@@ -975,6 +989,10 @@ neither preference domains, agent requests nor the retired
 `command-run-authorization.json` can restore authority. Both choices reset on
 quit. `AppModel` pushes the approval choice into
 `ReviewedCommandRunCoordinator.setAutomaticApproval`.
+A worker's state is observed files first, lease last: a worker takes its
+lease before it claims its ticket, so read the other way round a worker
+starting between the two reads looked like one that had ended without a
+result, and the run was failed with "do not resend" (96c795d7).
 Approved worker tickets carry a digest whose expected value stays in app memory
 and travels as a literal worker launch argument. A worker checks the exact
 claimed bytes before decoding or executing them; editing the file cannot change

@@ -80,7 +80,11 @@ public final class ProcessCommandRunner: CommandRunning {
         guard signalMaskStatus == 0 else {
             throw commandPOSIXError(signalMaskStatus, operation: "posix_spawnattr_setsigmask")
         }
-        let closeUnmappedDescriptors = Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)
+        // Its own process group (the default group 0 makes the child the
+        // leader), so a timeout can end every descendant it started: a hook,
+        // a filter, a helper that ignores SIGTERM (review of 22 September
+        // 2026, 96c795d7). A timeout used to signal only the direct child.
+        let closeUnmappedDescriptors = Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETPGROUP)
         let flagsStatus = posix_spawnattr_setflags(&attributes, closeUnmappedDescriptors)
         guard flagsStatus == 0 else {
             throw commandPOSIXError(flagsStatus, operation: "isolate child file descriptors")
@@ -370,15 +374,25 @@ private func waitForCommand(
         usleep(10_000)
     }
 
-    _ = kill(processIdentifier, SIGTERM)
+    // The child leads its own group. Signal the group, and keep the child
+    // unreaped (WNOWAIT) until the group has had SIGKILL: an unreaped child
+    // holds its pid, so the group id cannot be reused by another process in
+    // between. Descendants that ignore SIGTERM, or outlive the child, go too.
+    _ = kill(-processIdentifier, SIGTERM)
     let terminationDeadline = DispatchTime.now().uptimeNanoseconds &+ 1_000_000_000
+    var exited = false
     while DispatchTime.now().uptimeNanoseconds < terminationDeadline {
-        let result = waitpid(processIdentifier, &status, WNOHANG)
-        if result == processIdentifier { return (status, .timedOut, "terminated-after-timeout") }
-        if result < 0, errno != EINTR { return (status, .timedOut, "timeout-wait-error-\(errno)") }
+        var info = siginfo_t()
+        let result = waitid(P_PID, id_t(processIdentifier), &info, WEXITED | WNOHANG | WNOWAIT)
+        if result == 0, info.si_pid == processIdentifier { exited = true; break }
+        if result < 0, errno != EINTR { break }
         usleep(10_000)
     }
-    _ = kill(processIdentifier, SIGKILL)
+    _ = kill(-processIdentifier, SIGKILL)
+    if exited {
+        let result = waitpid(processIdentifier, &status, WNOHANG)
+        if result == processIdentifier { return (status, .timedOut, "terminated-after-timeout") }
+    }
     return (status, .timedOut, BoundedReap.run(processIdentifier, status: &status))
 }
 
