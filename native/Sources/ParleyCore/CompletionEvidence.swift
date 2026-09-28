@@ -156,9 +156,17 @@ public enum CompletionEvidenceProjection {
               let reviewID = handoff.resultContextReviewID,
               let review,
               review.id == reviewID else { return nil }
-        let returned = review.pack.parts.filter {
-            $0.source.kind == .agentFileDraft && $0.source.referenceID == handoff.id
+        func isReturned(_ part: ContextPackPart) -> Bool {
+            part.source.kind == .agentFileDraft && part.source.referenceID == handoff.id
         }
+        // The staged copy is what the delegation returned; the pack is the
+        // person's editable draft, where the part can be edited or removed
+        // before sending (review of 22 September 2026, 4b656187). Records
+        // from before the copy existed still read the pack.
+        if let staged = review.returnedPart, isReturned(staged) {
+            return evidence(in: staged.capturedText)
+        }
+        let returned = review.pack.parts.filter(isReturned)
         guard returned.count == 1, let part = returned.first else { return nil }
         return evidence(in: part.capturedText)
     }

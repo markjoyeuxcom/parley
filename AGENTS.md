@@ -227,7 +227,21 @@ partial bytes cannot be cut away marks the tail uncertain so every later
 append first rewrites the acknowledged projection or refuses, and a
 compaction failure after a durable append is retained as `lastError` and
 surfaced through the Status Center core-health route until the next
-successful compaction, never reported as a lost record. Pane attention is projected once per input generation
+successful compaction, never reported as a lost record. The handoff journal's
+`record()` is the one non-durable write (a relay that reached a live terminal
+keeps its in-memory projection when the append fails); a failed append
+marks the file behind the projection, so the next write rewrites the whole
+projection before `lastError` clears (until 28 September 2026 the next
+append cleared the error and the lost record was never written). A durable
+append whose maintenance compaction failed is not behind: later appends keep
+working, since a nearly full disk has room for a line, not for the whole
+projection. Every
+owner-only store writes through `OwnerOnlyFile.write`: created 0600 under a
+temporary name, written, `fsync`ed and only then renamed into place. They
+used to `Data.write(.atomic)` and `chmod` after the rename, so the file (the
+relay credentials included) was briefly 0644 and never synced, and a crash in
+that moment or a torn file after power loss was refused by the store's own
+owner-only check at the next launch (4b656187). Pane attention is projected once per input generation
 (panes plus every handoff collection) through `PaneAttentionCache`; process
 sampling for Status Center's Health section runs on one serial owner off the
 main actor, only while that section is mounted in an active window, and
@@ -431,7 +445,12 @@ a different source identity.
   expired question's work and answers with `current` lands that answer on a
   newer question, and Parley reports success. A late answer naming a
   consultation that has closed is refused with the state it reached and when —
-  to the pane that was asked, and to nobody else.
+  to the pane that was asked, and to nobody else. One that failed or was
+  interrupted names the reason its closing transition recorded (a timeout, or
+  the target's pane closing); every failure used to read "timed out". Every
+  broker change wakes every parked Ask and `parley wait`, and each checks
+  liveness (a workbench read, and for an Ask a locked credential read) at most
+  once per poll interval however often it is woken.
 - `parley delegate <target> <task>` creates tracked asynchronous work.
 - `parley progress <id|current> <note>` lets the exact delegated target replace
   one bounded, control-stripped, agent-declared progress note. It is never a
@@ -556,7 +575,10 @@ font family, font size, theme, palette and hex colour values from the documented
 XDG and macOS locations. Never load a raw Ghostty config into a terminal, follow
 `config-file` or retain commands, keybindings, shell integration and behavioral
 options. Custom theme files receive the same allowlist. Parley's explicit font
-family and size overrides win over imported values.
+family and size overrides win over imported values. Repeated `font-family`
+lines are Ghostty's fallback list, so the import keeps the first after the
+last empty reset, Ghostty's primary font (it kept the last until 28 September
+2026).
 Challenge and Verify are native-control-only actions over one selected returned
 Ask or Delegate. They use the original ready source, one person-selected ready
 target, an editable preview and the normal correlated Ask lifecycle. Store
@@ -592,7 +614,10 @@ AGENT-DECLARED and shows every body as an unchecked claim. Unknown headings
 and their bodies are ignored, the first occurrence of a duplicate heading
 wins, an empty recognised heading is shown as declaring nothing, and a file
 without the headings renders exactly as before. Parley never runs a command
-to check a claim, adds no schema and never rewrites the staged file.
+to check a claim, adds no schema and never rewrites the staged file. The
+evidence is read from the review's `returnedPart`, the staged copy, not the
+editable pack, where the person may edit or remove the part before sending;
+a record from before the copy existed still reads the pack.
 
 ```markdown
 ## Implemented
@@ -1646,7 +1671,22 @@ through `/usr/bin/env`, so it is not active in Parley panes today.
 ## Reviewed context boundary
 
 An agent-staged context part is a claim. Its path and bytes stay labelled
-`agentFileDraft`. Only a separate human-authorized capture may create trusted
+`agentFileDraft`. Each rendered part sits between marker lines that no text in
+the pack contains: the plain `--- begin/end explicit context ---`, or the first
+numbered pair none of it uses, found in one pass. With fixed markers an agent
+part could close its own part and forge a following "Selected file" header
+(7a7848f9, 28 September 2026). Every one-line metadata field (the name, a
+source path or label, evidence fields) is rendered through
+`ContextPackText.singleLine`, which shows line breaks and other control
+characters escaped: an agent's staged path used to carry newlines into forged
+metadata lines, and control characters that the final normalize removed only
+after the boundary scan. A pack with an agent-provided part always says which
+lines are its boundaries, since a look-alike marker is not one either. A
+Command Result that died of a signal says "Terminated by signal N (NAME)"
+rather than an exit status (`CommandOutput.terminationSignal`; the status is
+128 + N). Git Diff capture reads at most `gitCaptureBytes` (1 MB) of Git
+output and refuses output that reached it: a diff cut there, even one that
+normalizes below the 60 KB part bound, is never accepted shortened. Only a separate human-authorized capture may create trusted
 File, Git Diff, Selection or Command Result provenance. A pack carries its
 origin (`ContextPackOrigin`): the rendered header says "Agent-proposed
 context; not approved or sent" until the person approves, then that the
@@ -1712,7 +1752,17 @@ completed (naming the handoff) once the Ask is accepted, handed back to
 `.draft` with a "Not sent" detail when the Ask is refused before delivery (a
 busy target, for instance), and `.failed` when delivery itself fails. The
 call returns with the answer or the consultation timeout, which is why it is
-a tracked request and runs off the main actor.
+a tracked request and runs off the main actor. The agent's own `parley ask
+--context` follows the same rule since 28 September 2026: approved, then
+refused before any handoff existed, it goes back to `.draft` ("Not sent")
+instead of `.failed`, which lost the approval. Its approval timeout is saved
+through `persistContextRealityLocked`, so a failed save is kept and retried
+rather than leaving a pending approval on disk. Every context review save
+goes through `recordContextReviewLocked`: the store keeps at most 100 reviews,
+never pruning a draft, a waiting Ask or an approved review still being
+delivered, and returns the ones it pruned, which leave the broker's map too (the map
+used to keep every one, so Status Center listed reviews the store had
+dropped).
 
 Sending an agent-staged draft (approving the agent's waiting Ask or
 sending it as the person's own Ask) closes the sheet before the tracked

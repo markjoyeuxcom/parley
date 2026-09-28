@@ -448,6 +448,15 @@ func handoffJournalFaultRecoveryChecks() throws {
     try pathExpect(fileSize(file.path) == beforeLossy, "record() left partial bytes past the committed boundary (\(fileSize(file.path)) vs \(beforeLossy))")
     let replayD = try RelayHandoffJournal(file: file, maximumHandoffs: 10)
     try pathExpect(replayD.handoffs().map(\.id) == ["handoff-9", "handoff-5", "handoff-3", "handoff-1"], "a lossy record() corrupted the replayed journal: \(replayD.handoffs().map(\.id))")
+
+    // Review of 22 September 2026 (4b656187): the next successful record()
+    // cleared lastError without ever writing the record the failed one lost,
+    // so the file stayed behind the projection with no error left to say so.
+    journal.record(try journalHandoff(11))
+    try pathExpect(journal.lastError == nil, "a successful record() left the earlier error standing")
+    let replayE = try RelayHandoffJournal(file: file, maximumHandoffs: 10)
+    try pathExpect(replayE.handoffs().map(\.id) == ["handoff-11", "handoff-10", "handoff-9", "handoff-5", "handoff-3", "handoff-1"],
+                   "the record a failed record() lost was never written: \(replayE.handoffs().map(\.id))")
 }
 
 /// Moving the active pane out of a workspace must leave that workspace with an
