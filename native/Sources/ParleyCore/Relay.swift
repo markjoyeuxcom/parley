@@ -157,8 +157,7 @@ public final class RelayCredentials: @unchecked Sendable {
         let directory = file.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let data = try JSONEncoder().encode(byPane)
-        try data.write(to: file, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        try OwnerOnlyFile.write(data, to: file)
     }
 
     private func newToken() throws -> String {
@@ -505,9 +504,22 @@ public final class RelayBroker: @unchecked Sendable {
     /// Terminal reality must remain visible even when saving it fails. Retain
     /// the error and retry the current record on the next native context read.
     @discardableResult
+    /// Every save of a context review: the store keeps at most its bound, and
+    /// the reviews it drops leave the broker's map too, or Status Center keeps
+    /// listing reviews that are already gone (review of 22 September 2026,
+    /// 4b656187).
+    private func recordContextReviewLocked(_ review: AgentContextReview) throws {
+        guard let contextReviewStore else { return }
+        let pruned = try contextReviewStore.record(review)
+        for id in pruned {
+            contextReviewRecords.removeValue(forKey: id)
+            contextPersistenceErrors.removeValue(forKey: id)
+        }
+    }
+
     private func persistContextRealityLocked(_ review: AgentContextReview) -> Error? {
         do {
-            try contextReviewStore?.record(review)
+            try recordContextReviewLocked(review)
             if contextPersistenceErrors.removeValue(forKey: review.id) != nil { noteChangeLocked() }
             return nil
         } catch {
@@ -690,7 +702,7 @@ public final class RelayBroker: @unchecked Sendable {
             do {
                 _ = try contextPackBuilder.render(review.pack)
                 review.updatedAt = Date()
-                try contextReviewStore?.record(review)
+                try recordContextReviewLocked(review)
                 contextReviewRecords[review.id] = review
                 noteChangeLocked()
                 consultationCondition.unlock()
@@ -765,7 +777,7 @@ public final class RelayBroker: @unchecked Sendable {
             review.updatedAt = Date()
             review.detail = "The source pane discarded this context draft."
             do {
-                try contextReviewStore?.record(review)
+                try recordContextReviewLocked(review)
                 contextReviewRecords[review.id] = review
             } catch {
                 consultationCondition.unlock()
@@ -921,7 +933,7 @@ public final class RelayBroker: @unchecked Sendable {
                 _ = try contextPackBuilder.render(review.pack)
                 review.updatedAt = Date()
                 review.detail = "A person added \(captured.count) source\(captured.count == 1 ? "" : "s") through Parley's authenticated review control; each part states what Parley independently established."
-                try contextReviewStore?.record(review)
+                try recordContextReviewLocked(review)
                 contextReviewRecords[review.id] = review
                 noteChangeLocked()
                 consultationCondition.unlock()
@@ -997,7 +1009,7 @@ public final class RelayBroker: @unchecked Sendable {
                 review.updatedAt = Date()
                 review.detail = "Waiting for a person to review and approve this context Ask."
                 do {
-                    try contextReviewStore?.record(review)
+                    try recordContextReviewLocked(review)
                     contextReviewRecords[review.id] = review
                 } catch {
                     consultationCondition.unlock()
@@ -1014,7 +1026,9 @@ public final class RelayBroker: @unchecked Sendable {
                         expired.updatedAt = Date()
                         expired.detail = "Context review timed out before approval."
                         contextReviewRecords[draftID] = expired
-                        try? contextReviewStore?.record(expired)
+                        // Kept and retried if the save fails; a dropped save
+                        // left a pending approval on disk after a restart.
+                        _ = persistContextRealityLocked(expired)
                         noteChangeLocked()
                     }
                     consultationCondition.unlock()
@@ -1049,7 +1063,7 @@ public final class RelayBroker: @unchecked Sendable {
                 preserveFormatting: true,
                 onAccepted: onAccepted
             )
-            finishContextReview(draftID, response: response)
+            finishContextReview(draftID, response: response, idempotencyKey: idempotencyKey, sourcePaneID: sender.id)
             return response
         } catch let error as BrokerFailure {
             return RelayTextResponse(status: error.status, text: error.message)
@@ -1125,7 +1139,7 @@ public final class RelayBroker: @unchecked Sendable {
             review.updatedAt = Date()
             review.detail = "Approved by the person using Parley."
             do {
-                try contextReviewStore?.record(review)
+                try recordContextReviewLocked(review)
                 contextReviewRecords[review.id] = review
             } catch {
                 consultationCondition.unlock()
@@ -1186,7 +1200,7 @@ public final class RelayBroker: @unchecked Sendable {
             review.updatedAt = Date()
             review.detail = "Approved by the person using Parley; submitting as a correlated Ask."
             do {
-                try contextReviewStore?.record(review)
+                try recordContextReviewLocked(review)
                 contextReviewRecords[review.id] = review
             } catch {
                 consultationCondition.unlock()
@@ -1294,7 +1308,7 @@ public final class RelayBroker: @unchecked Sendable {
         review.updatedAt = Date()
         review.detail = "The person declined this context Ask."
         do {
-            try contextReviewStore?.record(review)
+            try recordContextReviewLocked(review)
             contextReviewRecords[review.id] = review
         } catch {
             consultationCondition.unlock()
@@ -1327,7 +1341,7 @@ public final class RelayBroker: @unchecked Sendable {
         review.updatedAt = Date()
         review.detail = "The person discarded this context draft."
         do {
-            try contextReviewStore?.record(review)
+            try recordContextReviewLocked(review)
             contextReviewRecords[review.id] = review
         } catch {
             consultationCondition.unlock()
@@ -1367,15 +1381,29 @@ public final class RelayBroker: @unchecked Sendable {
         if !ids.isEmpty { noteChangeLocked() }
     }
 
-    private func finishContextReview(_ reviewID: String, response: RelayTextResponse) {
+    /// An Ask refused before any delivery (a busy target) left no handoff and
+    /// sent nothing, so the review goes back to a draft, as the person's own
+    /// send does; only one that reached the target and then failed is failed.
+    private func finishContextReview(_ reviewID: String, response: RelayTextResponse, idempotencyKey: String, sourcePaneID: String) {
         consultationCondition.lock()
         guard var review = contextReviewRecords[reviewID] else {
             consultationCondition.unlock()
             return
         }
-        review.state = (200..<300).contains(response.status) ? .completed : .failed
+        let asked = handoffRecords.values.contains {
+            $0.idempotencyKey == idempotencyKey && $0.kind == .ask && $0.sourcePaneID == sourcePaneID
+        }
+        if (200..<300).contains(response.status) {
+            review.state = .completed
+            review.detail = response.text
+        } else if asked {
+            review.state = .failed
+            review.detail = response.text
+        } else {
+            review.state = .draft
+            review.detail = "Not sent: \(response.text)"
+        }
         review.updatedAt = Date()
-        review.detail = response.text
         contextReviewRecords[review.id] = review
         _ = persistContextRealityLocked(review)
         noteChangeLocked()
@@ -1418,7 +1446,7 @@ public final class RelayBroker: @unchecked Sendable {
     private func recordContextReview(_ review: AgentContextReview) throws {
         consultationCondition.lock()
         defer { consultationCondition.unlock() }
-        try contextReviewStore?.record(review)
+        try recordContextReviewLocked(review)
         contextReviewRecords[review.id] = review
         noteChangeLocked()
     }
@@ -2019,7 +2047,7 @@ public final class RelayBroker: @unchecked Sendable {
             )
             do {
                 _ = try contextPackBuilder.render(review.pack)
-                try contextReviewStore?.record(review)
+                try recordContextReviewLocked(review)
             } catch {
                 consultationCondition.unlock()
                 throw error
@@ -2537,9 +2565,14 @@ public final class RelayBroker: @unchecked Sendable {
         }
         consultationCondition.unlock()
 
+        // Every broker change wakes every waiter; the pane read behind a
+        // liveness check runs at most once per poll interval however often
+        // this one is woken (review of 22 September 2026, 4b656187).
+        var nextLivenessCheck = DispatchTime.now()
         while true {
-            if original.kind == .delegate {
+            if original.kind == .delegate, DispatchTime.now() >= nextLivenessCheck {
                 reconcileDelegation(handoffID)
+                nextLivenessCheck = DispatchTime.now() + livenessPollInterval
             }
             consultationCondition.lock()
             guard let handoff = handoffRecords[handoffID] else {
@@ -4002,10 +4035,18 @@ public final class RelayBroker: @unchecked Sendable {
               handoff.targetPaneID == senderID else { return nil }
         let closedAt = handoff.transitions.last { $0.state == handoff.state }?.occurredAt ?? handoff.updatedAt
         let formatter = ISO8601DateFormatter()
-        let reason = switch handoff.state {
-        case .failed: "timed out before an answer arrived"
+        // An Ask fails for more than a timeout (its target's pane closed or
+        // restarted); the transition that closed it says which.
+        let closing = handoff.transitions.last { $0.state == handoff.state }?.detail?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let reason: String = switch handoff.state {
+        case .failed, .interrupted:
+            if let closing, !closing.isEmpty {
+                "ended without an answer (\(closing.hasSuffix(".") ? String(closing.dropLast()) : closing))"
+            } else {
+                handoff.state == .failed ? "ended without an answer" : "was interrupted"
+            }
         case .cancelled: "was cancelled"
-        case .interrupted: "was interrupted"
         case .completed: "already has an answer"
         default: "is no longer awaiting an answer"
         }
@@ -4099,6 +4140,8 @@ public final class RelayBroker: @unchecked Sendable {
         let createdAt = handoffRecords[handoffID]?.transitions.first?.occurredAt ?? Date()
         consultationCondition.unlock()
         let deadline = createdAt.addingTimeInterval(consultationTimeout)
+        // See waitForTrackedWork: at most one liveness check per interval.
+        var nextLivenessCheck = DispatchTime.now()
 
         while true {
             consultationCondition.lock()
@@ -4135,6 +4178,8 @@ public final class RelayBroker: @unchecked Sendable {
                 consultationCondition.unlock()
                 return response
             }
+            guard DispatchTime.now() >= nextLivenessCheck else { continue }
+            nextLivenessCheck = DispatchTime.now() + livenessPollInterval
             guard let failure = livenessFailure(for: record) else { continue }
 
             consultationCondition.lock()

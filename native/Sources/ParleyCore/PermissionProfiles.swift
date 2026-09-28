@@ -675,8 +675,7 @@ public final class PermissionProfileStore: @unchecked Sendable {
         if fileManager.fileExists(atPath: file.path) { try validateExistingFile() }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(Document(version: 1, customProfiles: profiles)).write(to: file, options: .atomic)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        try OwnerOnlyFile.write(try encoder.encode(Document(version: 1, customProfiles: profiles)), to: file, fileManager: fileManager)
         cache = nil // see WorkspaceRegistry.write: never pair our bytes with a post-write pathname stamp
     }
 

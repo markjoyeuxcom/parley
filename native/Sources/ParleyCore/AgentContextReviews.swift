@@ -336,7 +336,10 @@ public final class AgentContextReviewStore: @unchecked Sendable {
         }
     }
 
-    public func record(_ review: AgentContextReview) throws {
+    /// Returns the reviews the store dropped to stay within its bound, so the
+    /// broker can drop them too.
+    @discardableResult
+    public func record(_ review: AgentContextReview) throws -> Set<String> {
         try lock.withLock {
             let isNewPending = byID[review.id] == nil && review.state.needsHumanReview
             if isNewPending, byID.values.count(where: { $0.state.needsHumanReview }) >= Self.maximumPending {
@@ -346,7 +349,9 @@ public final class AgentContextReviewStore: @unchecked Sendable {
             proposed[review.id] = review
             Self.prune(&proposed)
             try writeLocked(proposed)
+            let pruned = Set(byID.keys).union([review.id]).subtracting(proposed.keys)
             byID = proposed
+            return pruned
         }
     }
 
@@ -397,22 +402,7 @@ public final class AgentContextReviewStore: @unchecked Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(Document(version: 1, reviews: ordered))
-        let temporary = directory.appendingPathComponent(".context-reviews-\(UUID().uuidString).tmp")
-        let descriptor = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
-        defer { close(descriptor); try? fileManager.removeItem(at: temporary) }
-        try data.withUnsafeBytes { bytes in
-            var offset = 0
-            while offset < bytes.count {
-                let count = Darwin.write(descriptor, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
-                if count < 0, errno == EINTR { continue }
-                guard count > 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(count == 0 ? EIO : errno)) }
-                offset += count
-            }
-        }
-        guard fsync(descriptor) == 0, rename(temporary.path, file.path) == 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        }
+        try OwnerOnlyFile.write(data, to: file, fileManager: fileManager)
         // Rename is the commit point. Permissions and sync already succeeded;
         // no fallible maintenance may report a failed save after this point.
     }

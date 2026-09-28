@@ -198,6 +198,20 @@ func checkCompletionEvidenceOnlyReadsTheExactReturnedFile() throws {
     let mixed = evidenceReview(parts: [trusted, agentPart(section("Implemented", implementedBody))])
     let onlyAgent = try evidenceRequire(CompletionEvidenceProjection.evidence(for: handoff, review: mixed), "the agent file beside a trusted part was not interpreted")
     try evidenceExpect(onlyAgent.sections == [.implemented], "a trusted part's headings leaked into the evidence: \(onlyAgent.sections)")
+
+    // Review of 22 September 2026 (4b656187): evidence came from the editable
+    // pack, so removing or editing the returned part before sending hid it.
+    // The staged copy (`returnedPart`) is what the delegation returned.
+    var removed = evidenceReview(parts: [])
+    removed.returnedPart = agentPart(text)
+    let fromStaged = try evidenceRequire(CompletionEvidenceProjection.evidence(for: handoff, review: removed),
+                                         "evidence disappeared when the returned part was removed from the pack before sending")
+    try evidenceExpect(fromStaged.sections == [.implemented, .tested, .unableToTest], "the staged returned part's sections were not projected")
+    var personEdited = evidenceReview(parts: [agentPart("## Tested\nEdited by the person.")])
+    personEdited.returnedPart = agentPart(text)
+    let fromEdited = CompletionEvidenceProjection.evidence(for: handoff, review: personEdited)
+    try evidenceExpect(fromEdited?.sections == [CompletionEvidenceSection.implemented, .tested, .unableToTest],
+                       "a person's edit to the returned part replaced the agent's evidence")
     let twoAgentFiles = evidenceReview(parts: [agentPart(section("Implemented", implementedBody)), agentPart(section("Tested", testedBody))])
     try evidenceExpect(CompletionEvidenceProjection.evidence(for: handoff, review: twoAgentFiles) == nil, "an ambiguous pack with two returned files was interpreted")
 

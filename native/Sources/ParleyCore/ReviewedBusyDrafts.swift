@@ -286,8 +286,9 @@ public final class ReviewedBusyDraftStore: @unchecked Sendable {
         guard data.count <= Self.maximumDocumentBytes else {
             throw ReviewedBusyDraftStoreError.invalid("Parley's reviewed busy queue reached its 4 MB local safety bound.")
         }
-        try data.write(to: file, options: .atomic)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        // Never visible 0644 or half-written: either was refused at the next
+        // launch and stopped the coordination core (4b656187).
+        try OwnerOnlyFile.write(data, to: file, fileManager: fileManager)
     }
 
     private static func validateExistingFile(_ file: URL) throws {

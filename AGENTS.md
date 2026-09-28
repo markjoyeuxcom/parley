@@ -227,7 +227,18 @@ partial bytes cannot be cut away marks the tail uncertain so every later
 append first rewrites the acknowledged projection or refuses, and a
 compaction failure after a durable append is retained as `lastError` and
 surfaced through the Status Center core-health route until the next
-successful compaction, never reported as a lost record. Pane attention is projected once per input generation
+successful compaction, never reported as a lost record. The handoff journal's
+`record()` is the one non-durable write (a relay that reached a live terminal
+keeps its in-memory projection when the append fails); that failure marks
+the file behind the projection, so the next write rewrites the whole
+projection before `lastError` clears (until 28 September 2026 the next
+append cleared the error and the lost record was never written). Every
+owner-only store writes through `OwnerOnlyFile.write`: created 0600 under a
+temporary name, written, `fsync`ed and only then renamed into place. They
+used to `Data.write(.atomic)` and `chmod` after the rename, so the file (the
+relay credentials included) was briefly 0644 and never synced, and a crash in
+that moment or a torn file after power loss was refused by the store's own
+owner-only check at the next launch (4b656187). Pane attention is projected once per input generation
 (panes plus every handoff collection) through `PaneAttentionCache`; process
 sampling for Status Center's Health section runs on one serial owner off the
 main actor, only while that section is mounted in an active window, and
@@ -431,7 +442,12 @@ a different source identity.
   expired question's work and answers with `current` lands that answer on a
   newer question, and Parley reports success. A late answer naming a
   consultation that has closed is refused with the state it reached and when —
-  to the pane that was asked, and to nobody else.
+  to the pane that was asked, and to nobody else. One that failed or was
+  interrupted names the reason its closing transition recorded (a timeout, or
+  the target's pane closing); every failure used to read "timed out". Every
+  broker change wakes every parked Ask and `parley wait`, and each checks
+  liveness (a workbench read, and for an Ask a locked credential read) at most
+  once per poll interval however often it is woken.
 - `parley delegate <target> <task>` creates tracked asynchronous work.
 - `parley progress <id|current> <note>` lets the exact delegated target replace
   one bounded, control-stripped, agent-declared progress note. It is never a
@@ -592,7 +608,10 @@ AGENT-DECLARED and shows every body as an unchecked claim. Unknown headings
 and their bodies are ignored, the first occurrence of a duplicate heading
 wins, an empty recognised heading is shown as declaring nothing, and a file
 without the headings renders exactly as before. Parley never runs a command
-to check a claim, adds no schema and never rewrites the staged file.
+to check a claim, adds no schema and never rewrites the staged file. The
+evidence is read from the review's `returnedPart`, the staged copy, not the
+editable pack, where the person may edit or remove the part before sending;
+a record from before the copy existed still reads the pack.
 
 ```markdown
 ## Implemented
@@ -1683,7 +1702,16 @@ completed (naming the handoff) once the Ask is accepted, handed back to
 `.draft` with a "Not sent" detail when the Ask is refused before delivery (a
 busy target, for instance), and `.failed` when delivery itself fails. The
 call returns with the answer or the consultation timeout, which is why it is
-a tracked request and runs off the main actor.
+a tracked request and runs off the main actor. The agent's own `parley ask
+--context` follows the same rule since 28 September 2026: approved, then
+refused before any handoff existed, it goes back to `.draft` ("Not sent")
+instead of `.failed`, which lost the approval. Its approval timeout is saved
+through `persistContextRealityLocked`, so a failed save is kept and retried
+rather than leaving a pending approval on disk. Every context review save
+goes through `recordContextReviewLocked`: the store keeps at most 100 reviews
+and returns the ones it pruned, which leave the broker's map too (the map
+used to keep every one, so Status Center listed reviews the store had
+dropped).
 
 Sending an agent-staged draft (approving the agent's waiting Ask or
 sending it as the person's own Ask) closes the sheet before the tracked

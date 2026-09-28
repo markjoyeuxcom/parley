@@ -116,6 +116,10 @@ public final class RelayHandoffJournal: @unchecked Sendable {
                 storedError = nil
             } catch {
                 storedError = error.localizedDescription
+                // The projection keeps this record but the file does not have
+                // it: the next write rewrites the whole projection first, so
+                // an error is never cleared over a record that was lost.
+                uncertainTail = true
             }
         }
     }
