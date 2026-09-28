@@ -38,6 +38,9 @@ export const BASELINE = {
   "CodexHostConfiguration.swift": ["Darwin"],
   "CollaborationHistoryRetention.swift": ["Darwin"],
   "CommandRunner.swift": ["Darwin"],
+  // The one durable owner-only whole-file write (open, fsync, rename), in
+  // place of the same pattern copied into each store (28 September 2026).
+  "OwnerOnlyFile.swift": ["Darwin"],
   "ContainerGitAccess.swift": ["Darwin"],
   "ContainerPaneService.swift": ["Darwin"],
   "ContextPacks.swift": ["CryptoKit", "Darwin", "ImageIO"],

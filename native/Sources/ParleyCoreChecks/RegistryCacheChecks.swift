@@ -51,17 +51,18 @@ func registryReadCacheChecks() throws {
 /// of the same file right after this writer's chmod, before any post-write
 /// stat. That is the window in which a stamp taken from the pathname would
 /// describe someone else's bytes.
-private final class InterleavingFileManager: FileManager, @unchecked Sendable {
+private final class InterleavingFileManager: FileManager, OwnerOnlyFileObserver, @unchecked Sendable {
     let targetPath: String
     var afterSetAttributes: (() throws -> Void)?
     init(targetPath: String) {
         self.targetPath = targetPath
         super.init()
     }
-    override func setAttributes(_ attributes: [FileAttributeKey: Any], ofItemAtPath path: String) throws {
-        try super.setAttributes(attributes, ofItemAtPath: path)
-        // The file chmod follows the atomic write; the directory chmod precedes it.
-        if path == targetPath, let hook = afterSetAttributes {
+    /// The moment the store's own write is committed: another writer's
+    /// replacement lands here, before the store could take any stamp. (Until
+    /// 28 September 2026 this hooked the chmod that followed an atomic write.)
+    func ownerOnlyFileCommitted(_ file: URL) throws {
+        if file.path == targetPath, let hook = afterSetAttributes {
             afterSetAttributes = nil
             try hook()
         }

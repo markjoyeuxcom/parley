@@ -54,11 +54,7 @@ public final class ContainerPaneService: @unchecked Sendable {
         guard document.records.count <= 500 else { throw ContainerPaneError.refused("Remove old container records in Status Center before creating more containers.") }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let data = try JSONEncoder().encode(document)
-        try data.write(to: file, options: [.atomic])
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-        let handle = try FileHandle(forWritingTo: file)
-        defer { try? handle.close() }
-        try handle.synchronize()
+        try OwnerOnlyFile.write(data, to: file)
         initialDocument = document
     }
 

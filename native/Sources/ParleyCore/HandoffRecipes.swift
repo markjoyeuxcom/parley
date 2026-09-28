@@ -262,8 +262,7 @@ public final class HandoffRecipeStore: @unchecked Sendable {
         if fileManager.fileExists(atPath: file.path) { try validateExistingFile() }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(Document(version: Self.currentVersion, recipes: recipes)).write(to: file, options: .atomic)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        try OwnerOnlyFile.write(try encoder.encode(Document(version: Self.currentVersion, recipes: recipes)), to: file, fileManager: fileManager)
     }
 
     private func validate(_ recipe: HandoffRecipe) throws {
