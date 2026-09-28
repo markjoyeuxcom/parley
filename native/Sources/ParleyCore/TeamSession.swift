@@ -225,11 +225,16 @@ public struct TeamSessionMember: Identifiable, Codable, Equatable, Sendable {
     /// Set when the pane was created and owned but a later native step
     /// (mounting or selection) failed; the pane still counts and Stop covers it.
     public var warning: String?
+    /// A container member is created as a stopped placeholder and started
+    /// only when its Docker preparation succeeds. Nil for a host member, for
+    /// the generation that started, and in records from before this existed.
+    public var containerPreparation: TeamContainerPreparation?
 
     public var id: String { paneID }
 
     public init(paneID: String, launchGeneration: Int, workspaceID: String, kind: PaneKind, name: String, role: String?,
-                requestedByPaneID: String, grantID: String, createdAt: Date, warning: String? = nil) {
+                requestedByPaneID: String, grantID: String, createdAt: Date, warning: String? = nil,
+                containerPreparation: TeamContainerPreparation? = nil) {
         self.paneID = paneID
         self.launchGeneration = launchGeneration
         self.workspaceID = workspaceID
@@ -240,6 +245,7 @@ public struct TeamSessionMember: Identifiable, Codable, Equatable, Sendable {
         self.grantID = grantID
         self.createdAt = createdAt
         self.warning = warning
+        self.containerPreparation = containerPreparation
     }
 
     /// Whether `pane` is still the exact process generation this session created.
@@ -251,12 +257,25 @@ public struct TeamSessionMember: Identifiable, Codable, Equatable, Sendable {
     /// process, so a stopped placeholder of the created generation is
     /// `launchGeneration + 1` and not started. Anything else is a person's
     /// restart. This mirrors `WorkbenchController.stopPaneProcess` exactly.
+    /// A container placeholder whose preparation ended without starting it
+    /// had no process to stop, so its generation never moved: it is a
+    /// stopped placeholder too, which Close stopped panes offers.
     public func ownership(of pane: WorkbenchPane?) -> TeamPaneOwnership {
         guard let pane, pane.id == paneID else { return .closed }
-        if pane.launchGeneration == launchGeneration { return .owned }
+        if pane.launchGeneration == launchGeneration {
+            return !pane.isStarted && containerPreparation == .ended ? .stopped : .owned
+        }
         if !pane.isStarted, pane.launchGeneration == launchGeneration &+ 1 { return .stopped }
         return .restartedByPerson
     }
+}
+
+/// Where a container member's Docker preparation stands.
+public enum TeamContainerPreparation: String, Codable, Equatable, Sendable {
+    /// Docker is preparing the container; the placeholder is owned and waits.
+    case pending
+    /// The preparation failed, or was refused before starting the pane.
+    case ended
 }
 
 /// A pending request from the requesting pane to add one pane. It is
@@ -426,6 +445,10 @@ public enum TeamMemberStopResult: String, Codable, Equatable, Sendable, CaseIter
     case skippedClosed
     /// The owned generation was already stopped.
     case alreadyStopped
+    /// The owned placeholder's container was still being prepared. Nothing
+    /// was running, and the ended grant refuses its activation; the
+    /// preparation removes the container it made and reports that on the pane.
+    case preparationCancelled
 
     public var label: String {
         switch self {
@@ -436,6 +459,7 @@ public enum TeamMemberStopResult: String, Codable, Equatable, Sendable, CaseIter
         case .skippedRestarted: "skipped: restarted by you, no longer team-owned"
         case .skippedClosed: "skipped: already closed"
         case .alreadyStopped: "already stopped"
+        case .preparationCancelled: "container preparation cancelled before it started; the preparation removes its container"
         }
     }
 }
@@ -567,7 +591,7 @@ public struct TeamStopAttempt: Identifiable, Codable, Equatable, Sendable {
         if !unrecorded.isEmpty {
             parts.append("Stopped but not recorded: " + unrecorded.map { "\($0.name): \($0.message ?? "unknown error")" }.joined(separator: "; "))
         }
-        let skipped = outcomes.filter { [.skippedRestarted, .skippedClosed, .alreadyStopped].contains($0.result) }
+        let skipped = outcomes.filter { [.skippedRestarted, .skippedClosed, .alreadyStopped, .preparationCancelled].contains($0.result) }
         if !skipped.isEmpty { parts.append("Skipped: " + skipped.map { "\($0.name) (\($0.result.label))" }.joined(separator: "; ")) }
         let failed = outcomes.filter { $0.result == .failed || $0.result == .unknown }
         if !failed.isEmpty {
@@ -602,9 +626,24 @@ public enum TeamStopPlanner {
             case .restartedByPerson: return Entry(member: member, action: .skip(.skippedRestarted))
             case .stopped: return Entry(member: member, action: .skip(.alreadyStopped))
             case .owned:
-                guard let pane, pane.kind.isAgent, pane.isStarted else { return Entry(member: member, action: .skip(.alreadyStopped)) }
+                guard let pane, pane.kind.isAgent, pane.isStarted else {
+                    return Entry(member: member, action: .skip(member.containerPreparation == .pending ? .preparationCancelled : .alreadyStopped))
+                }
                 return Entry(member: member, action: .stop)
             }
+        }
+    }
+
+    /// The owned container panes whose container Stop removes before it
+    /// stops their surfaces. A placeholder whose preparation is still running
+    /// is left to that preparation: the controller refuses a second Docker
+    /// operation on the pane meanwhile, and the ended grant makes the
+    /// preparation remove what it made. A placeholder whose preparation ended
+    /// is included, so Stop retries a cleanup that was not confirmed.
+    public static func containerCleanup(members: [TeamSessionMember], live: [WorkbenchPane]) -> [WorkbenchPane] {
+        live.filter { pane in
+            pane.containerConfiguration != nil
+                && members.contains { $0.owns(pane) && !(!pane.isStarted && $0.containerPreparation == .pending) }
         }
     }
 }

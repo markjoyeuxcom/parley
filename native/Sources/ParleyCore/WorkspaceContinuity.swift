@@ -18,6 +18,18 @@ public enum WorkspaceFolderIdentity {
         matchingKey(left) == matchingKey(right)
     }
 
+    /// Whether `path` is `root` or inside it. Both must already be in the
+    /// same canonical spelling. The filesystem root, or any root ending in a
+    /// slash, is its own prefix: `root + "/"` would make `/` require `//`.
+    public static func contains(_ path: String, within root: String) -> Bool {
+        path == root || path.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+    }
+
+    /// Whether either folder is, or is inside, the other.
+    public static func overlaps(_ left: String, _ right: String) -> Bool {
+        contains(left, within: right) || contains(right, within: left)
+    }
+
     public static func displayName(for folder: String) -> String {
         let normalized = normalized(folder)
         let component = URL(fileURLWithPath: normalized).lastPathComponent

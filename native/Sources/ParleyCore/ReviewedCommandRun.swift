@@ -149,7 +149,7 @@ public struct ReviewedCommand: Codable, Equatable, Hashable, Sendable {
         let canonical = URL(fileURLWithPath: folder).resolvingSymlinksInPath().standardizedFileURL.path
         var directory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: canonical, isDirectory: &directory), directory.boolValue,
-              canonical == root || canonical.hasPrefix(root == "/" ? "/" : root + "/") else {
+              WorkspaceFolderIdentity.contains(canonical, within: root) else {
             throw ReviewedCommandRunError.invalid("The working folder must remain inside the requesting pane's folder, including after resolving symlinks.")
         }
         self.argv = argv

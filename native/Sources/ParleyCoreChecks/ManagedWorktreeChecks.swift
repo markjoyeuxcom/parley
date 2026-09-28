@@ -686,7 +686,7 @@ func workbenchFolderReservationChecks() throws {
     let agent = try controller.createPane(kind: .claude, cwd: tree.path)
     // createPane starts panes; startPane ignores an already started pane, so the
     // stopped-placeholder route needs a genuinely stopped pane.
-    try controller.stopPaneProcess(agent.id)
+    try controller.stopPaneProcess(agent.id, expectedGeneration: nil)
     try wtExpect(try controller.listPanes().first { $0.id == agent.id }?.isStarted == false, "the agent pane did not stop before the start test")
     try controller.reserveFolderForRemoval(tree.path)
     try wtExpect(controller.reservedFolders() == [GitWorktreeResolver.canonicalPath(tree.path)], "the reservation was not recorded")

@@ -535,7 +535,7 @@ func checkContainerControllerLifecycle() throws {
     try containerExpect(try controller.listPanes().first { $0.id == pane.id }?.isStarted == true, "failed cleanup claimed the pane stopped")
     runner.daemon = "daemon-one"
     try controller.prepareContainerStop(active)
-    try controller.stopPaneProcess(pane.id)
+    try controller.stopPaneProcess(pane.id, expectedGeneration: nil)
     try controller.prepareContainerStart(pane.id, configuration: configuration, permissionProfile: profile, launchMode: .resume)
     try controller.startPane(pane.id, permissionProfile: profile, launchMode: .resume, containerConfiguration: configuration)
     let restarted = try controller.launchConfiguration(for: pane.id)
@@ -575,7 +575,7 @@ private final class ContainerReviewFixture {
     }
     func stoppedPane(folder: String) throws -> WorkbenchPane {
         let pane = try controller.createPane(kind: .codex, cwd: folder, permissionProfile: profile(folder: folder))
-        try controller.stopPaneProcess(pane.id)
+        try controller.stopPaneProcess(pane.id, expectedGeneration: nil)
         return try controller.listPanes().first { $0.id == pane.id }!
     }
 }
@@ -625,7 +625,7 @@ func checkContainerPreparedRemovalRecovery() throws {
             try fixture.controller.startPane(pane.id, permissionProfile: profile, containerConfiguration: fixture.configuration)
             let active = try fixture.controller.listPanes().first { $0.id == pane.id }!
             try fixture.controller.prepareContainerStop(active)
-            try fixture.controller.stopPaneProcess(pane.id)
+            try fixture.controller.stopPaneProcess(pane.id, expectedGeneration: nil)
         default:
             try fixture.controller.closePane(pane.id)
             try containerExpect(try !fixture.controller.listPanes().contains { $0.id == pane.id }, "recovered pane could not close")
@@ -690,7 +690,7 @@ func checkContainerOldReceiptRemoval() throws {
     try containerExpect(try fixture.credentials.token(for: pane.id) == token, "old receipt removal changed the replacement capability")
     try containerExpect(try fixture.controller.listPanes().first { $0.id == pane.id }?.isStarted == true, "replacement pane lost its running state")
     try fixture.controller.prepareContainerStop(active)
-    try fixture.controller.stopPaneProcess(pane.id)
+    try fixture.controller.stopPaneProcess(pane.id, expectedGeneration: nil)
 }
 
 func checkContainerResponsiveRecords() throws {
@@ -967,7 +967,7 @@ func checkContainerBypassController() throws {
         let fixture = try ContainerReviewFixture()
         let profile = try fixture.profile(folder: fixture.project.path)
         let pane = try fixture.controller.createPane(kind: vendor, cwd: fixture.project.path, permissionProfile: profile)
-        try fixture.controller.stopPaneProcess(pane.id)
+        try fixture.controller.stopPaneProcess(pane.id, expectedGeneration: nil)
         var reviewed = fixture.configuration; reviewed.bypassVendorPermissions = true
         try fixture.controller.prepareContainerStart(pane.id, configuration: reviewed, permissionProfile: profile, launchMode: .resume)
         let create = fixture.runner.calls.first { $0.contains("create") && $0.contains(reviewed.imageID) && $0.contains("--network=bridge") }!
@@ -1008,7 +1008,7 @@ func checkContainerBypassController() throws {
         let saved = try JSONDecoder().decode(WorkbenchPane.self, from: JSONEncoder().encode(started))
         try containerExpect(saved.containerConfiguration?.bypassVendorPermissions == true, "pane persistence lost bypass")
         try fixture.controller.prepareContainerStop(started)
-        try fixture.controller.stopPaneProcess(pane.id)
+        try fixture.controller.stopPaneProcess(pane.id, expectedGeneration: nil)
         try fixture.controller.startPane(pane.id, permissionProfile: profile)
         let host = try fixture.controller.listPanes().first { $0.id == pane.id }!
         let launch = try fixture.controller.launchConfiguration(for: pane.id)

@@ -49,7 +49,7 @@ func checkStatusSnapshotIsComputedOncePerGeneration() throws {
 /// body is taken by balancing its delimiters, so formatting, a `willSet`
 /// beside the `didSet` or a comment naming a property does not change the
 /// verdict (Agy's review of MR !111).
-private struct SwiftSourceReader {
+struct SwiftSourceReader {
     let text: String
 
     init(_ source: String) {

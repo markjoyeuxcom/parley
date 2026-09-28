@@ -362,9 +362,7 @@ public enum WorktreeCleanupPolicy {
     public static let maximumReviewedIgnoredPaths = 200
 
     public static func isNested(_ folder: String, in path: String) -> Bool {
-        let inside = GitWorktreeResolver.canonicalPath(folder)
-        let root = GitWorktreeResolver.canonicalPath(path)
-        return inside == root || inside.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+        WorkspaceFolderIdentity.contains(GitWorktreeResolver.canonicalPath(folder), within: GitWorktreeResolver.canonicalPath(path))
     }
 
     public enum Decision: Equatable, Sendable {

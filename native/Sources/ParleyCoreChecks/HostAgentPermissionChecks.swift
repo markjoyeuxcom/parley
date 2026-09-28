@@ -168,6 +168,6 @@ func checkHostLaunchPermissionSnapshot() throws {
         "deleting a stored profile invalidated an existing launch")
     try hostExpect(broker.ticketPolicy(token: newToken, socketListening: true)?.requirement == .required,
         "deleting a profile relaxed the running pane's ticket requirement")
-    try controller.stopPaneProcess(pane.id)
+    try controller.stopPaneProcess(pane.id, expectedGeneration: nil)
     try hostExpect(controller.hostNetworkAllowed(for: current) == nil, "a stopped pane retained a live network fact")
 }

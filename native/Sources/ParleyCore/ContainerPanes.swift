@@ -146,13 +146,12 @@ public enum ContainerLaunchProjection {
         let mountedFolders = [facts.folder] + (configuration.gitAccess.map { [$0.commonDirectory] } ?? [])
         if let access = configuration.gitAccess {
             try path(access.commonDirectory)
-            guard access.folder == facts.folder, !facts.folder.hasPrefix(access.commonDirectory + "/"),
-                  !access.commonDirectory.hasPrefix(facts.folder + "/"), access.commonDirectory != facts.folder else {
+            guard access.folder == facts.folder, !WorkspaceFolderIdentity.overlaps(facts.folder, access.commonDirectory) else {
                 throw ContainerPaneError.refused("The reviewed shared Git mount does not match the working folder.")
             }
         }
         for protected in [transportRoot, facts.protocolDirectory, facts.shimDirectory] {
-            guard mountedFolders.allSatisfy({ !protected.hasPrefix($0 + "/") && !$0.hasPrefix(protected + "/") && protected != $0 }) else {
+            guard !mountedFolders.contains(where: { WorkspaceFolderIdentity.overlaps($0, protected) }) else {
                 throw ContainerPaneError.refused("The working folder overlaps Parley's container control files.")
             }
         }

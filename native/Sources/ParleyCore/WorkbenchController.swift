@@ -629,7 +629,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 throw TeamSessionError.invalid("The approved team session or its requesting pane changed before pane creation.")
             }
             let canonical = WorkspaceFolderIdentity.matchingKey(grant.folder)
-            guard canonical == session.sourceFolder || canonical.hasPrefix(session.sourceFolder + "/") else {
+            guard WorkspaceFolderIdentity.contains(canonical, within: session.sourceFolder) else {
                 throw TeamSessionError.invalid("The approved folder is outside the requesting pane's working folder.")
             }
             if let role = provision.role {
@@ -872,7 +872,11 @@ public final class WorkbenchController: @unchecked Sendable {
         }
     }
 
-    public func stopPaneProcess(_ paneID: String, expectedGeneration: Int? = nil) throws {
+    /// `expectedGeneration` is the generation the caller reviewed: a pane
+    /// restarted since is left alone. It has no default, so a caller that
+    /// awaits anything before stopping has to say which process it means;
+    /// nil is for a caller that stops whatever runs there now.
+    public func stopPaneProcess(_ paneID: String, expectedGeneration: Int?) throws {
         try lock.withLock {
             try requireNoTerminationInProgress()
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {

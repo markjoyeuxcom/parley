@@ -96,7 +96,7 @@ func titlePersistenceCoalescingChecks() throws {
 
     // Stop and close flush immediately; the persisted document is the one a new launch reads.
     _ = try controller.terminalDidChangeTitle(paneID: pane.id, title: "before-stop")
-    try controller.stopPaneProcess(pane.id)
+    try controller.stopPaneProcess(pane.id, expectedGeneration: nil)
     try pathExpect(!controller.hasPendingPersistence && (try persistedTitle(stateFile: stateFile, paneID: pane.id)) == "before-stop", "stopping a pane did not flush the pending title")
     let reloaded = try WorkbenchController(applicationDirectory: runtime, environment: ["PATH": "/usr/bin:/bin", "SHELL": "/bin/zsh"])
     let reloadedTitle = try reloaded.listPanes().first { $0.id == pane.id }?.terminalTitle
