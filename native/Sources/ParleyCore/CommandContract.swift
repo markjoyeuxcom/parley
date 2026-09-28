@@ -14,17 +14,22 @@ public struct CommandOutput: Equatable, Sendable {
     public let stderr: Data
     public let status: Int32
     public let diagnostic: String?
+    /// The signal that ended the process, when one did; `status` is then the
+    /// shell's 128 + N. Nil for a normal exit or when not recorded.
+    public let terminationSignal: Int32?
 
     public init(
         stdout: Data = Data(),
         stderr: Data = Data(),
         status: Int32 = 0,
-        diagnostic: String? = nil
+        diagnostic: String? = nil,
+        terminationSignal: Int32? = nil
     ) {
         self.stdout = stdout
         self.stderr = stderr
         self.status = status
         self.diagnostic = diagnostic
+        self.terminationSignal = terminationSignal
     }
 
     public var stdoutText: String { String(decoding: stdout, as: UTF8.self) }
