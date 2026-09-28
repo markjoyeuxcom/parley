@@ -80,7 +80,15 @@ public final class ProcessCommandRunner: CommandRunning {
         guard signalMaskStatus == 0 else {
             throw commandPOSIXError(signalMaskStatus, operation: "posix_spawnattr_setsigmask")
         }
-        let closeUnmappedDescriptors = Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)
+        // A session of its own, so the child leads its own process group and
+        // a timeout can end every descendant it started: a hook, a filter, a
+        // helper that ignores SIGTERM (review of 22 September 2026, 96c795d7).
+        // A session, not only a group: in Parley's session a child that wants
+        // the terminal (the `zsh -lic` PATH discovery opens /dev/tty to take
+        // the foreground) was stopped by SIGTTOU whenever Parley had one,
+        // stalling launch for the whole timeout. With no controlling terminal
+        // it cannot reach one at all.
+        let closeUnmappedDescriptors = Int16(POSIX_SPAWN_CLOEXEC_DEFAULT | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSID)
         let flagsStatus = posix_spawnattr_setflags(&attributes, closeUnmappedDescriptors)
         guard flagsStatus == 0 else {
             throw commandPOSIXError(flagsStatus, operation: "isolate child file descriptors")
@@ -370,15 +378,29 @@ private func waitForCommand(
         usleep(10_000)
     }
 
-    _ = kill(processIdentifier, SIGTERM)
+    // The child leads its own group. Signal the group, and keep the child
+    // unreaped (WNOWAIT) until the group has had SIGKILL: an unreaped child
+    // holds its pid, so the group id cannot be reused by another process in
+    // between. Descendants that ignore SIGTERM, or outlive the child, go too.
+    // The whole grace second, even once the child has exited: its own
+    // descendants may still be cleaning up (a `git` child removing its
+    // index.lock), and they got about 10 ms when this stopped at the child.
+    _ = kill(-processIdentifier, SIGTERM)
     let terminationDeadline = DispatchTime.now().uptimeNanoseconds &+ 1_000_000_000
+    var exited = false
     while DispatchTime.now().uptimeNanoseconds < terminationDeadline {
-        let result = waitpid(processIdentifier, &status, WNOHANG)
-        if result == processIdentifier { return (status, .timedOut, "terminated-after-timeout") }
-        if result < 0, errno != EINTR { return (status, .timedOut, "timeout-wait-error-\(errno)") }
+        if !exited {
+            var info = siginfo_t()
+            let result = waitid(P_PID, id_t(processIdentifier), &info, WEXITED | WNOHANG | WNOWAIT)
+            if result == 0, info.si_pid == processIdentifier { exited = true }
+        }
         usleep(10_000)
     }
-    _ = kill(processIdentifier, SIGKILL)
+    _ = kill(-processIdentifier, SIGKILL)
+    if exited {
+        let result = waitpid(processIdentifier, &status, WNOHANG)
+        if result == processIdentifier { return (status, .timedOut, "terminated-after-timeout") }
+    }
     return (status, .timedOut, BoundedReap.run(processIdentifier, status: &status))
 }
 

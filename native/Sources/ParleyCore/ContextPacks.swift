@@ -310,6 +310,14 @@ public final class ContextProcessCommandRunner: ContextCommandRunning, @unchecke
         }
         try process.run()
         defer { for handle in handles { try? handle.close() } }
+        // Foundation starts the child as the leader of its own process group
+        // (checked here rather than assumed): a timeout then ends the whole
+        // group, never only the direct child (review of 22 September 2026,
+        // 96c795d7).
+        let leadsGroup = getpgid(process.processIdentifier) == process.processIdentifier
+        func signal(_ number: Int32) {
+            _ = kill(leadsGroup ? -process.processIdentifier : process.processIdentifier, number)
+        }
         let deadline = DispatchTime.now().uptimeNanoseconds &+ UInt64(timeout * 1_000_000_000)
         var cancelledAt: UInt64?
         var exitedAt: UInt64?
@@ -320,10 +328,12 @@ public final class ContextProcessCommandRunner: ContextCommandRunning, @unchecke
             let now = DispatchTime.now().uptimeNanoseconds
             if now >= deadline, cancelledAt == nil, process.isRunning {
                 cancelledAt = now
-                process.terminate()
+                signal(SIGTERM)
             }
-            if let cancelledAt, now &- cancelledAt >= 1_000_000_000, !killed, process.isRunning {
-                _ = kill(process.processIdentifier, SIGKILL)
+            // SIGKILL to the group whether or not the direct child is still
+            // running: a descendant that ignored SIGTERM outlives it.
+            if let cancelledAt, now &- cancelledAt >= 1_000_000_000, !killed {
+                signal(SIGKILL)
                 killed = true
             }
             if !process.isRunning, exitedAt == nil { exitedAt = now }
@@ -345,6 +355,9 @@ public final class ContextProcessCommandRunner: ContextCommandRunning, @unchecke
             if let exitedAt, !open.contains(true) || now &- exitedAt >= 500_000_000 { break }
             usleep(5_000)
         }
+        // The loop can end half a second after the direct child, before the
+        // group's SIGKILL above: a timed-out command's group always gets one.
+        if cancelledAt != nil, !killed { signal(SIGKILL) }
         if cancelledAt != nil {
             buffers[1].append(Data("\nCommand timed out after \(timeout) seconds".utf8))
         }

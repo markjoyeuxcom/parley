@@ -10,6 +10,9 @@ struct PermissionProfilePickerView: View {
     @State private var approvedRoots: [String]
     @State private var editingProfile: PermissionProfileDefinition?
     @State private var runInContainer: Bool
+    /// Filled while the body evaluates: a class, so storing a fact publishes
+    /// nothing, and one per open review.
+    @State private var claudeSandboxCache = ClaudeSandboxFactCache()
     @State private var bypassVendorPermissions: Bool
     @State private var containerConfiguration: ContainerConfiguration?
     @State private var approvals: PermissionApprovalHandling
@@ -494,7 +497,7 @@ struct PermissionProfilePickerView: View {
 
     private var ticketPolicy: RelayTicketPolicy {
         RelayTicketPolicy.policy(kind: kind, inContainer: runInContainer, socketListening: model.ticketSocketListening,
-            claudeSandbox: kind == .claude && !runInContainer ? ClaudeHostConfiguration.sandbox(folder: request.folder) : nil,
+            claudeSandbox: claudeSandboxCache.fact(kind: kind, folder: request.folder, inContainer: runInContainer),
             codexNetworkAllowed: kind == .codex && !runInContainer ? selectedProfile.map { $0.rule(for: .networkAccess) == .allow } : nil)
     }
 

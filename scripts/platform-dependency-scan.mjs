@@ -35,6 +35,9 @@ export const BASELINE = {
   "ApprovedCommandProcess.swift": ["Darwin"],
   "ApprovedCommandWorker.swift": ["CryptoKit", "Darwin"],
   "AttentionProjection.swift": ["Darwin"],
+  // Claude settings live in the agent-writable project folder: opened
+  // non-blocking and sized on the descriptor (28 September 2026).
+  "ClaudeHostConfiguration.swift": ["Darwin"],
   "CodexHostConfiguration.swift": ["Darwin"],
   "CollaborationHistoryRetention.swift": ["Darwin"],
   "CommandRunner.swift": ["Darwin"],
