@@ -302,9 +302,44 @@ in its place) cannot stop the others'. `post` runs in a pipeline subshell,
 where the script's `EXIT` trap never fires in macOS `sh` or dash, so the
 shim cleans up its own request before reporting "stopped before replying";
 a broker that comes back must not act on a request the agent was told had
-failed. Not yet handled: a transport restart discards requests whose shims
-are still waiting, and those shims then wait forever, because the request
-leaves the filesystem while it is processed and nothing marks the restart.
+failed. What a shim killed part-way leaves, the transport removes (a request
+with no `ready` after 30 seconds of awake time, a reply after ten minutes,
+the whole endpoint when its pane restarts); the script's top-level `EXIT`
+trap never did anything and is gone. Each heartbeat's content is the
+transport instance, new on every `start()`: a restart (core recovery)
+discards the requests shims are still waiting on, and a request leaves the
+filesystem while it is processed, so a shim that sees a different instance
+cleans up and reports "restarted before replying" instead of waiting forever
+(0b58a71e, 27 September 2026; the container transport check hung this way,
+with an empty endpoint, when the Linux VM still showed a heartbeat `stop()`
+had removed and the shim sent into the stopped transport). The shim reads
+stdin into a hidden `.body-<id>` in its inbox before the request folder
+exists, and copies it in once the request is written (`mv` is not in the
+container utility contract): a producer slower than the 30-second
+abandonment age used to lose the folder it was still filling (review of 22
+September, db7c3b52). Liveness is checked before stdin is read (with no
+broker, an endless producer used to be read forever) and, when the transport
+instance has changed or gone meanwhile, again after it. A heartbeat with no
+readable instance is not yet a running broker: the instance is the baseline
+a restart is noticed by. A request still in the inbox when a new instance
+appears was written after that transport discarded the old ones, so the shim
+keeps waiting; otherwise "restarted before replying" says delivery is
+unknown, because an old worker may have finished first. Every write before
+`ready` is checked, and a refusal removes the staged body, so "not running"
+and "could not write the request" still mean nothing was sent. `start()`
+leaves hidden inbox entries, a live shim's scratch, to that shim, and keeps
+finished replies (`ready` present) for the shim still waiting on them. Once a
+second the transport removes scratch whose modification time has not
+changed for the reply age in awake time: a producer still writing keeps
+changing its staged body, and a killed shim's body and wake entries are
+otherwise never listed by the tick. A producer silent for longer than that
+loses its staged body and the command refuses cleanly ("could not write the
+request, so nothing was sent"), a deliberate trade against scratch that
+would otherwise wait for its pane to restart. `post` traps INT, TERM and HUP
+and cleans up before exiting, so Ctrl-C or a tool timeout removes the staged
+body at once (checked under macOS `sh` and, for the pattern, dash); a signal
+already ignored when the shim starts cannot be trapped, and the sweep covers
+that case (Agy's review of MR !112).
 
 Every start or restart rotates a pane's capability and prepares a new
 endpoint, and every stop or close forgets it. Until 26 September 2026
