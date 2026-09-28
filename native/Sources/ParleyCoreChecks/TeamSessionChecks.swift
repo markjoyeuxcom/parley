@@ -9,7 +9,7 @@ private func teamRejects(_ message: String, _ operation: () throws -> Void) thro
     throw NSError(domain: "TeamSession", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
 }
 
-private struct TeamFixture {
+struct TeamFixture {
     let root: URL
     let lead: WorkbenchPane
     var live: [WorkbenchPane]
@@ -52,7 +52,7 @@ private final class FlakyBox: @unchecked Sendable {
     var failing = false
 }
 
-private final class PaneBox: @unchecked Sendable {
+final class PaneBox: @unchecked Sendable {
     let lock = NSLock()
     var panes: [WorkbenchPane]
     init(_ panes: [WorkbenchPane]) { self.panes = panes }
@@ -489,7 +489,7 @@ func teamSessionNativePaneChecks() throws {
     guard let owning = coordinator.sessions().first(where: { $0.id == session.id }),
           let firstMember = owning.members.first(where: { $0.paneID == created.id }) else { throw TeamSessionError.invalid("member missing") }
     try teamExpect(TeamStopPlanner.plan(members: [firstMember], live: try controller.listPanes()).first?.action == .stop, "a running owned pane was not planned for stopping")
-    try controller.stopPaneProcess(created.id)
+    try controller.stopPaneProcess(created.id, expectedGeneration: nil)
     let afterStop = try controller.listPanes()
     try teamExpect(firstMember.ownership(of: afterStop.first { $0.id == created.id }) == .stopped, "a pane stopped through the controller was not recognised as the stopped owned generation")
     try teamExpect(TeamStopPlanner.plan(members: [firstMember], live: afterStop).first?.action == .skip(.alreadyStopped), "a stopped owned generation was planned again")
@@ -1292,7 +1292,7 @@ func teamSessionStopRecordingFailureChecks() throws {
     try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: runtime.path)
     let unrecorded = TeamStopExecution.execute(
         plan: TeamStopPlanner.plan(members: [members[0]], live: try controller.listPanes()),
-        stop: { try controller.stopPaneProcess($0) },
+        stop: { try controller.stopPaneProcess($0, expectedGeneration: nil) },
         currentPane: { id in (try? controller.listPanes())?.first { $0.id == id } })
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: runtime.path)
     try teamExpect(unrecorded.count == 1 && unrecorded[0].result == .stoppedUnrecorded && unrecorded[0].message?.isEmpty == false,
@@ -1363,7 +1363,7 @@ func teamSessionBoundedDiagnosticsChecks() throws {
     try teamExpect(!status.text.contains("\u{1b}") && stored.detail?.utf8.count ?? 0 < 4_000, "control characters or an unbounded detail reached the status record")
 }
 
-private func containerTeamConfiguration() -> ContainerConfiguration {
+func containerTeamConfiguration() -> ContainerConfiguration {
     ContainerConfiguration(dockerExecutable: "/usr/local/bin/docker", daemonEndpoint: "unix:///tmp/docker.sock", daemonID: "fixture",
         imageID: "sha256:" + String(repeating: "b", count: 64), imageName: "fixture", legacyCodexSandbox: false)
 }

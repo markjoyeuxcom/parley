@@ -19,6 +19,11 @@ struct ContainerLaunchOptionsView: View {
     private let showsToggle: Bool
     @State private var checking = false
     @State private var message: String?
+    /// Advanced by every change of `checkInputs`. A check applies its result
+    /// only under the revision it began with: its Task holds a copy of this
+    /// view, whose `let` properties never change, so comparing them there
+    /// could not notice that the review moved to another vendor or folder.
+    @State private var checkRevision = 0
 
     init(model: AppModel, vendor: PaneKind, folder: String, plannedCommonDirectory: String? = nil, enabled: Binding<Bool>, configuration: Binding<ContainerConfiguration?>, existing: ContainerConfiguration?, showsToggle: Bool = true, onBypassChange: @escaping (Bool) -> Void = { _ in }) {
         self.model = model; self.vendor = vendor; self.folder = folder; self.plannedCommonDirectory = plannedCommonDirectory; _enabled = enabled; _configuration = configuration
@@ -39,6 +44,14 @@ struct ContainerLaunchOptionsView: View {
         return .some(value)
     }
 
+    /// Everything a check's result depends on. Every stored input of this
+    /// view belongs here, so a change to any of them discards a check still
+    /// running rather than letting its result land under the new choice.
+    private var checkInputs: ContainerImageCheckInputs {
+        ContainerImageCheckInputs(vendor: vendor, folder: folder, plannedCommonDirectory: plannedCommonDirectory, enabled: enabled,
+            image: image, legacy: legacy, bypass: bypass, port: port)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             if showsToggle {
@@ -46,12 +59,11 @@ struct ContainerLaunchOptionsView: View {
             }
             if enabled {
                 TextField("Locally installed image", text: $image).textFieldStyle(.roundedBorder)
-                    .onChange(of: image) { _, _ in configuration = nil; message = nil }
                 Text("The image must contain /usr/local/bin/\(vendor.rawValue). Parley does not build or download images. Checking executes code from this image in a disposable container with no network, project files or login. Trust the image and the local daemon before checking it.")
                 Toggle("Bypass vendor permissions (container only)", isOn: $bypass)
                     .onChange(of: bypass) { _, value in
                         if value { legacy = false }
-                        configuration = nil; message = nil; onBypassChange(value)
+                        onBypassChange(value)
                     }
                 if bypass {
                     Text(bypassDescription)
@@ -61,11 +73,9 @@ struct ContainerLaunchOptionsView: View {
                 if vendor == .codex {
                     Toggle("Use Codex’s legacy Landlock sandbox", isOn: $legacy)
                         .disabled(bypass)
-                        .onChange(of: legacy) { _, _ in configuration = nil; message = nil }
                     Text("Codex has deprecated this option and plans to remove it. Use it only for testing a compatible image when its default Bubblewrap sandbox cannot start. This option applies only while vendor permissions are enabled.")
                 }
                 TextField("Published port (optional)", text: $port).textFieldStyle(.roundedBorder)
-                    .onChange(of: port) { _, _ in configuration = nil; message = nil }
                 Text(signInGuidance)
                 if case .some(.some(let value)) = parsedPort {
                     Text("Port \(value) on this Mac will forward to port \(value) inside the container, on 127.0.0.1 only — nothing on your network can reach it. If another process on this Mac is already listening on \(value), Docker refuses to start the container.")
@@ -96,10 +106,13 @@ struct ContainerLaunchOptionsView: View {
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
         .onAppear { onBypassChange(bypass) }
-        .onChange(of: enabled) { _, _ in configuration = nil; message = nil }
-        .onChange(of: vendor) { _, _ in configuration = nil; message = nil }
-        .onChange(of: folder) { _, _ in configuration = nil; message = nil }
-        .onChange(of: plannedCommonDirectory) { _, _ in configuration = nil; message = nil }
+        .onChange(of: checkInputs) { _, _ in
+            checkRevision += 1
+            configuration = nil; message = nil
+        }
+        // A view that leaves and comes back may be a new one, but a check
+        // still running holds this one's storage and would apply its result.
+        .onDisappear { checkRevision += 1 }
     }
 
     /// What the vendor's documented skip-all flag does inside the container.
@@ -126,35 +139,46 @@ struct ContainerLaunchOptionsView: View {
 
     private func check() {
         guard let service = model.controller?.containerService else { return }
-        let selectedImage = image
-        let selectedLegacy = legacy
-        let selectedBypass = bypass
-        let selectedFolder = folder
-        let selectedCommon = plannedCommonDirectory
-        let selectedPortText = port
+        let inputs = checkInputs
         guard case .some(let selectedPort) = parsedPort else {
             message = "The published port must be a whole number between 1024 and 65535."
             return
         }
+        let revision = checkRevision
         checking = true; configuration = nil; message = nil
         Task {
+            let result: Result<ContainerConfiguration, Error>
             do {
-                let preview = try await Task.detached(priority: .userInitiated) {
-                    var preview = try service.preview(image: selectedImage, vendor: vendor, legacyCodexSandbox: selectedLegacy,
-                        bypassVendorPermissions: selectedBypass, publishedPort: selectedPort)
-                    preview.gitAccess = try selectedCommon.map { try ContainerGitAccess.planned(folder: selectedFolder, commonDirectory: $0) }
-                        ?? ContainerGitAccess.inspect(folder: selectedFolder)
+                result = .success(try await Task.detached(priority: .userInitiated) {
+                    var preview = try service.preview(image: inputs.image, vendor: inputs.vendor, legacyCodexSandbox: inputs.legacy,
+                        bypassVendorPermissions: inputs.bypass, publishedPort: selectedPort)
+                    preview.gitAccess = try inputs.plannedCommonDirectory.map { try ContainerGitAccess.planned(folder: inputs.folder, commonDirectory: $0) }
+                        ?? ContainerGitAccess.inspect(folder: inputs.folder)
                     return preview
-                }.value
-                if enabled && image == selectedImage && legacy == selectedLegacy && bypass == selectedBypass && port == selectedPortText
-                    && folder == selectedFolder && plannedCommonDirectory == selectedCommon { configuration = preview }
-            } catch {
-                if enabled && image == selectedImage && legacy == selectedLegacy && bypass == selectedBypass && port == selectedPortText
-                    && folder == selectedFolder && plannedCommonDirectory == selectedCommon { message = error.localizedDescription }
-            }
+                }.value)
+            } catch { result = .failure(error) }
+            // One probe runs at a time, so this one always ends `checking`,
+            // even when the inputs moved on and its result is discarded.
             checking = false
+            // Read through @State, which this copy of the view shares with the live one.
+            guard checkRevision == revision else { return }
+            switch result {
+            case let .success(preview): configuration = preview
+            case let .failure(error): message = error.localizedDescription
+            }
         }
     }
+}
+
+private struct ContainerImageCheckInputs: Equatable {
+    let vendor: PaneKind
+    let folder: String
+    let plannedCommonDirectory: String?
+    let enabled: Bool
+    let image: String
+    let legacy: Bool
+    let bypass: Bool
+    let port: String
 }
 
 struct ContainerRecordsView: View {

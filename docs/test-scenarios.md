@@ -74,6 +74,10 @@ handoffs work. Agy reports hook state as Unknown by design.
 6. Close and restart the pane. **Login must persist.**
 7. Quit Parley entirely, relaunch, start the pane again. Login still persists.
 8. Status Center → Health → Containers: confirm the records make sense.
+9. In a new agent review, choose Runs › In a container, press **Check Image
+   and Daemon** and, while it reads "Checking…", change the Vendor row.
+   **Fail:** the first vendor's result ("Ready for your review", its image
+   ID) appears under the new vendor. Before 28 September 2026 it did.
 
 **Fail:** login lost across restart, protocol missing, bypass not disclosed.
 
@@ -363,6 +367,14 @@ other than the command shown.
 - After Stop: **Close stopped team panes…** in the sheet names each stopped
   placeholder, closes only those, and leaves the requester, unrelated panes
   and any pane you restarted alone.
+- With a container vendor approved, `parley team add` it and press Stop while
+  its member reads "preparing its container". The stop outcome lists it under
+  Skipped with "container preparation cancelled", not under "Could not
+  confirm a stop"; once the preparation returns, the member reads stopped and
+  **Close stopped team panes…** offers it. A member whose container failed to
+  prepare (for example an image removed after approval) is offered the same
+  way. **Fail:** the member is reported as failed, or stays "stopped" but is
+  never offered for closing.
 
 ## P3.4 Managed worktrees
 

@@ -86,6 +86,27 @@ public final class ContainerPaneService: @unchecked Sendable {
         guard actual == configuration.daemonID else { throw ContainerPaneError.refused("The Docker daemon changed since the preview. Review the container launch again.") }
     }
 
+    /// The daemons one removal, or one cleanup of several records, has
+    /// confirmed. A removal asked the daemon for its identity before every
+    /// step, eleven Docker runs for one running container; every later
+    /// command still names the same endpoint, and checks the container's full
+    /// ID and ownership label itself. An image check and a preparation keep
+    /// asking after each container they wait on.
+    private final class VerifiedDaemons {
+        private var keys: Set<String> = []
+        func contains(_ configuration: ContainerConfiguration) -> Bool { keys.contains(Self.key(configuration)) }
+        func insert(_ configuration: ContainerConfiguration) { keys.insert(Self.key(configuration)) }
+        private static func key(_ configuration: ContainerConfiguration) -> String {
+            [configuration.dockerExecutable, configuration.daemonEndpoint, configuration.daemonID].joined(separator: "\u{0}")
+        }
+    }
+
+    private func verifyDaemon(_ configuration: ContainerConfiguration, once verified: VerifiedDaemons) throws {
+        guard !verified.contains(configuration) else { return }
+        try verifyDaemon(configuration)
+        verified.insert(configuration)
+    }
+
     // Constant script, never assembled from an image name, folder or agent text.
     // Vendor argv stays separate and is exec'd literally after the contract check.
     public static let imageUtilityProbe = #"""
@@ -194,7 +215,7 @@ public final class ContainerPaneService: @unchecked Sendable {
         }
         for protected in protectedDirectories {
             let protected = try canonicalProtectedDirectory(protected)
-            guard folder != protected, !protected.hasPrefix(folder + "/"), !folder.hasPrefix(protected + "/") else {
+            guard !WorkspaceFolderIdentity.overlaps(folder, protected) else {
                 throw ContainerPaneError.refused("The project overlaps Parley's protected runtime files.")
             }
         }
@@ -206,7 +227,7 @@ public final class ContainerPaneService: @unchecked Sendable {
             for protected in protectedDirectories {
                 let protected = try canonicalProtectedDirectory(protected)
                 let common = gitAccess.commonDirectory
-                guard common != protected, !common.hasPrefix(protected + "/"), !protected.hasPrefix(common + "/") else {
+                guard !WorkspaceFolderIdentity.overlaps(common, protected) else {
                     throw ContainerPaneError.refused("Shared Git metadata overlaps Parley's protected runtime files.")
                 }
             }
@@ -284,15 +305,15 @@ public final class ContainerPaneService: @unchecked Sendable {
             guard let index = document.records.firstIndex(where: { $0.id == owner }) else { throw ContainerPaneError.refused("The creation intent disappeared.") }
             document.records[index].containerID = id
             try save(document)
-            guard try verifiedContainerID(document.records[index]) == id else {
+            guard try verifiedContainerID(document.records[index], daemons: VerifiedDaemons()) == id else {
                 throw ContainerPaneError.refused("The created container disappeared before attach; its receipt remains in Status Center.")
             }
             return id
         }
     }
 
-    private func verifiedContainerID(_ record: ContainerPaneRecord) throws -> String? {
-        try verifyDaemon(record.configuration)
+    private func verifiedContainerID(_ record: ContainerPaneRecord, daemons: VerifiedDaemons) throws -> String? {
+        try verifyDaemon(record.configuration, once: daemons)
         let cidFile = directory.appendingPathComponent("container-\(record.id).cid")
         let id: String
         if let recorded = record.containerID { id = recorded }
@@ -332,22 +353,27 @@ public final class ContainerPaneService: @unchecked Sendable {
 
     private func removeAll(_ records: [ContainerPaneRecord]) throws {
         var failures: [String] = []
+        let daemons = VerifiedDaemons()
         for record in records {
-            do { try remove(record) }
+            do { try remove(record, daemons: daemons) }
             catch { failures.append("\(record.paneID), generation \(record.generation): \(error.localizedDescription)") }
         }
         if !failures.isEmpty { throw ContainerPaneError.refused(failures.joined(separator: "\n")) }
     }
 
     public func remove(_ reviewed: ContainerPaneRecord) throws {
+        try remove(reviewed, daemons: VerifiedDaemons())
+    }
+
+    private func remove(_ reviewed: ContainerPaneRecord, daemons: VerifiedDaemons) throws {
         try lock.withLock {
             var document = try read()
             guard let index = document.records.firstIndex(where: { $0 == reviewed }) else { throw ContainerPaneError.refused("The container record changed; refresh it before cleanup.") }
-            if !reviewed.removed, let id = try verifiedContainerID(reviewed) {
+            if !reviewed.removed, let id = try verifiedContainerID(reviewed, daemons: daemons) {
                 let running = try checked(reviewed.configuration, ["container", "inspect", "--format", "{{.State.Running}}", id])
                 if running == "true" { _ = try checked(reviewed.configuration, ["container", "stop", "--time", "5", id]) }
-                if try verifiedContainerID(reviewed) != nil { _ = try checked(reviewed.configuration, ["container", "rm", id]) }
-                guard try verifiedContainerID(reviewed) == nil else { throw ContainerPaneError.refused("Docker did not confirm removal; the pane is still owned.") }
+                if try verifiedContainerID(reviewed, daemons: daemons) != nil { _ = try checked(reviewed.configuration, ["container", "rm", id]) }
+                guard try verifiedContainerID(reviewed, daemons: daemons) == nil else { throw ContainerPaneError.refused("Docker did not confirm removal; the pane is still owned.") }
             }
             document.records[index].removed = true
             if reviewed.volume.isEmpty { document.records.remove(at: index) }

@@ -235,10 +235,22 @@ final class GhosttyPaneRegistry {
                     Task { [weak self] in
                         do {
                             try await Task.detached(priority: .utility) { try workbench.prepareContainerStop(closed) }.value
-                            try workbench.stopPaneProcess(paneID)
-                            self?.onPaneStateChanged?()
                         } catch {
                             NSAlert(error: ContainerPaneError.refused("The container client ended, but cleanup was not confirmed. Its receipt remains in Status Center. \(error.localizedDescription)")).runModal()
+                            return
+                        }
+                        // Cleanup is confirmed. A pane restarted meanwhile runs
+                        // a new session, which is left alone.
+                        if let panes = try? workbench.listPanes(),
+                           panes.first(where: { $0.id == paneID })?.launchGeneration != closed.launchGeneration {
+                            self?.onPaneStateChanged?()
+                            return
+                        }
+                        do {
+                            try workbench.stopPaneProcess(paneID, expectedGeneration: closed.launchGeneration)
+                            self?.onPaneStateChanged?()
+                        } catch {
+                            NSAlert(error: ContainerPaneError.refused("The container client ended and its container was removed, but the pane could not be marked stopped. \(error.localizedDescription)")).runModal()
                         }
                     }
                 }

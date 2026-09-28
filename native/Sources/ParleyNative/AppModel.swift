@@ -3560,7 +3560,14 @@ final class AppModel: ObservableObject {
                         throw TeamSessionError.invalid("The pane changed generation; its replacement was left alone.")
                     }
                     try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(current) }.value
-                    try controller.stopPaneProcess(current.id, expectedGeneration: current.launchGeneration)
+                    // Cleanup is confirmed. A pane started again meanwhile is a
+                    // new session, left alone; that is not a cleanup failure.
+                    if let now = try? controller.listPanes().first(where: { $0.id == pane.id }), now.launchGeneration != current.launchGeneration {
+                        reason += " Its container was removed. The pane was started again meanwhile; that session was left alone."
+                    } else {
+                        do { try controller.stopPaneProcess(current.id, expectedGeneration: current.launchGeneration) }
+                        catch { reason += " Its container was removed, but the pane could not be marked stopped: \(error.localizedDescription)" }
+                    }
                 } catch { reason += " Cleanup was not confirmed: \(error.localizedDescription) Use Status Center to remove its recorded container." }
                 coordinator.failContainerProvision(id: provision.id, reason: reason)
             }
@@ -3783,7 +3790,7 @@ final class AppModel: ObservableObject {
         do { live = try controller.listPanes() } catch {
             throw RelayUIError.message("The workbench state could not be read, so no team pane was stopped: \(error.localizedDescription)")
         }
-        let containers = live.filter { pane in pane.containerConfiguration != nil && members.contains { $0.owns(pane) } }
+        let containers = TeamStopPlanner.containerCleanup(members: members, live: live)
         let cleanupFailures = await Task.detached(priority: .userInitiated) {
             var failures: [String: String] = [:]
             for pane in containers {
@@ -3793,16 +3800,19 @@ final class AppModel: ObservableObject {
             return failures
         }.value
         let current = try controller.listPanes()
+        // A preparation may have ended during the cleanup above; plan from the
+        // members as they are now, not as `stop` returned them.
+        let planned = (try? core.teamSessions.ownedMembers(id: sessionID)) ?? members
         let outcomes = TeamStopExecution.execute(
-            plan: TeamStopPlanner.plan(members: members, live: current),
+            plan: TeamStopPlanner.plan(members: planned, live: current),
             stop: { id in
                 if let failure = cleanupFailures[id] { throw ContainerPaneError.refused(failure) }
-                try controller.stopPaneProcess(id, expectedGeneration: members.first { $0.paneID == id }?.launchGeneration)
+                try controller.stopPaneProcess(id, expectedGeneration: planned.first { $0.paneID == id }?.launchGeneration)
             },
             currentPane: { id in (try? controller.listPanes())?.first { $0.id == id } }
         )
         let recordedOutcomes = outcomes.map { outcome in
-            if let failure = cleanupFailures[outcome.paneID], let member = members.first(where: { $0.paneID == outcome.paneID }),
+            if let failure = cleanupFailures[outcome.paneID], let member = planned.first(where: { $0.paneID == outcome.paneID }),
                current.contains(where: { member.owns($0) }) {
                 return TeamMemberStopOutcome(paneID: outcome.paneID, launchGeneration: outcome.launchGeneration, name: outcome.name, result: .failed, message: failure)
             }
@@ -4916,9 +4926,9 @@ final class AppModel: ObservableObject {
         }
         if reviewed.containerConfiguration != nil {
             try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(reviewed) }.value
-            try controller.stopPaneProcess(paneID)
+            try controller.stopPaneProcess(paneID, expectedGeneration: reviewed.launchGeneration)
         } else if configuration != nil, reviewed.isStarted {
-            try controller.stopPaneProcess(paneID)
+            try controller.stopPaneProcess(paneID, expectedGeneration: reviewed.launchGeneration)
         }
         if let configuration {
             try await Task.detached(priority: .userInitiated) {

@@ -8,6 +8,11 @@ import Foundation
 public final class TeamSessionCoordinator: @unchecked Sendable {
     public static let pendingTimeout: TimeInterval = 30 * 60
     public static let provisionTimeout: TimeInterval = 90
+    /// Failed pane requests kept per session for `parley wait` recovery.
+    /// Each is refused work that created nothing; the app scans every
+    /// provision once a second, so a requester retrying a refusal must not
+    /// grow them for the life of the app.
+    public static let retainedFailedProvisions = 16
 
     private let lock = NSRecursiveLock()
     private let authenticate: (String) -> String?
@@ -17,6 +22,10 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
     private var records: [String: TeamSession] = [:]
     private var grants: [String: TeamSessionGrant] = [:]
     private var provisions: [String: TeamPaneProvision] = [:]
+    /// Insertion order of `provisions`, which pruning follows; `createdAt` is
+    /// the wall clock and can step back.
+    private var provisionOrder: [String: Int] = [:]
+    private var nextProvisionOrder = 0
     private var stopped = false
     private var storedError: String?
     public var lastError: String? { lock.withLock { storedError } }
@@ -109,7 +118,10 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             }
             let provision = TeamPaneProvision(id: UUID().uuidString.lowercased(), sessionID: session.id, idempotencyKey: idempotencyKey,
                 kind: kind, name: name, role: role, createdAt: Date())
+            pruneFailedProvisions(sessionID: session.id, keeping: Self.retainedFailedProvisions - 1)
             provisions[provision.id] = provision
+            provisionOrder[provision.id] = nextProvisionOrder
+            nextProvisionOrder += 1
             return provision
         }
     }
@@ -297,13 +309,14 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                     continue
                 }
                 // The pane exists: own it before anything else can fail.
+                let preparing = pane.containerConfiguration != nil && !pane.isStarted
                 var member = TeamSessionMember(paneID: pane.id, launchGeneration: pane.launchGeneration, workspaceID: pane.workspaceID,
                     kind: pane.kind, name: provision.name, role: pane.role ?? provision.role, requestedByPaneID: session.source.id,
-                    grantID: grant.id, createdAt: Date())
+                    grantID: grant.id, createdAt: Date(), containerPreparation: preparing ? .pending : nil)
                 session.members.append(member)
                 session.detail = "Created \(session.members.count) of \(grant.paneLimit) approved pane\(grant.paneLimit == 1 ? "" : "s")"
                 provision.paneID = pane.id
-                provision.containerPreparationPending = pane.containerConfiguration != nil && !pane.isStarted
+                provision.containerPreparationPending = preparing
                 provisions[provision.id] = provision
                 records[session.id] = session
                 do {
@@ -311,6 +324,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
                 } catch {
                     if provision.containerPreparationPending == true {
                         provision.failure = "The team pane was created, but container preparation could not begin: \(error.localizedDescription)"
+                        member.containerPreparation = .ended
                     }
                     provision.containerPreparationPending = false
                     member.warning = "Created and owned, but a later native step failed: \(error.localizedDescription)"
@@ -399,6 +413,8 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             provisions[id] = provision
             if let index = session.members.firstIndex(where: { $0.paneID == provision.paneID }) {
                 session.members[index].warning = provision.failure
+                // The placeholder never started; it is now a stopped one.
+                if session.members[index].containerPreparation == .pending { session.members[index].containerPreparation = .ended }
             }
             session.detail = provision.failure
             store(session, transition: .paneCreated, affected: provision.paneID.map { [$0] } ?? [])
@@ -578,7 +594,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             canonical = base + "/" + remainder.joined(separator: "/")
         }
         let root = WorkspaceFolderIdentity.matchingKey(sourceFolder)
-        guard canonical == root || canonical.hasPrefix(root.hasSuffix("/") ? root : root + "/") else {
+        guard WorkspaceFolderIdentity.contains(canonical, within: root) else {
             throw TeamSessionError.invalid("The team folder must be inside the lead pane's working folder.")
         }
         return canonical
@@ -592,7 +608,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
         }
         let canonical = WorkspaceFolderIdentity.matchingKey(folder)
         let root = WorkspaceFolderIdentity.matchingKey(sourceFolder)
-        guard canonical == root || canonical.hasPrefix(root.hasSuffix("/") ? root : root + "/") else {
+        guard WorkspaceFolderIdentity.contains(canonical, within: root) else {
             throw TeamSessionError.invalid("The team folder must be inside the lead pane's working folder.")
         }
         return canonical
@@ -717,11 +733,26 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
         }
     }
 
+    /// Drops a session's oldest failed requests that created no pane. A
+    /// request that created one is kept: it is bounded by the pane limit, and
+    /// its identity is what stops a repeated request making a second pane.
+    private func pruneFailedProvisions(sessionID: String, keeping limit: Int) {
+        let failed = provisions.values.filter { $0.sessionID == sessionID && $0.paneID == nil && $0.failure != nil }
+            .sorted { (provisionOrder[$0.id] ?? -1) > (provisionOrder[$1.id] ?? -1) }
+        for provision in failed.dropFirst(limit) {
+            provisions.removeValue(forKey: provision.id)
+            provisionOrder.removeValue(forKey: provision.id)
+        }
+    }
+
     private func prune() {
         let terminal = records.values.filter(\.state.isTerminal).sorted { $0.updatedAt > $1.updatedAt }
         for session in terminal.dropFirst(64) {
             records.removeValue(forKey: session.id)
-            for provision in provisions.values where provision.sessionID == session.id { provisions.removeValue(forKey: provision.id) }
+            for provision in provisions.values where provision.sessionID == session.id {
+                provisions.removeValue(forKey: provision.id)
+                provisionOrder.removeValue(forKey: provision.id)
+            }
         }
     }
 }

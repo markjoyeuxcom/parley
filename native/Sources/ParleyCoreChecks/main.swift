@@ -9667,7 +9667,7 @@ private func checkAppResidentWorkbenchRelayAndShutdown() throws {
         !freshAgain.command.contains("'codex' 'resume'"),
         "a later plain restart inherited stale Resume intent"
     )
-    try controller.stopPaneProcess(codex.id)
+    try controller.stopPaneProcess(codex.id, expectedGeneration: nil)
     try controller.startPane(codex.id, launchMode: .resume)
     let stoppedResumeLaunch = try controller.launchConfiguration(for: codex.id)
     try expect(
@@ -9675,7 +9675,7 @@ private func checkAppResidentWorkbenchRelayAndShutdown() throws {
         "a stopped placeholder could not launch the vendor-owned Resume path"
     )
 
-    try controller.stopPaneProcess(codex.id)
+    try controller.stopPaneProcess(codex.id, expectedGeneration: nil)
     try controller.startPane(codex.id)
     let stoppedFreshLaunch = try controller.launchConfiguration(for: codex.id)
     try expect(
@@ -10331,7 +10331,7 @@ if let image = argument(named: "--container-transport-spike") {
 let onlyFilter = argument(named: "--only")?.lowercased()
 let skipFilters = (argument(named: "--skip") ?? "").lowercased()
     .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-let allChecks = (voiceChecks + containerPaneChecks + checks + reviewRegressionChecks + repositoryReviewChecks + approvalHandlingChecks + folderListChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + worktreeBoardChecks + worktreeRepositoryChecks + emptyWorkspaceChecks + relayTicketChecks + protocolDriftChecks + auxiliaryWindowChecks + helpAuditChecks + terminalTypeChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + askCorrelationChecks + gitReadBoundaryChecks + codexTOMLChecks + relayTextLimitChecks + boundedWaitChecks + paneReachingRequestChecks + delegationIdChecks + reviewedAskDraftChecks + deliveryFocusChecks + processExitChecks + paneShortcutChecks + approvedCommandTerminalChecks + layoutLeafChecks + workspaceRestoreChecks + commandRunArgvEditorChecks + contextSendRecoveryChecks + transportLivenessChecks + statusSnapshotChecks + brokerRevisionChecks + relayJournalLowChecks + contextPackLowChecks + processLowChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
+let allChecks = (voiceChecks + containerPaneChecks + checks + reviewRegressionChecks + repositoryReviewChecks + approvalHandlingChecks + folderListChecks + reviewedCommandRunChecks + teamSessionChecks + managedWorktreeChecks + worktreeBoardChecks + worktreeRepositoryChecks + emptyWorkspaceChecks + relayTicketChecks + protocolDriftChecks + auxiliaryWindowChecks + helpAuditChecks + terminalTypeChecks + hotPathCostChecks + callbackHotPathChecks + idlePollingChecks + contextPurgeChecks + askCorrelationChecks + gitReadBoundaryChecks + codexTOMLChecks + relayTextLimitChecks + boundedWaitChecks + paneReachingRequestChecks + delegationIdChecks + reviewedAskDraftChecks + deliveryFocusChecks + processExitChecks + paneShortcutChecks + approvedCommandTerminalChecks + layoutLeafChecks + workspaceRestoreChecks + commandRunArgvEditorChecks + contextSendRecoveryChecks + transportLivenessChecks + statusSnapshotChecks + brokerRevisionChecks + relayJournalLowChecks + contextPackLowChecks + processLowChecks + teamContainerLowChecks + [("refresh tick relay cost (informational)", refreshTickCostChecks), ("an idle history read does not reach the workbench to reconcile nothing", idleHistoryReadAvoidsWorkbenchChecks), ("registry and profile reads are cached between ticks", registryReadCacheChecks), ("registry and profile caches survive an interleaved external write", registryInterleavedWriteChecks), ("status history refresh discards stale results before dismissals and notifications", refreshOrderingChecks)]).filter { name, _ in
     onlyFilter.map { name.lowercased().contains($0) } ?? true
 }
 var skippedCount = 0

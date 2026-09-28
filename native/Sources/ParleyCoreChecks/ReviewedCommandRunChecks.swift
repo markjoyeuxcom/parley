@@ -553,7 +553,7 @@ func reviewedRunReentrantCloseChecks() throws {
             try runExpect(sentinelAfter.launchGeneration == sentinelBefore.launchGeneration && sentinelAfter.isStarted == sentinelBefore.isStarted, "restart mutated the following pane (targetLast \(targetLast))")
         }
         try runExpect(afterRestart.contains { $0.id == earlier.id }, "nested cleanup removed a pane during restart (targetLast \(targetLast))")
-        try lifecycle.stopPaneProcess(target.id)
+        try lifecycle.stopPaneProcess(target.id, expectedGeneration: nil)
         let afterStop = try lifecycle.listPanes()
         let stopped = afterStop.first { $0.id == target.id }
         try runExpect(stopped?.isStarted == false && stopped?.currentCommand == "stopped" && stopped?.launchGeneration == before.launchGeneration + 2, "stop did not act on its own pane (targetLast \(targetLast)): \(String(describing: stopped))")

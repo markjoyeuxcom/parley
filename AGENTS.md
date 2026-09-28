@@ -1109,7 +1109,13 @@ it cannot persist, and the coordinator records ownership (pane id, created
 generation, workspace, requesting pane, grant, time) the moment the controller
 returns, before any Ghostty mounting step that may fail; a mounting failure is
 reported on the owned member, never dropped from the count or from Stop. The
-limit counts every creation for the session's lifetime. Members cannot add
+limit counts every creation for the session's lifetime. A request that
+created nothing and failed is kept for `parley wait` recovery, but only the
+newest `retainedFailedProvisions` (16) per session: they used to stay for the
+life of the app, and the app scans every request each second, so a requester
+retrying a refusal grew both without limit. A request that created a pane is
+never pruned, because its identity is what stops a repeated request making a
+second pane. Members cannot add
 panes or nest sessions. Vendor permission prompts remain active except for an
 explicitly approved per-vendor container bypass. Parley never answers prompts,
 never restarts a pane on an agent's behalf
@@ -1133,6 +1139,13 @@ while "Stop team panes" stays available for still-owned running panes. Lead
 restart, move, folder or policy change, an edited or removed approved profile
 and quit interrupt the session. Requests, decisions and pane
 results are recoverable only by the same live requesting-pane generation.
+Whether an approved folder lies inside the requester's working folder goes
+through `WorkspaceFolderIdentity.contains` on canonical spellings, as do
+command-run folders, nested worktrees and container mounts against protected
+runtime files (`overlaps`); agent context staging keeps its own check, which
+also refuses the pane folder itself. A lead working at `/` used to be approved by the coordinator, which
+treated the root specially, and then refused at every creation by the
+controller's own check, which built `//` as the prefix (28 September 2026).
 Agent-facing status names the requester as `requesterPaneID`; the `lead`
 routing alias keeps meaning the marked workspace lead, and members address
 the requester by its exact pane id. Every session transition is typed
@@ -1449,7 +1462,12 @@ Container execution is independent of `AgentLaunchMode` (fresh/resume). The
 person selects it in the native permission review for any agent pane (Claude,
 Codex, Agy and Copilot since 14 September 2026; the first two shipped in
 v0.1.27 and the guards that excluded the others were scope, not a decision)
-and checks a locally installed image. Parley never builds or pulls images. The
+and checks a locally installed image. The check applies its result only
+under the input revision it began with (`checkRevision`, advanced by any
+change of `checkInputs`, which names every stored input of the view): its
+Task holds a copy of the view, whose `let` properties never change, so a
+Claude image check used to land after the review switched to Codex, and
+`ContainerConfiguration` names no vendor to catch it at launch. Parley never builds or pulls images. The
 image supplies the pane's vendor at `/usr/local/bin/<vendor>`, POSIX sh,
 GNU stat/coreutils and `/bin/chown`; `docs/container-images.md` states the exact
 utility contract, the run-time shape an image must tolerate, worked Dockerfiles
@@ -1546,6 +1564,22 @@ generation. Stop/expiry while preparing refuses activation and attempts cleanup;
 failed cleanup keeps the receipt and warning. No Docker work holds the team or
 workbench lock or runs on the main actor. Team Stop cleans every still-owned
 container before terminating its surface and reports per-member failures.
+The member records where its preparation stands (`TeamSessionMember.containerPreparation`:
+pending, then ended if it failed or was refused; nil once a generation
+started, for a host member and in older records). A placeholder whose
+preparation ended never started, so its generation never moved, and it now
+reads as a stopped placeholder (`ownership(of:)`) that Close stopped panes
+offers; it read as owned forever. Stop leaves a placeholder still preparing to
+that preparation (`TeamStopPlanner.containerCleanup`) and reports it as
+`preparationCancelled`, a skip: it used to run Docker cleanup that the
+controller refuses during a preparation and report the member as failed. The
+ended grant refuses the activation, and the preparation removes its container
+and reports the outcome on the member. A placeholder whose preparation ended
+is still cleaned by Stop, which retries a cleanup that was not confirmed.
+Stop plans from the members as they are after its Docker cleanup, since a
+preparation can end meanwhile. After a confirmed container cleanup, a pane
+found restarted is left alone and said to be, never reported as a cleanup
+that failed.
 
 Native creation first persists a stopped placeholder. `prepareContainerStart`
 performs Docker work off the main actor without holding the workbench lock;
@@ -1564,6 +1598,16 @@ creates. Image probes and the home-volume initializer also have receipts.
 Names and labels are discovery aids, never sufficient cleanup authority.
 Cleanup checks the recorded daemon, exact full ID and ownership marker, uses
 bounded stop/remove commands without force, and preserves uncertain records.
+The daemon's identity is checked once per removal, and once per daemon for a
+cleanup of several records; before 28 September 2026 each identity check in
+a removal asked again, eleven Docker runs for one running container. The ID
+and ownership marker are still checked before each step. An image check and a
+preparation ask again after each container they wait on.
+Every lifecycle stop the app makes names the generation it reviewed:
+`stopPaneProcess` takes `expectedGeneration` with no default. The lost-client
+cleanup in `GhosttyPaneRegistry` stopped whatever pane generation was current
+once its detached Docker cleanup returned, so a pane restarted meanwhile lost
+its new session.
 Stop/close/restart/quit must stop the owned container before terminating its
 host surface; a failed stop refuses the lifecycle operation. Old records are
 shown in Status Center and never adopted as surviving sessions. No daemon

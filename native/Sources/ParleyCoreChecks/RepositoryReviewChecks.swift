@@ -238,7 +238,7 @@ private func repoReviewPane(_ id: String, kind: PaneKind = .codex) -> WorkbenchP
         try repoReviewExpect(controller.hostClaudeSandbox(for: current)?.enabled == false, "OSC changed the restarted sandbox policy")
         try repoReviewExpect(try controller.launchConfiguration(for: pane.id).workingDirectory == folder.path, "restart followed an OSC folder")
         try controller.terminalDidChangeWorkingDirectory(paneID: pane.id, path: other.path)
-        try controller.stopPaneProcess(pane.id)
+        try controller.stopPaneProcess(pane.id, expectedGeneration: nil)
         try controller.startPane(pane.id)
         current = try controller.listPanes().first { $0.id == pane.id }!
         try repoReviewExpect(current.launchFolder == folder.path && current.permissionSelection?.approvedRoots == [folder.path] && controller.hostClaudeSandbox(for: current)?.enabled == false, "stop/start widened the launch folder")
@@ -248,7 +248,7 @@ private func repoReviewPane(_ id: String, kind: PaneKind = .codex) -> WorkbenchP
         try reopened.bootstrap(cwd: folder.path); reopened.configureRelay(runtime)
         try reopened.startPane(pane.id)
         try repoReviewExpect(try reopened.launchConfiguration(for: pane.id).workingDirectory == folder.path, "reload forgot the reviewed launch folder")
-        try reopened.stopPaneProcess(pane.id)
+        try reopened.stopPaneProcess(pane.id, expectedGeneration: nil)
         try reopened.setStoppedPaneFolder(pane.id, folder: other.path)
         try reopened.startPane(pane.id)
         let changed = try reopened.listPanes().first { $0.id == pane.id }!

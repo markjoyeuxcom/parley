@@ -410,6 +410,7 @@ private struct TeamSessionDetail: View {
             guard let pane else { return "closed" }
             if pane.isDead { return "exited" }
             let moved = pane.workspaceID != member.workspaceID ? ", moved to another workspace" : ""
+            if !pane.isStarted, member.containerPreparation == .pending { return "preparing its container" + moved }
             return (pane.isStarted ? "running" : "stopped") + moved
         }
     }
