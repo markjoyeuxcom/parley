@@ -27,13 +27,20 @@ public enum CodexHostConfiguration {
             throw PermissionProfileError.invalid("Could not prepare the Codex configuration check.")
         }
         try process.run()
+        // Foundation starts the child as the leader of its own group (checked,
+        // not assumed): npm's `codex` is a launcher around the native binary,
+        // and killing only the launcher left its child running (review of 22
+        // September 2026, 96c795d7).
+        let leadsGroup = getpgid(process.processIdentifier) == process.processIdentifier
         let deadline = DispatchTime.now().uptimeNanoseconds &+ UInt64(max(0, timeout) * 1_000_000_000)
         defer {
             try? input.fileHandleForWriting.close()
             try? output.fileHandleForReading.close()
             // Foundation owns reaping. Neither an unreapable child nor a
             // descendant holding stdout may extend this configuration query.
-            if process.isRunning { _ = kill(process.processIdentifier, SIGKILL) }
+            if process.isRunning || leadsGroup {
+                _ = kill(leadsGroup ? -process.processIdentifier : process.processIdentifier, SIGKILL)
+            }
             let cleanupDeadline = DispatchTime.now().uptimeNanoseconds &+ BoundedReap.bound
             while process.isRunning && DispatchTime.now().uptimeNanoseconds < cleanupDeadline { usleep(5_000) }
         }

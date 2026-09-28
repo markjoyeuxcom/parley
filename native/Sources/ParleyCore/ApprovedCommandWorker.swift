@@ -235,17 +235,24 @@ public enum ApprovedCommandWorker {
         // other way round, a worker starting in between read as "not running,
         // ticket consumed": ended without a result (review of 22 September
         // 2026, 96c795d7).
-        let ticketPending = FileManager.default.fileExists(atPath: job.appendingPathComponent("ticket.json").path)
-        let consumed = FileManager.default.fileExists(atPath: job.appendingPathComponent("consumed.json").path)
-        let failurePath = job.appendingPathComponent("failure.txt")
-        var failure: String?
-        if FileManager.default.fileExists(atPath: failurePath.path) {
-            let raw = try readPrivate(failurePath, limit: 8_000)
-            failure = ReviewedCommandRunResult(exitStatus: nil, stdout: Data(), stderr: raw).stderr
+        func files() throws -> (ticketPending: Bool, consumed: Bool, failure: String?) {
+            let failurePath = job.appendingPathComponent("failure.txt")
+            var failure: String?
+            if FileManager.default.fileExists(atPath: failurePath.path) {
+                let raw = try readPrivate(failurePath, limit: 8_000)
+                failure = ReviewedCommandRunResult(exitStatus: nil, stdout: Data(), stderr: raw).stderr
+            }
+            return (FileManager.default.fileExists(atPath: job.appendingPathComponent("ticket.json").path),
+                    FileManager.default.fileExists(atPath: job.appendingPathComponent("consumed.json").path), failure)
         }
+        var state = try files()
         betweenReads?()
         let running = try workerIsRunning(runID: runID, directory: directory)
-        return ApprovedCommandWorkerObservation(running: running, ticketPending: ticketPending, consumed: consumed, failure: failure)
+        // A worker that is not running has written everything it will write,
+        // and one could have started, failed its claim, recorded why and
+        // exited between the two reads: read the final files again.
+        if !running { state = try files() }
+        return ApprovedCommandWorkerObservation(running: running, ticketPending: state.ticketPending, consumed: state.consumed, failure: state.failure)
     }
 
     public static func workerIsRunning(runID: String, directory: URL) throws -> Bool {

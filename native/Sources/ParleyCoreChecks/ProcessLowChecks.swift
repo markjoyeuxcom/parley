@@ -143,7 +143,130 @@ func checkWorkerStartingMidObservationIsNotAFailure() throws {
                       "a worker that started mid-observation read as ended without a result (running \(observation.running), consumed \(observation.consumed))")
 }
 
+/// Runs `script` through ProcessCommandRunner on a thread and hands back the
+/// child's pid (the script writes `$$` to its first argument) while it runs.
+private func withRunningChild(_ script: String, in directory: URL, timeout: TimeInterval = 5,
+                              _ body: (pid_t) throws -> Void) throws {
+    let pidFile = directory.appendingPathComponent("child-\(UUID().uuidString.prefix(8)).pid")
+    let finished = DispatchSemaphore(value: 0)
+    Thread.detachNewThread {
+        _ = try? ProcessCommandRunner(timeout: timeout).run(executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", script, pidFile.path], environment: ["PATH": "/usr/bin:/bin"], input: nil)
+        finished.signal()
+    }
+    defer { _ = finished.wait(timeout: .now() + timeout + 5) }
+    var pid: pid_t = 0
+    let deadline = DispatchTime.now().uptimeNanoseconds + 3_000_000_000
+    while pid <= 1, DispatchTime.now().uptimeNanoseconds < deadline {
+        pid = pid_t(((try? String(contentsOf: pidFile, encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        usleep(10_000)
+    }
+    try processExpect(pid > 1, "the child never reported its pid")
+    try body(pid)
+}
+
+/// The fresh-context review of e1dccee: in a process group of its own but in
+/// Parley's session, a child that wants the terminal (the `zsh -lic` PATH
+/// discovery at launch opens /dev/tty to take the foreground) was stopped by
+/// SIGTTOU whenever Parley had a controlling terminal (`npm run dev`), stalling
+/// launch for the whole timeout. A command runs in a session of its own, with
+/// no controlling terminal to reach.
+func checkCommandsRunInTheirOwnSession() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-session-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try withRunningChild("echo $$ > \"$0\"; /bin/sleep 1", in: directory) { pid in
+        let session = getsid(pid)
+        try processExpect(session == pid, "the command runs in session \(session), not its own (\(pid)); Parley's is \(getsid(0))")
+    }
+}
+
+/// A timeout's SIGTERM gives the whole group its grace second: the direct
+/// child exiting at once used to cut every descendant's grace to about 10 ms
+/// (a `git` child killed while removing its index.lock).
+func checkDescendantsKeepTheirSigtermGrace() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-grace-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let marker = directory.appendingPathComponent("cleaned-up")
+    // The descendant cleans up for 0.3 s after SIGTERM; its parent exits at once.
+    let descendant = "trap '/bin/sleep 0.3; echo done > \"$1\"; exit 0' TERM; while :; do /bin/sleep 0.05; done"
+    let output = try ProcessCommandRunner(timeout: 0.8).run(executable: URL(fileURLWithPath: "/bin/sh"),
+        arguments: ["-c", "/bin/sh -c \"$1\" sh \"$0\" & wait", marker.path, descendant], environment: ["PATH": "/usr/bin:/bin"], input: nil)
+    try processExpect(output.status == CommandExitStatus.timedOut, "the fixture did not time out: \(output.status)")
+    try processExpect(FileManager.default.fileExists(atPath: marker.path), "a descendant was killed before its SIGTERM cleanup finished")
+}
+
+/// With the files read before the lease, a worker that started, failed its
+/// claim, wrote its failure and exited inside the window read as still
+/// waiting for its ticket, losing the real failure. When the lease says the
+/// worker is not running, the files are final: they are read again.
+func checkWorkerFailureInsideTheWindowIsKept() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-workerfail-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    let runID = UUID().uuidString
+    let job = directory.appendingPathComponent(runID)
+    try FileManager.default.createDirectory(at: job, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let ticket = job.appendingPathComponent("ticket.json")
+    FileManager.default.createFile(atPath: ticket.path, contents: Data("{}".utf8), attributes: [.posixPermissions: 0o600])
+    let observation = try ApprovedCommandWorker.observation(runID: runID, directory: directory, betweenReads: {
+        // A whole worker inside the window: claim, fail, record why, exit.
+        _ = rename(ticket.path, job.appendingPathComponent("consumed.json").path)
+        FileManager.default.createFile(atPath: job.appendingPathComponent("failure.txt").path,
+                                       contents: Data("The approved command ticket changed before execution; nothing was run.".utf8),
+                                       attributes: [.posixPermissions: 0o600])
+    })
+    try processExpect(!observation.running && observation.failure?.contains("nothing was run") == true && !observation.ticketPending,
+                      "a worker that failed inside the window lost its failure (ticket pending \(observation.ticketPending), failure \(String(describing: observation.failure)))")
+}
+
+/// The Codex configuration query killed only its direct child: a launcher
+/// (npm's `codex` is Node around the native binary) could leave its child
+/// running.
+func checkCodexConfigQueryEndsItsGroup() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-codexgroup-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let pidFile = directory.appendingPathComponent("descendant.pid")
+    let fake = directory.appendingPathComponent("codex")
+    try """
+    #!/bin/sh
+    /bin/sh -c 'trap "" TERM; exec /bin/sleep 60' &
+    echo $! > "\(pidFile.path)"
+    exec /bin/sleep 60
+    """.write(to: fake, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fake.path)
+    _ = try? CodexHostConfiguration.read(executable: fake, arguments: [], environment: ["PATH": "/usr/bin:/bin"], folder: directory.path, timeout: 1)
+    let (gone, pid) = try descendantGone(pidFile)
+    if !gone { kill(pid, SIGKILL) }
+    try processExpect(gone, "the Codex configuration query left its launcher's child running (pid \(pid))")
+}
+
+/// The launch's PATH discovery runs an interactive login zsh. It must finish,
+/// promptly, whether or not Parley has a controlling terminal (this only
+/// bites with one: run the suite under `script -q /dev/null` to exercise it).
+/// An empty ZDOTDIR keeps the person's own shell configuration out of it.
+func checkInteractiveLoginShellCompletes() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-zsh-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let started = DispatchTime.now().uptimeNanoseconds
+    let output = try ProcessCommandRunner(timeout: 5).run(executable: URL(fileURLWithPath: "/bin/zsh"),
+        arguments: ["-lic", "print -r -- parley-ok"],
+        environment: ["PATH": "/usr/bin:/bin", "HOME": directory.path, "ZDOTDIR": directory.path, "TERM": "dumb"], input: nil)
+    let seconds = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000
+    try processExpect(output.status == 0 && output.stdoutText.contains("parley-ok"),
+                      "an interactive login shell did not complete: status \(output.status) after \(seconds) s, stderr \(output.stderrText.prefix(200))")
+    try processExpect(seconds < 3, "an interactive login shell took \(seconds) s")
+}
+
 @MainActor let processLowChecks: [(String, () throws -> Void)] = [
+    ("an interactive login shell completes", checkInteractiveLoginShellCompletes),
+    ("commands run in their own session", checkCommandsRunInTheirOwnSession),
+    ("descendants keep their sigterm grace", checkDescendantsKeepTheirSigtermGrace),
+    ("a worker failure inside the observation window is kept", checkWorkerFailureInsideTheWindowIsKept),
+    ("the codex config query ends its process group", checkCodexConfigQueryEndsItsGroup),
     ("a worker starting mid-observation is not a failure", checkWorkerStartingMidObservationIsNotAFailure),
     ("the claude sandbox fact is read once per review choice", checkClaudeSandboxFactIsReadOncePerChoice),
     ("claude settings reads are bounded and never block", checkClaudeSettingsReadIsBoundedAndNonBlocking),

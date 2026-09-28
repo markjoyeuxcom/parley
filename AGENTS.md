@@ -762,15 +762,21 @@ Giving up leaves a zombie until the process exits; a permanently blocked thread
 would be worse. Its primitives are injectable because that state cannot be
 created on demand, and a check that cannot fail is not coverage.
 
-Every command `ProcessCommandRunner` spawns leads its own process group
-(`POSIX_SPAWN_SETPGROUP`), and a timeout signals the group, never only the
-direct child: SIGTERM, then SIGKILL a second later whether or not the child
-has already exited, with the child kept unreaped (`waitid(..., WNOWAIT)`) until
-then so its pid, and so the group id, cannot be reused in between. A hook,
-filter or helper that ignored SIGTERM used to outlive a timed-out command
-(96c795d7, 28 September 2026). The context-pack Command Result runner uses
-Foundation's `Process`, whose child already leads its own group (checked
-per run, not assumed), and does the same.
+Every command `ProcessCommandRunner` spawns runs in a session of its own
+(`POSIX_SPAWN_SETSID`), so it leads its own process group and has no
+controlling terminal. A timeout signals the group, never only the direct
+child: SIGTERM, then SIGKILL after the full grace second whether or not the
+child has already exited (its descendants may still be cleaning up, such as a
+`git` child removing its index.lock), with the child kept unreaped
+(`waitid(..., WNOWAIT)`) until then so its pid, and so the group id, cannot be
+reused in between. A hook, filter or helper that ignored SIGTERM used to
+outlive a timed-out command (96c795d7, 28 September 2026). It is a session, not
+only a group: in Parley's session the launch's `zsh -lic` PATH discovery opens
+`/dev/tty` to take the foreground and was stopped by SIGTTOU whenever Parley
+had a controlling terminal (`npm run dev`), a six-second launch stall
+reproduced under `script`. The context-pack Command Result runner and the
+Codex configuration query use Foundation's `Process`, whose child already
+leads its own group (checked per run, not assumed), and signal the group too.
 
 Reviewed command cancellation uses the same bounded reap and a monotonic
 deadline after SIGKILL; an unobserved exit returns no exit status and says
@@ -903,10 +909,12 @@ host pane whose own sandbox is switched on: `ClaudeHostConfiguration` reads
 settings, `CLAUDE_CODE_FORCE_SANDBOX`, the project's `.claude/settings.local.json`,
 its `.claude/settings.json`, then `~/.claude/settings.json`; unreadable or
 silent files are skipped, unknown is never on or off; each file is opened
-non-blocking and sized on the opened descriptor, because the project's
-`.claude` folder is the agent's to write and a symlink to a huge file or a
-FIFO there used to be read whole or to block the launch review, which now
-reads the fact once per folder through `ClaudeSandboxFactCache`), and that sandbox
+non-blocking after a type check and sized on the opened descriptor, because
+the project's `.claude` folder is the agent's to write and a symlink to a
+huge file or a FIFO there used to be read whole or to block the launch
+review, which now reads the fact once per folder through
+`ClaudeSandboxFactCache`; nothing can stop a hung network or FUSE mount from
+blocking an ordinary read), and that sandbox
 denies Unix sockets unless its `allowUnixSockets` list admits one, which
 Parley has not checked. The controller snapshots this fact at launch alongside
 the reviewed profile; later setting edits and terminal cwd reports cannot
@@ -992,7 +1000,10 @@ quit. `AppModel` pushes the approval choice into
 A worker's state is observed files first, lease last: a worker takes its
 lease before it claims its ticket, so read the other way round a worker
 starting between the two reads looked like one that had ended without a
-result, and the run was failed with "do not resend" (96c795d7).
+result, and the run was failed with "do not resend" (96c795d7). When the
+lease reads not running the files are read again, since they are then final:
+a worker that started, failed its claim, recorded why and exited inside the
+window keeps its real failure.
 Approved worker tickets carry a digest whose expected value stays in app memory
 and travels as a literal worker launch argument. A worker checks the exact
 claimed bytes before decoding or executing them; editing the file cannot change

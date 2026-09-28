@@ -6,6 +6,24 @@ import Foundation
 /// environment, the project's local settings, the project's shared settings,
 /// the person's settings. `enabled` is nil when nothing sets it or nothing
 /// could be read; unknown is never reported as off or on.
+public struct ClaudeSandboxFact: Equatable, Sendable {
+    public let enabled: Bool?
+    /// Where the value came from, for the review and for `whoami`.
+    public let source: String?
+
+    public init(enabled: Bool?, source: String?) {
+        self.enabled = enabled
+        self.source = source
+    }
+
+    public static let unset = ClaudeSandboxFact(enabled: nil, source: nil)
+}
+
+/// Claude Code's sandbox settings are the person's own configuration.
+/// Parley reads one boolean from them and never writes them: whether the
+/// sandbox is on decides only how Parley describes and checks a pane's
+/// requests. The sandbox denies Unix sockets unless its `allowUnixSockets`
+/// list admits one, so a pane under it may not reach the ticket socket.
 /// One launch review's Claude sandbox fact. The review's ticket policy is
 /// evaluated about five times per render, and each read up to four settings
 /// files on the main actor (review of 22 September 2026, 96c795d7); the fact is
@@ -33,24 +51,6 @@ public final class ClaudeSandboxFactCache {
     }
 }
 
-public struct ClaudeSandboxFact: Equatable, Sendable {
-    public let enabled: Bool?
-    /// Where the value came from, for the review and for `whoami`.
-    public let source: String?
-
-    public init(enabled: Bool?, source: String?) {
-        self.enabled = enabled
-        self.source = source
-    }
-
-    public static let unset = ClaudeSandboxFact(enabled: nil, source: nil)
-}
-
-/// Claude Code's sandbox settings are the person's own configuration.
-/// Parley reads one boolean from them and never writes them: whether the
-/// sandbox is on decides only how Parley describes and checks a pane's
-/// requests. The sandbox denies Unix sockets unless its `allowUnixSockets`
-/// list admits one, so a pane under it may not reach the ticket socket.
 public enum ClaudeHostConfiguration {
     public static let maximumSettingsBytes = 1 << 20
     public static let managedSettingsFile = URL(fileURLWithPath: "/Library/Application Support/ClaudeCode/managed-settings.json")
@@ -92,11 +92,15 @@ public enum ClaudeHostConfiguration {
     /// The bytes of a regular file of at most `maximumBytes`, following a
     /// symlink as Claude does, or nil. The project's `.claude` folder is the
     /// agent's to write, so the size is checked on the opened descriptor, not
-    /// on the path (a symlink's own size said nothing of its target), and the
-    /// open never blocks: a FIFO there used to stall the launch review on the
-    /// main actor until a writer appeared (review of 22 September 2026,
-    /// 96c795d7).
+    /// on the path (a symlink's own size said nothing of its target), and a
+    /// FIFO or device is never waited on: a FIFO there used to stall the launch
+    /// review on the main actor until a writer appeared (review of 22
+    /// September 2026, 96c795d7). The type is checked before the open too, so
+    /// a device is not opened at all in the ordinary case. Nothing here can
+    /// stop a hung network or FUSE mount from blocking a regular read.
     static func boundedRegularFile(_ file: URL, maximumBytes: Int) -> Data? {
+        var target = stat()
+        guard stat(file.path, &target) == 0, target.st_mode & S_IFMT == S_IFREG else { return nil }
         let descriptor = open(file.path, O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC)
         guard descriptor >= 0 else { return nil }
         defer { close(descriptor) }
