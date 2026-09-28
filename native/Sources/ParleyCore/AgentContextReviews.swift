@@ -379,8 +379,10 @@ public final class AgentContextReviewStore: @unchecked Sendable {
 
     private static func prune(_ records: inout [String: AgentContextReview]) {
         guard records.count > maximumRecords else { return }
+        // Never a draft, a waiting Ask or an approved review whose delivery
+        // is still in flight: the broker now drops what the store prunes.
         let removable = records.values
-            .filter { !$0.state.needsHumanReview }
+            .filter { !$0.state.needsHumanReview && $0.state.canDelete }
             .sorted {
                 if $0.updatedAt == $1.updatedAt { return $0.id < $1.id }
                 return $0.updatedAt < $1.updatedAt

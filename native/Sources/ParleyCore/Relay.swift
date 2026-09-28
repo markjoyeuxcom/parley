@@ -501,9 +501,6 @@ public final class RelayBroker: @unchecked Sendable {
         return errors.isEmpty ? nil : "Context review persistence: " + errors.joined(separator: "; ")
     }
 
-    /// Terminal reality must remain visible even when saving it fails. Retain
-    /// the error and retry the current record on the next native context read.
-    @discardableResult
     /// Every save of a context review: the store keeps at most its bound, and
     /// the reviews it drops leave the broker's map too, or Status Center keeps
     /// listing reviews that are already gone (review of 22 September 2026,
@@ -517,6 +514,9 @@ public final class RelayBroker: @unchecked Sendable {
         }
     }
 
+    /// Terminal reality must remain visible even when saving it fails. Retain
+    /// the error and retry the current record on the next native context read.
+    @discardableResult
     private func persistContextRealityLocked(_ review: AgentContextReview) -> Error? {
         do {
             try recordContextReviewLocked(review)
@@ -2588,7 +2588,10 @@ public final class RelayBroker: @unchecked Sendable {
                 consultationCondition.unlock()
                 return Self.stillWaiting
             }
-            _ = consultationCondition.wait(until: Date().addingTimeInterval(livenessPollInterval))
+            let untilCheck = original.kind == .delegate && DispatchTime.now() < nextLivenessCheck
+                ? Double(nextLivenessCheck.uptimeNanoseconds - DispatchTime.now().uptimeNanoseconds) / 1_000_000_000
+                : livenessPollInterval
+            _ = consultationCondition.wait(until: Date().addingTimeInterval(max(0.001, min(livenessPollInterval, untilCheck))))
             consultationCondition.unlock()
         }
     }
@@ -4162,7 +4165,12 @@ public final class RelayBroker: @unchecked Sendable {
                 return finished
             }
 
-            let pollDeadline = min(deadline, now.addingTimeInterval(livenessPollInterval))
+            // Sleep only until the next liveness check is due, so a failure is
+            // noticed within one poll interval, not two.
+            let untilCheck = DispatchTime.now() < nextLivenessCheck
+                ? Double(nextLivenessCheck.uptimeNanoseconds - DispatchTime.now().uptimeNanoseconds) / 1_000_000_000
+                : 0
+            let pollDeadline = min(deadline, now.addingTimeInterval(max(0.001, min(livenessPollInterval, untilCheck))))
             _ = consultationCondition.wait(until: pollDeadline)
             if let response = askResponseLocked(for: scope) {
                 consultationCondition.unlock()

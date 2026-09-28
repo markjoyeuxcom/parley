@@ -229,10 +229,13 @@ compaction failure after a durable append is retained as `lastError` and
 surfaced through the Status Center core-health route until the next
 successful compaction, never reported as a lost record. The handoff journal's
 `record()` is the one non-durable write (a relay that reached a live terminal
-keeps its in-memory projection when the append fails); that failure marks
-the file behind the projection, so the next write rewrites the whole
+keeps its in-memory projection when the append fails); a failed append
+marks the file behind the projection, so the next write rewrites the whole
 projection before `lastError` clears (until 28 September 2026 the next
-append cleared the error and the lost record was never written). Every
+append cleared the error and the lost record was never written). A durable
+append whose maintenance compaction failed is not behind: later appends keep
+working, since a nearly full disk has room for a line, not for the whole
+projection. Every
 owner-only store writes through `OwnerOnlyFile.write`: created 0600 under a
 temporary name, written, `fsync`ed and only then renamed into place. They
 used to `Data.write(.atomic)` and `chmod` after the rename, so the file (the
@@ -1708,8 +1711,9 @@ refused before any handoff existed, it goes back to `.draft` ("Not sent")
 instead of `.failed`, which lost the approval. Its approval timeout is saved
 through `persistContextRealityLocked`, so a failed save is kept and retried
 rather than leaving a pending approval on disk. Every context review save
-goes through `recordContextReviewLocked`: the store keeps at most 100 reviews
-and returns the ones it pruned, which leave the broker's map too (the map
+goes through `recordContextReviewLocked`: the store keeps at most 100 reviews,
+never pruning a draft, a waiting Ask or an approved review still being
+delivered, and returns the ones it pruned, which leave the broker's map too (the map
 used to keep every one, so Status Center listed reviews the store had
 dropped).
 

@@ -283,6 +283,70 @@ func checkWaitersCheckLivenessOncePerInterval() throws {
     try lowExpect(waitReads <= 3, "a waiting delegation read the panes \(waitReads) times during 300 broker changes")
 }
 
+private func lowHandoff(_ index: Int) throws -> RelayHandoff {
+    let object: [String: Any] = [
+        "id": "handoff-\(index)", "idempotencyKey": "key-\(index)", "kind": "delegate",
+        "sourcePaneID": "a", "sourceName": "A", "sourceKind": "claude", "sourceWorkspaceID": "w", "sourceWorkspaceName": "W",
+        "targetPaneID": "b", "targetName": "B", "targetKind": "codex", "targetWorkspaceID": "w", "targetWorkspaceName": "W",
+        "text": "body \(index)", "submitted": true, "state": "completed", "updatedAt": TimeInterval(index),
+        "transitions": [["state": "completed", "occurredAt": TimeInterval(index), "detail": "fixture"]],
+    ]
+    return try JSONDecoder().decode(RelayHandoff.self, from: try JSONSerialization.data(withJSONObject: object))
+}
+
+/// The fresh-context review of this bundle: marking the file behind the
+/// projection must follow a failed append only. A durable append whose
+/// maintenance compaction then failed (a nearly full disk has room for a
+/// line, not for the whole projection) made every later write a full
+/// compaction, so appends that used to succeed stopped reaching disk.
+func checkFailedCompactionDoesNotStopAppends() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-compactfail-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        try? FileManager.default.removeItem(at: directory)
+    }
+    let file = directory.appendingPathComponent("handoffs.jsonl")
+    // Compaction runs once more than 2 × 8 records have been appended.
+    let journal = try RelayHandoffJournal(file: file, maximumHandoffs: 2)
+    for index in 1...16 { journal.record(try lowHandoff(index)) }
+    try lowExpect(journal.lastError == nil, "the fixture journal failed before the compaction")
+    // The directory takes no new file, so the compaction's rewrite fails; the
+    // existing file still takes appends.
+    try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+    journal.record(try lowHandoff(17))
+    try lowExpect(journal.lastError != nil, "the failed compaction was not reported")
+    journal.record(try lowHandoff(18))
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+    let replay = try RelayHandoffJournal(file: file, maximumHandoffs: 2)
+    try lowExpect(replay.handoffs().map(\.id) == ["handoff-18", "handoff-17"],
+                  "an append after a failed compaction did not reach disk: \(replay.handoffs().map(\.id))")
+}
+
+/// An approved context review is mid-delivery; pruning it from the store, and
+/// now from the broker's map, lost its outcome when the Ask finished.
+func checkPruningSparesApprovedReviews() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-pruneapproved-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let store = try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json"))
+    func review(_ index: Int, _ state: AgentContextReviewState) -> AgentContextReview {
+        var review = AgentContextReview(id: "review-\(index)", sourcePaneID: "source", sourcePaneName: "Source", sourcePaneKind: .claude,
+                                        sourceFolder: directory.path,
+                                        pack: ContextPack(name: "Pack \(index)", parts: [ContextPackPart(
+                                            source: ContextPackSource(kind: .agentFileDraft, label: "f.md", detail: "f.md", referenceID: nil),
+                                            capturedText: "text \(index)")]))
+        review.state = state
+        review.updatedAt = Date(timeIntervalSince1970: TimeInterval(index))
+        return review
+    }
+    // The oldest record is approved: a delivery still in flight.
+    try store.record(review(0, .approved))
+    for index in 1...105 { try store.record(review(index, .discarded)) }
+    try lowExpect(store.reviews().contains { $0.id == "review-0" && $0.state == .approved },
+                  "pruning removed an approved review whose delivery was still in flight")
+}
+
 private func lowRequire<T>(_ value: T?, _ message: String) throws -> T {
     guard let value else { throw NSError(domain: "RelayJournalLow", code: 2, userInfo: [NSLocalizedDescriptionKey: message]) }
     return value
@@ -294,6 +358,8 @@ private func lowRequire<T>(_ value: T?, _ message: String) throws -> T {
     ("a context ask timeout is persisted or retried", checkContextAskTimeoutIsPersistedOrRetried),
     ("the broker forgets reviews the store pruned", checkBrokerForgetsReviewsTheStorePruned),
     ("waiters check liveness once per interval", checkWaitersCheckLivenessOncePerInterval),
+    ("a failed compaction does not stop appends", checkFailedCompactionDoesNotStopAppends),
+    ("pruning spares approved context reviews", checkPruningSparesApprovedReviews),
     ("owner-only files are written durably and never left half-committed", checkOwnerOnlyFileWrite),
     ("the busy queue is never visible with wider permissions", checkBusyQueueIsNeverVisibleWithWiderPermissions),
 ]

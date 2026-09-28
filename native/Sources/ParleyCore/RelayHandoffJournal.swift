@@ -102,6 +102,7 @@ public final class RelayHandoffJournal: @unchecked Sendable {
         lock.withLock {
             byID[handoff.id] = handoff
             _ = pruneLocked()
+            var written = false
             do {
                 let repaired = uncertainTail
                 try repairUncertainTailLocked()
@@ -110,6 +111,7 @@ public final class RelayHandoffJournal: @unchecked Sendable {
                     try appendLocked(handoff)
                     eventCount += 1
                 }
+                written = true
                 if eventCount > maximumHandoffs * 8 {
                     try compactLocked()
                 }
@@ -118,8 +120,11 @@ public final class RelayHandoffJournal: @unchecked Sendable {
                 storedError = error.localizedDescription
                 // The projection keeps this record but the file does not have
                 // it: the next write rewrites the whole projection first, so
-                // an error is never cleared over a record that was lost.
-                uncertainTail = true
+                // an error is never cleared over a record that was lost. A
+                // durable append whose maintenance compaction failed is not
+                // behind, and later appends must keep working (a nearly full
+                // disk has room for a line, not for the whole projection).
+                if !written { uncertainTail = true }
             }
         }
     }
