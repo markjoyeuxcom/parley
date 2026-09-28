@@ -381,7 +381,10 @@ public enum GhosttyAppearanceImporter {
                     family: line.value,
                     size: nil
                 ))?.family {
-                    state.fontFamily = family
+                    // Repeated lines build Ghostty's fallback list; the first
+                    // after a reset is the primary font (review of 22
+                    // September 2026, 7a7848f9).
+                    if state.fontFamily == nil { state.fontFamily = family }
                 } else {
                     state.ignoredSettingCount += 1
                 }

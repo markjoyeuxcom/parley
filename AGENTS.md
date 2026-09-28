@@ -575,7 +575,10 @@ font family, font size, theme, palette and hex colour values from the documented
 XDG and macOS locations. Never load a raw Ghostty config into a terminal, follow
 `config-file` or retain commands, keybindings, shell integration and behavioral
 options. Custom theme files receive the same allowlist. Parley's explicit font
-family and size overrides win over imported values.
+family and size overrides win over imported values. Repeated `font-family`
+lines are Ghostty's fallback list, so the import keeps the first after the
+last empty reset, Ghostty's primary font (it kept the last until 28 September
+2026).
 Challenge and Verify are native-control-only actions over one selected returned
 Ask or Delegate. They use the original ready source, one person-selected ready
 target, an editable preview and the normal correlated Ask lifecycle. Store
@@ -1639,7 +1642,22 @@ through `/usr/bin/env`, so it is not active in Parley panes today.
 ## Reviewed context boundary
 
 An agent-staged context part is a claim. Its path and bytes stay labelled
-`agentFileDraft`. Only a separate human-authorized capture may create trusted
+`agentFileDraft`. Each rendered part sits between marker lines that no text in
+the pack contains: the plain `--- begin/end explicit context ---`, or the first
+numbered pair none of it uses, found in one pass. With fixed markers an agent
+part could close its own part and forge a following "Selected file" header
+(7a7848f9, 28 September 2026). Every one-line metadata field (the name, a
+source path or label, evidence fields) is rendered through
+`ContextPackText.singleLine`, which shows line breaks and other control
+characters escaped: an agent's staged path used to carry newlines into forged
+metadata lines, and control characters that the final normalize removed only
+after the boundary scan. A pack with an agent-provided part always says which
+lines are its boundaries, since a look-alike marker is not one either. A
+Command Result that died of a signal says "Terminated by signal N (NAME)"
+rather than an exit status (`CommandOutput.terminationSignal`; the status is
+128 + N). Git Diff capture reads at most `gitCaptureBytes` (1 MB) of Git
+output and refuses output that reached it: a diff cut there, even one that
+normalizes below the 60 KB part bound, is never accepted shortened. Only a separate human-authorized capture may create trusted
 File, Git Diff, Selection or Command Result provenance. A pack carries its
 origin (`ContextPackOrigin`): the rendered header says "Agent-proposed
 context; not approved or sent" until the person approves, then that the
