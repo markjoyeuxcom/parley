@@ -1801,8 +1801,7 @@ public final class WorkbenchController: @unchecked Sendable {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(document).write(to: stateFile, options: .atomic)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: stateFile.path)
+        try OwnerOnlyFile.write(try encoder.encode(document), to: stateFile, fileManager: fileManager)
         // The whole document was just written, so any deferred title is durable too.
         titlePersistencePending = false
         lastDeferredPersistenceErrorStorage = nil
