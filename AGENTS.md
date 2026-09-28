@@ -1622,13 +1622,20 @@ through `/usr/bin/env`, so it is not active in Parley panes today.
 An agent-staged context part is a claim. Its path and bytes stay labelled
 `agentFileDraft`. Each rendered part sits between marker lines that no text in
 the pack contains: the plain `--- begin/end explicit context ---`, or the first
-numbered pair none of the name, note, parts or their sources uses, announced
-in the header. With fixed markers an agent part could close its own part and
-forge a following "Selected file" header (7a7848f9, 28 September 2026). A
+numbered pair none of it uses, found in one pass. With fixed markers an agent
+part could close its own part and forge a following "Selected file" header
+(7a7848f9, 28 September 2026). Every one-line metadata field (the name, a
+source path or label, evidence fields) is rendered through
+`ContextPackText.singleLine`, which shows line breaks and other control
+characters escaped: an agent's staged path used to carry newlines into forged
+metadata lines, and control characters that the final normalize removed only
+after the boundary scan. A pack with an agent-provided part always says which
+lines are its boundaries, since a look-alike marker is not one either. A
 Command Result that died of a signal says "Terminated by signal N (NAME)"
 rather than an exit status (`CommandOutput.terminationSignal`; the status is
-128 + N), and Git Diff capture reads at most `gitCaptureBytes` (1 MB) of Git
-output, well above the 60 KB part bound, so a cut diff is still refused. Only a separate human-authorized capture may create trusted
+128 + N). Git Diff capture reads at most `gitCaptureBytes` (1 MB) of Git
+output and refuses output that reached it: a diff cut there, even one that
+normalizes below the 60 KB part bound, is never accepted shortened. Only a separate human-authorized capture may create trusted
 File, Git Diff, Selection or Command Result provenance. A pack carries its
 origin (`ContextPackOrigin`): the rendered header says "Agent-proposed
 context; not approved or sent" until the person approves, then that the
