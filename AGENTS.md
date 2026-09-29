@@ -208,7 +208,11 @@ Production and a separate Development directory.
   exits its CLI, closes it or restarts it; a container pane can also be stopped
   from Status Center > Health > Containers. Help, README, INSTALL and the
   protocol text described the removed item for two weeks; do not reintroduce
-  the name without the button.
+  the name without the button. `shutdown` checks every container first,
+  saves every pane stopped, and ends the surfaces only once that is durable;
+  a refusal changes nothing and the app stays open with its panes (until 29
+  September 2026 it ended every surface first, so a state file or credential
+  store that could not be written left Parley open with every pane gone).
 - On a later app launch, workspace definitions remain, shells can restart and
   agent panes are stopped placeholders. Never claim a vendor session survived.
 - A pane's exit is recorded from Ghostty's own record of it
@@ -1125,7 +1129,8 @@ surface. The worker outlives Ghostty's
 abnormal-runtime threshold before exiting (monotonic clock) so no
 failed-launch screen flashes. Ghostty reports a close synchronously from
 inside `terminate`, and that report refreshes the app: every termination in
-`WorkbenchController` goes through `terminateSurface`, and close, restart,
+`WorkbenchController` goes through `terminateSurface`, or through
+`endSurfaceLocked` after the same check (see Roles and mobility), and close, restart,
 stop, start, workspace close and layout restore refuse to begin while one is
 in progress (`isTerminatingSurface`); the cleanup pass skips such ticks,
 `closePane` removes by identity and restart/stop re-resolve their target
@@ -1635,7 +1640,11 @@ pending, then ended if it failed or was refused; nil once a generation
 started, for a host member and in older records). A placeholder whose
 preparation ended never started, so its generation never moved, and it now
 reads as a stopped placeholder (`ownership(of:)`) that Close stopped panes
-offers; it read as owned forever. Stop leaves a placeholder still preparing to
+offers; it read as owned forever. Close stopped panes
+(`TeamPlaceholderClosing`) re-reads each pane just before closing it, carries
+on past one that fails or whose state cannot be read, always refreshes, and
+lists every pane it skipped or could not close with the reason; it used to
+stop at the first failure without refreshing. Stop leaves a placeholder still preparing to
 that preparation (`TeamStopPlanner.containerCleanup`) and reports it as
 `preparationCancelled`, a skip: it used to run Docker cleanup that the
 controller refuses during a preparation and report the member as failed. The
@@ -1952,9 +1961,38 @@ saved with; `createWorkspaceLocked` takes the policy as a required argument
 (until 23 September 2026 every restore reopened as Ask and Delegate). A
 restore validates that every pane it replaces may end, builds and saves
 against a snapshot it puts back on any failure, and ends the replaced panes
-only after the new state is saved. Closing a workspace checks every pane
+only after the new state is saved; its rollback puts back the recorded
+host launch permissions too. Closing a workspace checks every pane
 (`requireTerminableLocked`) before ending any, so a container not confirmed
-stopped refuses the close without ending its siblings.
+stopped refuses the close without ending its siblings, and then does the
+same: it saves the workspace's removal and ends the panes only once that is
+durable.
+
+Every lifecycle route is all or nothing (29 September 2026, from Agy's review
+of MR 106 and the fresh-context review of this change). A route that ends a
+process (close pane, stop, close workspace, restore, shutdown) checks, saves
+the change, puts the document back if the save fails, and only then ends
+the surface; each ended the surface first, so a state file or credential
+store that could not be written left a pane gone or stopped in the window
+while the error said it was not, and back at the next launch. A route that
+starts or creates one (start, the second half of restart, create pane,
+create workspace) puts the document back when its save fails, rather than
+leaving a pane reading started or listed, with a surface mounted for it,
+that the saved state never held; restart's first half has already ended
+the old process and saved the pane stopped, and it stays that way. A move
+that cannot be saved puts the document back. After the save the surface
+ends through `endSurfaceLocked` (`endAllSurfacesLocked` for shutdown),
+which raises `terminatingDepth` like `terminateSurface` but does not check
+again: the check reads the document, so after the change it can refuse a
+pane that passed (a removed pane still holding a prepared container
+receipt, or any container pane once shutdown has advanced every
+generation) and would leave its process running behind a saved close. The
+close Ghostty reports from inside the ending finds the pane gone or at a
+newer generation and changes nothing, and `terminalDidClose` ignores a
+report for a pane that is not started, which has no process to report on.
+A Team Stop whose save fails therefore reads failed and stays retryable;
+stopped-but-unrecorded remains for a stop that fails after the state changed. A credential that cannot be forgotten
+afterwards names no running pane and is left, not reported.
 
 ## External integration boundaries
 

@@ -1287,16 +1287,33 @@ func teamSessionStopRecordingFailureChecks() throws {
     guard created.count == 2, let active = coordinator.sessions().first(where: { $0.id == session.id }) else { throw TeamSessionError.invalid("panes were not created") }
     let members = active.members
 
-    // Real path: stopPaneProcess terminates and mutates the pane, then credential
-    // forgetting / persistence throws under a read-only runtime directory.
+    // Real path: stopPaneProcess saves the stop before it ends the process,
+    // so a save that fails under a read-only runtime directory changes
+    // nothing. The pane is still running: failed, and still planned for a retry.
     try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: runtime.path)
-    let unrecorded = TeamStopExecution.execute(
+    let unsaved = TeamStopExecution.execute(
         plan: TeamStopPlanner.plan(members: [members[0]], live: try controller.listPanes()),
         stop: { try controller.stopPaneProcess($0, expectedGeneration: nil) },
         currentPane: { id in (try? controller.listPanes())?.first { $0.id == id } })
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: runtime.path)
+    try teamExpect(unsaved.count == 1 && unsaved[0].result == .failed && unsaved[0].message?.isEmpty == false,
+        "a stop whose save failed was not classified as failed: \(unsaved)")
+    try teamExpect(try controller.listPanes().first { $0.id == members[0].paneID }?.isStarted == true,
+        "a stop whose save failed changed the pane")
+    try teamExpect(TeamStopPlanner.plan(members: [members[0]], live: try controller.listPanes()).first?.action == .stop,
+        "a stop whose save failed lost its retry")
+
+    // A stop that fails after the state changed is re-read as stopped but
+    // not recorded, whatever threw.
+    let unrecorded = TeamStopExecution.execute(
+        plan: TeamStopPlanner.plan(members: [members[0]], live: try controller.listPanes()),
+        stop: { id in
+            try controller.stopPaneProcess(id, expectedGeneration: nil)
+            throw TeamSessionError.invalid("injected failure after the stop")
+        },
+        currentPane: { id in (try? controller.listPanes())?.first { $0.id == id } })
     try teamExpect(unrecorded.count == 1 && unrecorded[0].result == .stoppedUnrecorded && unrecorded[0].message?.isEmpty == false,
-        "a stop whose recording failed was not classified as stopped-but-unrecorded: \(unrecorded)")
+        "a stop that failed after the state changed was not classified as stopped-but-unrecorded: \(unrecorded)")
     let afterUnrecorded = try controller.listPanes().first { $0.id == members[0].paneID }
     try teamExpect(afterUnrecorded?.isStarted == false && members[0].ownership(of: afterUnrecorded) == .stopped,
         "the pane whose stop went unrecorded was not reported as the stopped owned generation")

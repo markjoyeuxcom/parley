@@ -94,16 +94,32 @@ public final class WorkbenchController: @unchecked Sendable {
 
     private func terminateSurface(_ paneID: String) throws {
         try requireTerminableLocked(paneID)
+        endSurfaceLocked(paneID)
+    }
+
+    /// Ends a surface without checking it, raising `terminatingDepth` as
+    /// `terminateSurface` does. Only for an operation that checked the pane
+    /// with `requireTerminableLocked` under this same lock and then saved its
+    /// change: the check reads the document, and after the change it can
+    /// refuse a pane that passed (a removed pane still holding a prepared
+    /// container receipt), leaving a process running behind a saved close.
+    private func endSurfaceLocked(_ paneID: String) {
         preparedContainerIDs[paneID] = nil
         terminatingDepth += 1
         defer { terminatingDepth -= 1 }
         terminalTransport?.terminate(paneID)
     }
 
-    private func terminateAllSurfaces() throws {
+    private func requireAllTerminableLocked() throws {
         guard containerPreparations.isEmpty, document.panes.allSatisfy({
             $0.containerConfiguration == nil || confirmedContainerStops[$0.id] == $0.launchGeneration
         }) else { throw ContainerPaneError.refused("Container cleanup must finish before Parley can stop.") }
+    }
+
+    /// Ends every surface, for a shutdown that checked
+    /// `requireAllTerminableLocked` before it stopped every pane. Checking again
+    /// after the generations advanced refuses every container pane.
+    private func endAllSurfacesLocked() {
         preparedContainerIDs.removeAll()
         terminatingDepth += 1
         defer { terminatingDepth -= 1 }
@@ -121,6 +137,20 @@ public final class WorkbenchController: @unchecked Sendable {
         }
     }
     private static let processSessionID = UUID().uuidString
+
+    /// Runs a document change and saves it, putting the document back when the
+    /// change or the save fails, so memory never holds what disk does not.
+    private func commitLocked<T>(_ change: () throws -> T) throws -> T {
+        let previous = document
+        do {
+            let result = try change()
+            try persistLocked()
+            return result
+        } catch {
+            document = previous
+            throw error
+        }
+    }
 
     private struct AgentLaunchRequest {
         let generation: Int
@@ -386,16 +416,16 @@ public final class WorkbenchController: @unchecked Sendable {
     ) throws -> WorkbenchWorkspace {
         try requireDirectory(folder)
         return try lock.withLock {
-            let workspace = try createWorkspaceLocked(
-                launchFolder: folder,
-                name: name,
-                attachedFolders: [folder],
-                newPaneFolder: folder,
-                initialShell: true,
-                automationPolicy: .askAndDelegate
-            )
-            try persistLocked()
-            return workspace
+            try commitLocked {
+                try createWorkspaceLocked(
+                    launchFolder: folder,
+                    name: name,
+                    attachedFolders: [folder],
+                    newPaneFolder: folder,
+                    initialShell: true,
+                    automationPolicy: .askAndDelegate
+                )
+            }
         }
     }
 
@@ -408,16 +438,16 @@ public final class WorkbenchController: @unchecked Sendable {
     ) throws -> WorkbenchWorkspace {
         try requireDirectory(launchFolder)
         return try lock.withLock {
-            let workspace = try createWorkspaceLocked(
-                launchFolder: launchFolder,
-                name: name,
-                attachedFolders: [],
-                newPaneFolder: nil,
-                initialShell: false,
-                automationPolicy: .askAndDelegate
-            )
-            try persistLocked()
-            return workspace
+            try commitLocked {
+                try createWorkspaceLocked(
+                    launchFolder: launchFolder,
+                    name: name,
+                    attachedFolders: [],
+                    newPaneFolder: nil,
+                    initialShell: false,
+                    automationPolicy: .askAndDelegate
+                )
+            }
         }
     }
 
@@ -597,10 +627,19 @@ public final class WorkbenchController: @unchecked Sendable {
             // Creating an inert placeholder is local metadata only. Docker preparation
             // is an explicit background operation before startPane may activate it.
             if containerConfiguration != nil { confirmedContainerStops[pane.id] = pane.launchGeneration }
+            let previous = document
             for index in document.panes.indices { document.panes[index].isActive = false }
             document.panes.append(pane)
             document.activity[pane.id] = Date()
-            try persistLocked()
+            do { try persistLocked() } catch {
+                // Nothing names the new pane once the document is put back;
+                // its id is never reused, so the entries makePane recorded
+                // for it go too.
+                document = previous
+                confirmedContainerStops[pane.id] = nil
+                hostPermissionLaunches[pane.id] = nil
+                throw error
+            }
             return pane
         }
     }
@@ -789,6 +828,11 @@ public final class WorkbenchController: @unchecked Sendable {
             if document.panes[index].kind.isAgent, let relayRuntime {
                 _ = try relayRuntime.credentials.rotate(paneID)
             }
+            // The old process has ended and the pane is saved stopped. If the
+            // new start cannot be saved, it stays that way rather than reading
+            // started with nothing saved behind it, as startPane does.
+            let stopped = document
+            let stoppedLaunch = hostPermissionLaunches[paneID]
             document.panes[index].containerConfiguration = containerConfiguration
             markStartedLocked(index: index, profile: profile)
             if document.panes[index].kind.isAgent {
@@ -799,7 +843,12 @@ public final class WorkbenchController: @unchecked Sendable {
             } else {
                 agentLaunchRequests[paneID] = nil
             }
-            try persistLocked()
+            do { try persistLocked() } catch {
+                document = stopped
+                hostPermissionLaunches[paneID] = stoppedLaunch
+                agentLaunchRequests[paneID] = nil
+                throw error
+            }
         }
     }
 
@@ -840,13 +889,24 @@ public final class WorkbenchController: @unchecked Sendable {
                 }
                 if let relayRuntime { _ = try relayRuntime.credentials.rotate(paneID) }
             }
+            // A start that cannot be saved leaves the pane stopped: otherwise
+            // it read started, with a surface mounted for it, while the saved
+            // state held it stopped. A rotated credential is harmless on a
+            // stopped pane, whose next start rotates it again.
+            let previous = document
+            let previousLaunch = hostPermissionLaunches[paneID]
             document.panes[index].containerConfiguration = containerConfiguration
             markStartedLocked(index: index, profile: profile)
             agentLaunchRequests[paneID] = AgentLaunchRequest(
                 generation: document.panes[index].launchGeneration,
                 mode: launchMode
             )
-            try persistLocked()
+            do { try persistLocked() } catch {
+                document = previous
+                hostPermissionLaunches[paneID] = previousLaunch
+                agentLaunchRequests[paneID] = nil
+                throw error
+            }
         }
     }
 
@@ -886,15 +946,12 @@ public final class WorkbenchController: @unchecked Sendable {
                 throw ContainerPaneError.refused("The pane restarted after container cleanup; its new session was left alone.")
             }
             guard document.panes[index].kind.isAgent, document.panes[index].isStarted else { return }
-            try terminateSurface(paneID)
-            // Re-resolve after the transport ran: act on this pane or not at all.
-            guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
-                throw ParleyWorkbenchError.paneNotFound(paneID)
-            }
-            copilotTrustConfirmations[paneID] = nil
-            agentLaunchRequests[paneID] = nil
+            try requireTerminableLocked(paneID)
+            // Saved stopped first, as closePane does; the process ends only
+            // once that is durable, and the close Ghostty reports from inside
+            // the ending names a generation that is no longer current.
+            let previous = document
             document.panes[index].launchGeneration &+= 1
-            confirmedContainerStops[paneID] = document.panes[index].launchGeneration
             document.panes[index].isStarted = false
             document.panes[index].isDead = false
             document.panes[index].inputAvailable = false
@@ -904,32 +961,51 @@ public final class WorkbenchController: @unchecked Sendable {
             document.panes[index].vendorRuntimeState = nil
             document.panes[index].vendorRuntimeSignal = nil
             document.panes[index].vendorRuntimeSignaledAt = nil
-            try relayRuntime?.credentials.forget(paneID)
-            try persistLocked()
+            do { try persistLocked() } catch {
+                document = previous
+                throw error
+            }
+            // Read before the ending, whose callbacks re-enter this controller.
+            let stoppedGeneration = document.panes[index].launchGeneration
+            endSurfaceLocked(paneID)
+            confirmedContainerStops[paneID] = stoppedGeneration
+            copilotTrustConfirmations[paneID] = nil
+            agentLaunchRequests[paneID] = nil
+            // The pane is saved stopped with relay off; a credential that
+            // cannot be forgotten routes nowhere, and its next start rotates it.
+            try? relayRuntime?.credentials.forget(paneID)
         }
     }
 
     public func closePane(_ paneID: String) throws {
         try lock.withLock {
             try requireNoTerminationInProgress()
-            guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
+            guard document.panes.contains(where: { $0.id == paneID }) else {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
             }
-            _ = index
-            // Terminating the surface reports its close synchronously, and that
-            // report refreshes the app inside this call (the lock is recursive).
-            // Nested lifecycle mutations are refused above; still remove by
-            // identity, never by an index computed before the transport ran.
-            try terminateSurface(paneID)
-            copilotTrustConfirmations[paneID] = nil
-            agentLaunchRequests[paneID] = nil
+            try requireTerminableLocked(paneID)
+            // Save the removal first and end the process only once it is
+            // durable. Ending first and saving after left a pane that could
+            // not be saved gone from the window while the error said it had
+            // not closed, and back at the next launch.
+            let previous = document
             document.panes.removeAll { $0.id == paneID }
             document.activity[paneID] = nil
-            try relayRuntime?.credentials.forget(paneID)
             // The workspace stays, with its attachments, New Pane Folder and
             // history; closing a workspace is its own explicit action.
             normalizeSelectionLocked()
-            try persistLocked()
+            do { try persistLocked() } catch {
+                document = previous
+                throw error
+            }
+            // Ghostty reports the close synchronously from inside this call;
+            // the pane is no longer listed, so that report changes nothing.
+            endSurfaceLocked(paneID)
+            copilotTrustConfirmations[paneID] = nil
+            agentLaunchRequests[paneID] = nil
+            // The pane no longer exists in the saved state; a credential
+            // that cannot be forgotten names no pane and routes nowhere.
+            try? relayRuntime?.credentials.forget(paneID)
         }
     }
 
@@ -940,27 +1016,39 @@ public final class WorkbenchController: @unchecked Sendable {
             let workspace = document.workspaces[try workspaceIndexLocked(workspaceID)]
             let paneIDs = document.panes.filter { $0.workspaceID == workspace.workspaceID }.map(\.id)
             for paneID in paneIDs { try requireTerminableLocked(paneID) }
+            // Save the removal first and end the processes only once it is
+            // durable, as a layout restore does: a failure part-way used to
+            // leave ended panes listed in a workspace that stayed open.
+            let previous = document
+            do {
+                document.panes.removeAll(where: { $0.workspaceID == workspace.workspaceID })
+                document.workspaces.removeAll(where: { $0.workspaceID == workspace.workspaceID })
+                for paneID in paneIDs { document.activity[paneID] = nil }
+                normalizeSelectionLocked()
+                try persistLocked()
+            } catch {
+                document = previous
+                throw error
+            }
             for paneID in paneIDs {
-                try terminateSurface(paneID)
+                endSurfaceLocked(paneID)
                 copilotTrustConfirmations[paneID] = nil
                 agentLaunchRequests[paneID] = nil
-                try relayRuntime?.credentials.forget(paneID)
-                document.activity[paneID] = nil
+                // The pane no longer exists in the saved state; a credential
+                // that cannot be forgotten names no pane and routes nowhere.
+                try? relayRuntime?.credentials.forget(paneID)
             }
-            document.panes.removeAll(where: { $0.workspaceID == workspace.workspaceID })
-            document.workspaces.removeAll(where: { $0.workspaceID == workspace.workspaceID })
-            normalizeSelectionLocked()
-            try persistLocked()
         }
     }
 
+    /// Everything that can refuse happens before anything ends: the container
+    /// check, then the saved state. Ending every surface first used to leave
+    /// Parley open with every pane gone, and unable to start another, when a
+    /// credential or the state file could not be written.
     public func shutdown() throws {
         try lock.withLock {
-            try terminateAllSurfaces()
-            isShutDown = true
-            for pane in document.panes { try relayRuntime?.credentials.forget(pane.id) }
-            agentLaunchRequests.removeAll()
-            copilotTrustConfirmations.removeAll()
+            try requireAllTerminableLocked()
+            let previous = document
             for index in document.panes.indices {
                 document.panes[index].launchGeneration &+= 1
                 document.panes[index].isStarted = false
@@ -974,7 +1062,17 @@ public final class WorkbenchController: @unchecked Sendable {
             }
             document.ownerPID = 0
             document.ownerSessionID = nil
-            try persistLocked()
+            do { try persistLocked() } catch {
+                document = previous
+                throw error
+            }
+            isShutDown = true
+            endAllSurfacesLocked()
+            agentLaunchRequests.removeAll()
+            copilotTrustConfirmations.removeAll()
+            // Every pane is stopped in the saved state; a credential that
+            // cannot be forgotten names no running pane and routes nowhere.
+            for pane in document.panes { try? relayRuntime?.credentials.forget(pane.id) }
         }
     }
 
@@ -1042,6 +1140,9 @@ public final class WorkbenchController: @unchecked Sendable {
                 throw ParleyWorkbenchError.commandFailed("The target workspace already has @\(role).")
             }
             let sourceWorkspaceID = document.panes[index].workspaceID
+            // Changed in memory, then saved; put back if the save fails, so a
+            // failed move leaves the pane where the saved state says it is.
+            let previous = document
             document.panes[index].workspaceID = target.workspaceID
             document.panes[index].workspaceName = target.name
             document.panes[index].automationPolicy = target.automationPolicy
@@ -1058,7 +1159,10 @@ public final class WorkbenchController: @unchecked Sendable {
                 document.panes[index].isActive = false
                 document.panes[successor].isActive = true
             }
-            try persistLocked()
+            do { try persistLocked() } catch {
+                document = previous
+                throw error
+            }
             return document.panes[index]
         }
     }
@@ -1091,6 +1195,9 @@ public final class WorkbenchController: @unchecked Sendable {
             let replacedIDs = replacement.map { replaced in document.panes.filter { $0.workspaceID == replaced.workspaceID }.map(\.id) } ?? []
             for id in replacedIDs { try requireTerminableLocked(id) }
             let previous = document
+            // Starting panes records their launch permissions; a rolled-back
+            // restore puts these back too, so no entry names a pane that never existed.
+            let previousLaunches = hostPermissionLaunches
             let workspace: WorkbenchWorkspace
             do {
                 workspace = try createWorkspaceLocked(
@@ -1130,11 +1237,11 @@ public final class WorkbenchController: @unchecked Sendable {
                 try persistLocked()
             } catch {
                 document = previous
+                hostPermissionLaunches = previousLaunches
                 throw error
             }
             for id in replacedIDs {
-                // Checked above under the same lock, so this cannot refuse.
-                try? terminateSurface(id)
+                endSurfaceLocked(id)
                 copilotTrustConfirmations[id] = nil
                 agentLaunchRequests[id] = nil
                 // The pane no longer exists in the saved state; a credential
@@ -1552,7 +1659,12 @@ public final class WorkbenchController: @unchecked Sendable {
 
     public func terminalDidClose(paneID: String, generation: Int? = nil, processAlive: Bool, exitStatus: Int? = nil) throws {
         try lock.withLock {
-            if let generation, document.panes.first(where: { $0.id == paneID })?.launchGeneration != generation { return }
+            guard let pane = document.panes.first(where: { $0.id == paneID }) else { return }
+            if let generation, pane.launchGeneration != generation { return }
+            // A pane that is not started has no process to report on. Stop and
+            // shutdown save the pane stopped before its surface ends, and the
+            // close reported from inside that ending must not mark it exited.
+            guard pane.isStarted else { return }
             if !processAlive { copilotTrustConfirmations[paneID] = nil }
             try updatePaneRuntime(paneID: paneID) {
                 $0.isDead = !processAlive
