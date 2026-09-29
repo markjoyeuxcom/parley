@@ -936,7 +936,19 @@ own sandbox allows it (a design lifted from the donkeykong review):
 user's temporary directory when that path would exceed a Unix socket's 103
 bytes; `socketURL(transportDirectory:)` decides for server and shim alike),
 verifies the connecting peer's uid and `LOCAL_PEERPID`, and issues a one-use
-ten-second ticket only after a bounded kernel parent walk reaches this app.
+ticket, valid for ten seconds of awake time, only after a bounded kernel parent
+walk reaches this app. It ages on `CLOCK_UPTIME_RAW` through the transport's
+`RelayTransportClocks`: on the wall clock, a shim that got its ticket just
+before the Mac slept was refused on wake ("the ticket is invalid, expired or
+already used"), which a `parley wait` loop left running overnight met on 28
+September 2026, and a clock change could expire one too. A team pane request
+the app has not yet picked up times out after 90 seconds of awake time too
+(`TeamSessionCoordinator`'s `awake` clock), and only until the pane exists:
+on the wall clock a sleep failed it on wake, a clock stepped back blocked
+every later add, and the same timeout failed a container member whose Docker
+preparation outlasted it and tore its prepared container down. A command
+run's worker ticket (120 s) is still a wall-clock window; it spans only the
+moment between the approval and the worker's start.
 Only the app's direct launch root (or its child below Ghostty's root-owned
 `login` intermediate) may supply `PARLEY_PANE_ID` and
 `PARLEY_PANE_GENERATION`; descendant markers never establish identity, and

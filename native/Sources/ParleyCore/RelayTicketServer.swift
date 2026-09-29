@@ -121,13 +121,16 @@ public final class RelayTicketServer: @unchecked Sendable {
     private let parentPID: ParentPID
     private let isLaunchIntermediate: LaunchIntermediate
     private let paneGeneration: PaneGeneration
-    private let clock: @Sendable () -> Date
+    /// A ticket ages on awake time (`clocks.awake`, which stops while the
+    /// Mac sleeps): a shim that got its ticket just before a sleep has its
+    /// full lifetime after the wake, and a clock change never expires one.
+    private let clocks: RelayTransportClocks
     private let lock = NSLock()
     private var listener: Int32 = -1
     private var acceptSource: DispatchSourceRead?
     private let queue = DispatchQueue(label: "parley.native.ticket-socket", qos: .utility)
     private let connections = DispatchQueue(label: "parley.native.ticket-connections", qos: .utility, attributes: .concurrent)
-    private var tickets: [String: (token: String, requestID: String, expires: Date)] = [:]
+    private var tickets: [String: (token: String, requestID: String, expiresAwake: UInt64)] = [:]
     private var issued = 0
     private var refused = 0
     private var listening = false
@@ -154,7 +157,7 @@ public final class RelayTicketServer: @unchecked Sendable {
         markerValue: @escaping MarkerValue = { key, pid in ProcessEnvironmentMarker.value(key, forProcess: pid) },
         parentPID: @escaping ParentPID = { pid in ProcessKernelFacts.parentPID(ofProcess: pid) },
         isLaunchIntermediate: @escaping LaunchIntermediate = ProcessKernelFacts.isPrivilegedLogin,
-        clock: @escaping @Sendable () -> Date = { Date() }
+        clocks: RelayTransportClocks = .system
     ) {
         self.socketFile = socketFile
         self.credentials = credentials
@@ -163,7 +166,7 @@ public final class RelayTicketServer: @unchecked Sendable {
         self.markerValue = markerValue
         self.parentPID = parentPID
         self.isLaunchIntermediate = isLaunchIntermediate
-        self.clock = clock
+        self.clocks = clocks
     }
 
     public var isListening: Bool { lock.withLock { listening } }
@@ -349,14 +352,15 @@ public final class RelayTicketServer: @unchecked Sendable {
         lock.withLock {
             purgeExpiredLocked()
             guard let request = presented.removeValue(forKey: connection) else { return }
-            tickets[ticket] = (token: request.token, requestID: request.requestID, expires: clock().addingTimeInterval(Self.ticketLifetime))
+            tickets[ticket] = (token: request.token, requestID: request.requestID,
+                               expiresAwake: clocks.awake() + UInt64(Self.ticketLifetime * 1_000_000_000))
             issued += 1
         }
         return ticket
     }
 
     private func purgeExpiredLocked() {
-        let now = clock()
-        tickets = tickets.filter { $0.value.expires > now }
+        let now = clocks.awake()
+        tickets = tickets.filter { $0.value.expiresAwake > now }
     }
 }
