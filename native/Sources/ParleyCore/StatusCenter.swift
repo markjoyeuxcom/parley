@@ -384,3 +384,14 @@ public enum StatusCenterProjection {
         )
     }
 }
+
+/// What Status Center keeps selected when its workspace scope changes.
+public enum StatusCenterSelection {
+    /// A selection the new scope still shows stays selected. "Show this
+    /// handoff" from elsewhere widens the scope and selects the handoff in the
+    /// same update, and the scope's change handler used to clear it after.
+    public static func afterScopeChange(selected: String?, visible: [String]) -> String? {
+        guard let selected, visible.contains(selected) else { return nil }
+        return selected
+    }
+}

@@ -25,14 +25,18 @@ public struct ToolbarActionMenu: NSViewRepresentable {
     /// that must be current at that moment; `items` remains the static copy
     /// for the overflow submenu. Never consulted while the menu is tracking.
     public let itemsOnOpen: (() -> [ToolbarMenuItem])?
+    /// Draws the button in the secondary label colour, for a menu that sits
+    /// among secondary text rather than in the toolbar.
+    public let secondary: Bool
 
     public init(
         title: String, systemImage: String, iconOnly: Bool = false, isEnabled: Bool = true,
         accessibilityLabel: String, accessibilityValue: String = "",
         help: String = "", accessibilityHint: String = "", items: [ToolbarMenuItem],
-        itemsOnOpen: (() -> [ToolbarMenuItem])? = nil
+        itemsOnOpen: (() -> [ToolbarMenuItem])? = nil, secondary: Bool = false
     ) {
         self.itemsOnOpen = itemsOnOpen
+        self.secondary = secondary
         self.title = title
         self.systemImage = systemImage
         self.iconOnly = iconOnly
@@ -94,6 +98,7 @@ public struct ToolbarActionMenu: NSViewRepresentable {
             button.imagePosition = configuration.iconOnly ? .imageOnly : .imageLeading
             (button.cell as? NSPopUpButtonCell)?.arrowPosition = configuration.iconOnly ? .noArrow : .arrowAtCenter
             button.isEnabled = configuration.isEnabled
+            button.contentTintColor = configuration.secondary ? .secondaryLabelColor : nil
             button.setAccessibilityLabel(configuration.accessibilityLabel)
             button.setAccessibilityValue(configuration.accessibilityValue)
             button.setAccessibilityHelp(configuration.accessibilityHint)
@@ -147,7 +152,8 @@ final class NativeActionMenuSnapshot: NSObject {
                 row.isEnabled = enabled
                 row.toolTip = help
                 if let image { row.image = NSImage(systemSymbolName: image, accessibilityDescription: nil) }
-                if destructive {
+                // A disabled item keeps AppKit's disabled look; red would read as clickable.
+                if destructive, enabled {
                     row.attributedTitle = NSAttributedString(string: title, attributes: [.foregroundColor: NSColor.systemRed])
                 }
                 menu.addItem(row)

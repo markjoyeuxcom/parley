@@ -253,15 +253,15 @@ struct ContentView: View {
                     if model.activeWorkspace?.newPaneFolder != nil {
                         Button("Clear New Pane Folder", action: model.clearWorkspaceNewPaneFolder)
                     }
-                    Button(model.isFavouriteFolder(model.defaultFolder) ? "Remove This Folder from Favourites" : "Add This Folder to Favourites") {
+                    Button(model.folderIdentity.contains(model.defaultFolder, in: model.favouriteFolders) ? "Remove This Folder from Favourites" : "Add This Folder to Favourites") {
                         model.toggleFavouriteFolder(model.defaultFolder)
                     }
                     // A folder that no longer exists cannot be used for new
                     // panes, so it is not offered here. The manager below lists
                     // it as missing with a Remove button.
                     let favouriteAlternatives = model.favouriteFolders.filter {
-                        !WorkspaceFolderIdentity.matches($0, model.defaultFolder)
-                            && FolderListMaintenance.directoryExists($0)
+                        !model.folderIdentity.matches($0, model.defaultFolder)
+                            && model.folderIdentity.exists($0)
                     }
                     if !favouriteAlternatives.isEmpty {
                         Divider()
@@ -275,9 +275,9 @@ struct ContentView: View {
                         }
                     }
                     let recentAlternatives = model.recentFolders.filter {
-                        !WorkspaceFolderIdentity.matches($0, model.defaultFolder)
+                        !model.folderIdentity.matches($0, model.defaultFolder)
                             && !model.favouriteFolders.contains($0)
-                            && FolderListMaintenance.directoryExists($0)
+                            && model.folderIdentity.exists($0)
                     }
                     if !recentAlternatives.isEmpty {
                         Divider()
@@ -415,9 +415,7 @@ struct ContentView: View {
                 .accessibilityHint(workspace.isFolderless
                     ? "Open folderless workspace"
                     : "Open workspace with \(workspace.attachedFolders.count) attached folder\(workspace.attachedFolders.count == 1 ? "" : "s")")
-                .contextMenu {
-                    workspaceContextMenu(workspace)
-                }
+                .snapshotContextMenu(workspaceMenuItems(workspace))
             }
 
             if foldersExpanded {
@@ -461,7 +459,7 @@ struct ContentView: View {
         let name = WorkspaceFolderIdentity.displayName(for: folder)
         let displayPath = (WorkspaceFolderIdentity.normalized(folder) as NSString).abbreviatingWithTildeInPath
         let isNewPaneFolder = workspace.newPaneFolder.map {
-            WorkspaceFolderIdentity.matches($0, folder)
+            model.folderIdentity.matches($0, folder)
         } ?? false
 
         return HStack(alignment: .top, spacing: 6) {
@@ -497,19 +495,7 @@ struct ContentView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Attached folder \(name)")
         .accessibilityValue(isNewPaneFolder ? "\(displayPath), used for new panes" : displayPath)
-        .contextMenu {
-            Button("Use for New Panes") { model.setWorkspaceFolder(folder) }
-            Button(model.isFavouriteFolder(folder) ? "Remove from Favourites" : "Add to Favourites") {
-                model.toggleFavouriteFolder(folder)
-            }
-            Button("Open New Workspace Here") {
-                model.createNewWorkspace(folder: folder)
-            }
-            Divider()
-            Button("Detach from Workspace", role: .destructive) {
-                model.detachFolder(folder, from: workspace)
-            }
-        }
+        .snapshotContextMenu(attachedFolderMenuItems(folder, workspace: workspace))
     }
 
     private var workspaceActionsMenu: some View {
@@ -541,73 +527,78 @@ struct ContentView: View {
         }
     }
 
-    @ViewBuilder
-    private func workspaceContextMenu(_ workspace: WorkbenchWorkspace) -> some View {
-        Button("Rename…") { model.rename(workspace) }
-        Button("Save Layout…") { model.saveLayout(of: workspace) }
+    /// An AppKit snapshot like the pane menus: a model change while it is open
+    /// no longer rebuilds its items under the pointer.
+    private func workspaceMenuItems(_ workspace: WorkbenchWorkspace) -> [ToolbarMenuItem] {
+        var items: [ToolbarMenuItem] = [
+            .action("Rename…") { model.rename(workspace) },
+            .action("Save Layout…") { model.saveLayout(of: workspace) },
+        ]
         if !model.savedLayouts.isEmpty {
-            Menu("Saved Layouts") {
-                ForEach(model.savedLayouts) { layout in
-                    Menu(layout.name) {
-                        Button("Create New Workspace") { model.createWorkspace(from: layout) }
-                        Button("Replace This Workspace…") {
-                            model.open(layout, replacing: workspace)
-                        }
-                        Divider()
-                        Button("Delete Saved Layout…", role: .destructive) { model.delete(layout) }
-                    }
-                }
-            }
+            items.append(.submenu("Saved Layouts", items: model.savedLayouts.map { layout in
+                .submenu(layout.name, items: [
+                    .action("Create New Workspace") { model.createWorkspace(from: layout) },
+                    .action("Replace This Workspace…") { model.open(layout, replacing: workspace) },
+                    .separator,
+                    .action("Delete Saved Layout…", isDestructive: true) { model.delete(layout) },
+                ])
+            }))
         }
-        Menu("Automation: \(workspace.automationPolicy.label)") {
-            ForEach(WorkspaceAutomationPolicy.allCases, id: \.rawValue) { policy in
-                Button {
-                    model.setAutomationPolicy(policy, for: workspace)
-                } label: {
-                    Label(policy.label, systemImage: policy == workspace.automationPolicy ? "checkmark" : "")
-                }
+        items.append(.submenu("Automation: \(workspace.automationPolicy.label)", items: WorkspaceAutomationPolicy.allCases.map { policy in
+            .action(policy.label, systemImage: policy == workspace.automationPolicy ? "checkmark" : nil) {
+                model.setAutomationPolicy(policy, for: workspace)
             }
-        }
+        }))
         if model.panes.contains(where: { $0.workspaceID == workspace.workspaceID && $0.isWorkspaceLead }) {
-            Button("Clear Workspace Lead") { model.clearWorkspaceLead(workspace) }
+            items.append(.action("Clear Workspace Lead") { model.clearWorkspaceLead(workspace) })
         }
-        Button("Attach Folder…") { model.attachFolder(to: workspace) }
+        items.append(.action("Attach Folder…") { model.attachFolder(to: workspace) })
         if !workspace.attachedFolders.isEmpty {
-            Menu("Attached Folders") {
-                ForEach(Array(workspace.attachedFolders.enumerated()), id: \.element) { index, folder in
-                    Menu(WorkspaceFolderIdentity.displayName(for: folder)) {
-                        Button("Use for New Panes") { model.setWorkspaceFolder(folder) }
-                        Button(model.isFavouriteFolder(folder) ? "Remove from Favourites" : "Add to Favourites") {
-                            model.toggleFavouriteFolder(folder)
-                        }
-                        Button("Open New Workspace Here") {
-                            model.createNewWorkspace(folder: folder)
-                        }
-                        Divider()
-                        Button("Move Earlier") {
-                            model.moveAttachedFolder(folder, in: workspace, by: -1)
-                        }
-                        .disabled(index == 0)
-                        Button("Move Later") {
-                            model.moveAttachedFolder(folder, in: workspace, by: 1)
-                        }
-                        .disabled(index == workspace.attachedFolders.count - 1)
-                        Divider()
-                        Button("Detach from Workspace", role: .destructive) {
-                            model.detachFolder(folder, from: workspace)
-                        }
-                    }
-                }
-            }
+            items.append(.submenu("Attached Folders", items: workspace.attachedFolders.enumerated().map { index, folder in
+                .submenu(WorkspaceFolderIdentity.displayName(for: folder), items: [
+                    .action("Use for New Panes") { model.setWorkspaceFolder(folder) },
+                    .action(model.folderIdentity.contains(folder, in: model.favouriteFolders) ? "Remove from Favourites" : "Add to Favourites") {
+                        model.toggleFavouriteFolder(folder)
+                    },
+                    .action("Open New Workspace Here") { model.createNewWorkspace(folder: folder) },
+                    .separator,
+                    .action("Move Earlier", isEnabled: index > 0) { model.moveAttachedFolder(folder, in: workspace, by: -1) },
+                    .action("Move Later", isEnabled: index < workspace.attachedFolders.count - 1) {
+                        model.moveAttachedFolder(folder, in: workspace, by: 1)
+                    },
+                    .separator,
+                    .action("Detach from Workspace", isDestructive: true) { model.detachFolder(folder, from: workspace) },
+                ])
+            }))
         }
-        Divider()
-        Button("Move Workspace Up") { model.move(workspace, by: -1) }
-            .disabled(!model.canMove(workspace, by: -1))
-        Button("Move Workspace Down") { model.move(workspace, by: 1) }
-            .disabled(!model.canMove(workspace, by: 1))
-        Divider()
-        Button("Close Workspace…", role: .destructive) { model.close(workspace) }
-            .disabled(model.workspaces.count == 1)
+        items += [
+            .separator,
+            .action("Move Workspace Up", isEnabled: model.canMove(workspace, by: -1)) { model.move(workspace, by: -1) },
+            .action("Move Workspace Down", isEnabled: model.canMove(workspace, by: 1)) { model.move(workspace, by: 1) },
+            .separator,
+            .action("Close Workspace…", isEnabled: model.workspaces.count > 1, isDestructive: true) { model.close(workspace) },
+        ]
+        return items
+    }
+
+    private func attachedFolderMenuItems(_ folder: String, workspace: WorkbenchWorkspace) -> [ToolbarMenuItem] {
+        [
+            .action("Use for New Panes") { model.setWorkspaceFolder(folder) },
+            .action(model.folderIdentity.contains(folder, in: model.favouriteFolders) ? "Remove from Favourites" : "Add to Favourites") {
+                model.toggleFavouriteFolder(folder)
+            },
+            .action("Open New Workspace Here") { model.createNewWorkspace(folder: folder) },
+            .separator,
+            .action("Detach from Workspace", isDestructive: true) { model.detachFolder(folder, from: workspace) },
+        ]
+    }
+
+    private func favouriteFolderMenuItems(_ folder: String) -> [ToolbarMenuItem] {
+        [
+            .action("Open New Workspace Here") { model.createNewWorkspace(folder: folder) },
+            .separator,
+            .action("Remove from Favourites") { model.toggleFavouriteFolder(folder) },
+        ]
     }
 
     private func paneMenuItems(_ pane: WorkbenchPane) -> [ToolbarMenuItem] {
@@ -668,7 +659,7 @@ struct ContentView: View {
 
     private func favouriteFolderRow(_ folder: String) -> some View {
         let name = WorkspaceFolderIdentity.displayName(for: folder)
-        let matchingWorkspaces = WorkspaceFolderRouting.matches(folder: folder, in: model.workspaces)
+        let matchingWorkspaces = model.folderIdentity.workspaces(matching: folder, in: model.workspaces)
         let activeWorkspace = matchingWorkspaces.first(where: \.isActive)
         let isActive = activeWorkspace != nil
         let actionDescription = if isActive {
@@ -724,15 +715,7 @@ struct ContentView: View {
         )
         .accessibilityHint(actionDescription)
         .accessibilityAddTraits(isActive ? .isSelected : [])
-        .contextMenu {
-            Button("Open New Workspace Here") {
-                model.createNewWorkspace(folder: folder)
-            }
-            Divider()
-            Button("Remove from Favourites") {
-                model.toggleFavouriteFolder(folder)
-            }
-        }
+        .snapshotContextMenu(favouriteFolderMenuItems(folder))
     }
 
     private func workspaceTabHelp(_ workspace: WorkbenchWorkspace) -> String {
@@ -879,9 +862,7 @@ struct ContentView: View {
                         .accessibilityHint(workspace.isFolderless
                             ? "Open folderless workspace"
                             : "Open workspace with \(workspace.attachedFolders.count) attached folder\(workspace.attachedFolders.count == 1 ? "" : "s")")
-                        .contextMenu {
-                            workspaceContextMenu(workspace)
-                        }
+                        .snapshotContextMenu(workspaceMenuItems(workspace))
                     }
                 }
             }
@@ -1000,7 +981,7 @@ struct ContentView: View {
     private var newPaneMenu: some View {
         PaneCreationMenu(
             offersActivePaneFolder: model.activePane.map {
-                !WorkspaceFolderIdentity.matches($0.cwd, model.defaultFolder)
+                !model.folderIdentity.matches($0.cwd, model.defaultFolder)
             } ?? false,
             defaultAgentKind: model.lastAgentVendor
         ) { kind, direction, folder in
@@ -1300,7 +1281,6 @@ struct ContentView: View {
             Spacer(minLength: 6)
             if !model.workspaceHandoffs.isEmpty {
                 activityHistoryMenu
-                    .menuStyle(.borderlessButton)
                     .fixedSize()
             }
             Button("⌘K Actions", action: model.showCommandPalette)
@@ -1490,66 +1470,57 @@ struct ContentView: View {
             ?? (model.primaryActivity?.id == id ? model.primaryActivity : nil)
     }
 
-    private var activityHistoryMenu: some View {
-        Menu {
-            ForEach(Array(model.workspaceHandoffs.prefix(12))) { item in
-                Menu("\(item.sourceName) → \(item.targetName) · \(item.state.rawValue)") {
-                    Text(activitySubject(item.text))
-                    if (item.state == .failed || item.state == .interrupted),
-                       let failure = item.transitions.last?.detail,
-                       !failure.isEmpty {
-                        Text(failure)
-                    }
-                    if let result = item.resultText, !result.isEmpty,
-                       item.state == .completed || item.kind == .delegate {
-                        Divider()
-                        Text(result)
-                        if item.hasUnreadResult {
-                            Button("Mark Result Read") { model.markRead(item) }
-                        }
-                    }
-                    Divider()
-                    Button("Focus \(item.sourceName)") { model.focus(item, target: false) }
-                        .disabled(!model.canFocus(item.sourcePaneID))
-                    Button("Focus \(item.targetName)") { model.focus(item, target: true) }
-                        .disabled(!model.canFocus(item.targetPaneID))
-                    if item.attention != nil {
-                        Divider()
-                        Button(attentionActionLabel(item)) { model.focus(item, target: true) }
-                            .disabled(!model.canFocus(item.targetPaneID))
-                        if item.attention == .permissionRequired {
-                            Button("Open Permission Guide") {
-                                model.requestHelp(topicID: "cli-permissions")
-                                openWindow(id: "help")
-                            }
-                        }
-                    }
-                    if item.canRetrySafely {
-                        Divider()
-                        Button("Retry Original Delivery…") { model.retry(item) }
-                    } else if item.state == .failed && item.kind == .delegate {
-                        Divider()
-                        Button("Delegated work cannot be delivery-retried") {}
-                            .disabled(true)
-                    } else if item.state == .failed && item.kind != .ask {
-                        Divider()
-                        Button("Retry unavailable — delivery may have started") {}
-                            .disabled(true)
-                    }
-                    if let consultation = model.consultation(for: item) {
-                        Divider()
-                        Button("Cancel Ask…", role: .destructive) { model.cancel(consultation) }
-                    }
-                }
-            }
-        } label: {
-            Image(systemName: "clock.arrow.circlepath")
+    /// An AppKit snapshot like the toolbar menus: handoffs change while an
+    /// agent works, and a live menu rebuilt its items under the pointer.
+    private var activityHistoryMenu: ToolbarActionMenu {
+        let count = min(model.workspaceHandoffs.count, 12)
+        return ToolbarActionMenu(
+            title: "History", systemImage: "clock.arrow.circlepath", iconOnly: true,
+            accessibilityLabel: "Recent collaboration history",
+            accessibilityValue: "\(count) recent item\(count == 1 ? "" : "s")",
+            help: "Recent collaboration in this workspace",
+            accessibilityHint: "Inspect recent handoffs in this workspace",
+            items: [],
+            itemsOnOpen: { model.workspaceHandoffs.prefix(12).map(activityHistoryItem) },
+            secondary: true
+        )
+    }
+
+    private func activityHistoryItem(_ item: RelayHandoff) -> ToolbarMenuItem {
+        var items: [ToolbarMenuItem] = [.message(activitySubject(item.text))]
+        if item.state == .failed || item.state == .interrupted,
+           let failure = item.transitions.last?.detail, !failure.isEmpty {
+            items.append(.message(failure))
         }
-        .menuIndicator(.hidden)
-        .accessibilityLabel("Recent collaboration history")
-        .accessibilityValue("\(min(model.workspaceHandoffs.count, 12)) recent item\(min(model.workspaceHandoffs.count, 12) == 1 ? "" : "s")")
-        .help("Recent collaboration in this workspace")
-        .accessibilityHint("Inspect recent handoffs in this workspace")
+        if let result = item.resultText, !result.isEmpty, item.state == .completed || item.kind == .delegate {
+            items += [.separator, .message(result)]
+            if item.hasUnreadResult { items.append(.action("Mark Result Read") { model.markRead(item) }) }
+        }
+        items += [
+            .separator,
+            .action("Focus \(item.sourceName)", isEnabled: model.canFocus(item.sourcePaneID)) { model.focus(item, target: false) },
+            .action("Focus \(item.targetName)", isEnabled: model.canFocus(item.targetPaneID)) { model.focus(item, target: true) },
+        ]
+        if item.attention != nil {
+            items += [.separator, .action(attentionActionLabel(item), isEnabled: model.canFocus(item.targetPaneID)) { model.focus(item, target: true) }]
+            if item.attention == .permissionRequired {
+                items.append(.action("Open Permission Guide") {
+                    model.requestHelp(topicID: "cli-permissions")
+                    openWindow(id: "help")
+                })
+            }
+        }
+        if item.canRetrySafely {
+            items += [.separator, .action("Retry Original Delivery…") { model.retry(item) }]
+        } else if item.state == .failed && item.kind == .delegate {
+            items += [.separator, .action("Delegated work cannot be delivery-retried", isEnabled: false) {}]
+        } else if item.state == .failed && item.kind != .ask {
+            items += [.separator, .action("Retry unavailable — delivery may have started", isEnabled: false) {}]
+        }
+        if let consultation = model.consultation(for: item) {
+            items += [.separator, .action("Cancel Ask…", isDestructive: true) { model.cancel(consultation) }]
+        }
+        return .submenu("\(item.sourceName) → \(item.targetName) · \(item.state.rawValue)", items: items)
     }
 
     private func activitySubject(_ text: String) -> String {
@@ -1859,6 +1830,8 @@ private struct NativeLayoutSplitView<Leaf: View>: View {
 
     @State private var dragStartFraction: Double?
     @State private var draggedFraction: Double?
+    /// This split's divider: whether it holds the resize cursor it pushed.
+    @State private var resizeCursor = ResizeCursorHold()
 
     var body: some View {
         GeometryReader { geometry in
@@ -1946,6 +1919,14 @@ private struct NativeLayoutSplitView<Leaf: View>: View {
         return stored
     }
 
+    private func applyResizeCursor(_ change: ResizeCursorHold.Change, direction: SplitDirection) {
+        switch change {
+        case .push: (direction == .horizontal ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).push()
+        case .pop: NSCursor.pop()
+        case .none: break
+        }
+    }
+
     private func divider(
         direction: SplitDirection,
         availableLength: CGFloat,
@@ -1967,13 +1948,14 @@ private struct NativeLayoutSplitView<Leaf: View>: View {
             }
             .contentShape(Rectangle())
             .onHover { hovering in
-                guard focusPaneID == nil else { return }
-                if hovering {
-                    (direction == .horizontal ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).push()
-                } else {
-                    NSCursor.pop()
-                }
+                applyResizeCursor(resizeCursor.hover(hovering, allowed: focusPaneID == nil), direction: direction)
             }
+            // Zooming hides the divider's purpose, and a divider removed under
+            // the pointer never hears the hover end: give the cursor back.
+            .onChange(of: focusPaneID) { _, focused in
+                if focused != nil { applyResizeCursor(resizeCursor.release(), direction: direction) }
+            }
+            .onDisappear { applyResizeCursor(resizeCursor.release(), direction: direction) }
             .gesture(
                 DragGesture(minimumDistance: 1)
                     .onChanged { value in

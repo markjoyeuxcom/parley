@@ -74,8 +74,11 @@ struct HelpView: View {
     }
 
     private func selectRequestedTopic() {
-        guard let requested = model.requestedHelpTopicID,
-              ParleyHelpGuide.topics.contains(where: { $0.id == requested }) else { return }
+        guard let requested = model.requestedHelpTopicID else { return }
+        // Consumed, so the same topic can be asked for again and a later plain
+        // opening of Help does not jump back to it.
+        model.consumeRequestedHelpTopicID()
+        guard ParleyHelpGuide.topics.contains(where: { $0.id == requested }) else { return }
         query = ""
         selectedTopicID = requested
     }

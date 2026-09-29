@@ -67,3 +67,46 @@ private final class PaneContextMenuView: NSView {
         }
     }
 }
+
+/// The enabled actions of a snapshot menu, flattened for VoiceOver. The
+/// overlay menu opens only on a right or Control click and is not in the
+/// accessibility tree, so a row that relies on it names every action it
+/// offers instead; a submenu's title leads its actions' names.
+public enum ToolbarMenuAccessibility {
+    public struct Action: Identifiable {
+        public let id: Int
+        public let name: String
+        public let perform: () -> Void
+    }
+
+    public static func actions(_ items: [ToolbarMenuItem]) -> [Action] {
+        var actions: [Action] = []
+        func collect(_ items: [ToolbarMenuItem], path: [String]) {
+            for item in items {
+                switch item {
+                case let .action(title, _, enabled, _, _, perform) where enabled:
+                    actions.append(Action(id: actions.count, name: (path + [title]).joined(separator: ": "), perform: perform))
+                case let .submenu(title, _, enabled, children) where enabled:
+                    collect(children, path: path + [title])
+                default:
+                    break
+                }
+            }
+        }
+        collect(items, path: [])
+        return actions
+    }
+}
+
+public extension View {
+    /// A right-click and Control-click menu built as an AppKit snapshot
+    /// (`PaneContextMenu`), whose actions VoiceOver also reaches by name.
+    func snapshotContextMenu(_ items: [ToolbarMenuItem]) -> some View {
+        overlay { PaneContextMenu(items: items) }
+            .accessibilityActions {
+                ForEach(ToolbarMenuAccessibility.actions(items)) { action in
+                    Button(action.name, action: action.perform)
+                }
+            }
+    }
+}

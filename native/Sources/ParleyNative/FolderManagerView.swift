@@ -78,7 +78,7 @@ struct FolderManagerView: View {
     }
 
     private func row(_ folder: String, remove: @escaping (String) -> Void) -> some View {
-        let exists = FolderListMaintenance.directoryExists(folder)
+        let exists = model.folderIdentity.exists(folder)
         return HStack(alignment: .firstTextBaseline, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 8) {

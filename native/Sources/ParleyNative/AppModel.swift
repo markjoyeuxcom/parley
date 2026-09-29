@@ -254,6 +254,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var contextCaptureInFlight = false
     /// Review Changes is reading the repository; a second click waits.
     private var reviewDraftInFlight = false
+    /// Folder comparisons and existence checks for views, remembered for a
+    /// few seconds so the sidebar does not realpath and stat while it draws.
+    let folderIdentity = FolderIdentityMemo()
     /// Retry Delivery requests still waiting on the core; a second retry of
     /// the same handoff would only be refused.
     private var retryingHandoffIDs: Set<String> = []
@@ -3835,6 +3838,8 @@ final class AppModel: ObservableObject {
             // also counts its revision from zero again.
             lastAppliedRelayRevision = nil
             lastAppliedStatusRevision = nil
+            // Parley's own action may have created or removed a folder.
+            folderIdentity.invalidate()
         }
         refreshCommandRuns()
         refreshTeamSessions()
@@ -4971,6 +4976,10 @@ final class AppModel: ObservableObject {
         guard !applyingPanePermissions else { return }
         panePermissionRequest = nil
         terminalHandle.focus()
+    }
+
+    func consumeRequestedHelpTopicID() {
+        requestedHelpTopicID = nil
     }
 
     func requestHelp(topicID: String) {
