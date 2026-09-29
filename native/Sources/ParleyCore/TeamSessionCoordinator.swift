@@ -26,13 +26,20 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
     /// the wall clock and can step back.
     private var provisionOrder: [String: Int] = [:]
     private var nextProvisionOrder = 0
+    /// Awake seconds (`awake`) when each request arrived. The pick-up timeout
+    /// counts awake time: a sleep used to fail a request on wake, and a clock
+    /// stepped back left it unsettled, blocking every later add.
+    private var provisionIssuedAwake: [String: TimeInterval] = [:]
+    private let awake: @Sendable () -> TimeInterval
     private var stopped = false
     private var storedError: String?
     public var lastError: String? { lock.withLock { storedError } }
 
     public init(authenticate: @escaping (String) -> String?, panes: @escaping () throws -> [WorkbenchPane],
                 profiles: @escaping () throws -> [PermissionProfileDefinition],
-                record: @escaping (TeamSession, TeamSessionTransition, [String]) throws -> Void) {
+                record: @escaping (TeamSession, TeamSessionTransition, [String]) throws -> Void,
+                awake: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        self.awake = awake
         self.authenticate = authenticate
         self.panes = panes
         self.profiles = profiles
@@ -122,6 +129,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             provisions[provision.id] = provision
             provisionOrder[provision.id] = nextProvisionOrder
             nextProvisionOrder += 1
+            provisionIssuedAwake[provision.id] = awake()
             return provision
         }
     }
@@ -447,7 +455,11 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             for var provision in provisions.values where !provision.isSettled {
                 if let session = records[provision.sessionID], session.state != .active {
                     provision.failure = "The session ended before the pane was created."
-                } else if now.timeIntervalSince(provision.createdAt) > Self.provisionTimeout {
+                } else if provision.paneID == nil, let issued = provisionIssuedAwake[provision.id],
+                          awake() - issued > Self.provisionTimeout {
+                    // Only a request the app has not picked up. Once the pane
+                    // exists, a container's preparation ends in finish or fail
+                    // on its own, however long Docker takes.
                     provision.failure = "Parley did not create the pane in time. Check that a Parley window is visible, then ask again."
                 } else {
                     continue
@@ -742,6 +754,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
         for provision in failed.dropFirst(limit) {
             provisions.removeValue(forKey: provision.id)
             provisionOrder.removeValue(forKey: provision.id)
+            provisionIssuedAwake.removeValue(forKey: provision.id)
         }
     }
 
@@ -752,6 +765,7 @@ public final class TeamSessionCoordinator: @unchecked Sendable {
             for provision in provisions.values where provision.sessionID == session.id {
                 provisions.removeValue(forKey: provision.id)
                 provisionOrder.removeValue(forKey: provision.id)
+                provisionIssuedAwake.removeValue(forKey: provision.id)
             }
         }
     }

@@ -298,7 +298,55 @@ func checkContainerRemovalVerifiesTheDaemonOnce() throws {
     try lowExpect(runner.calls.filter { $0.contains("info") }.count == 1, "one cleanup of two records asked the same daemon more than once")
 }
 
+/// A team pane request that the app has not picked up times out after 90
+/// seconds, measured on the wall clock: a sleep failed it on wake, a clock
+/// stepped back blocked every later add, and the same timeout also failed a
+/// container member whose Docker preparation outlasted it, tearing down the
+/// prepared container. It now counts awake time, and only until the pane exists.
+func checkTeamPaneRequestsTimeOutOnAwakeTimeBeforeCreation() throws {
+    final class Awake: @unchecked Sendable {
+        let lock = NSLock()
+        var seconds: TimeInterval = 1_000
+        func advance(_ by: TimeInterval) { lock.withLock { seconds += by } }
+        var now: TimeInterval { lock.withLock { seconds } }
+    }
+    let fixture = try TeamFixture(); defer { fixture.cleanup() }
+    let box = PaneBox(fixture.live)
+    let awake = Awake()
+    let recorded = fixture.recorded
+    let coordinator = TeamSessionCoordinator(authenticate: { ["lead-token": "lead"][$0] }, panes: { box.current() },
+        profiles: { PermissionProfileDefinition.builtIns },
+        record: { _, transition, _ in recorded.lock.withLock { recorded.details.append(transition.rawValue) } },
+        awake: { awake.now })
+    let request = try coordinator.request(token: "lead-token", proposal: TeamSessionProposal(objective: "fixture", folder: fixture.project, paneLimit: 3, hours: 1))
+    try coordinator.approve(id: request.id, revision: request.revision, objective: "fixture", folder: fixture.project,
+        allowedVendors: [.codex], permissionProfileID: "default", paneLimit: 3, hours: 1, containerConfigurations: ["codex": containerTeamConfiguration()])
+
+    // Not picked up: a sleep (wall clock on, awake time still) keeps it waiting.
+    let waiting = try coordinator.requestPane(token: "lead-token", kind: .codex, name: "Waiting", role: nil)
+    coordinator.reconcile(at: Date().addingTimeInterval(600))
+    try lowExpect(coordinator.provision(id: waiting.id)?.failure == nil, "a sleep failed a team pane request the app had not yet picked up")
+    // Ninety seconds awake without the app creating it: it fails, as before.
+    awake.advance(TeamSessionCoordinator.provisionTimeout + 1)
+    coordinator.reconcile()
+    try lowExpect(coordinator.provision(id: waiting.id)?.failure?.contains("in time") == true,
+                  "a request the app never picked up did not time out after 90 s awake")
+
+    // Created: a container still preparing is not timed out, however long it takes.
+    let preparing = try coordinator.requestPane(token: "lead-token", kind: .codex, name: "Preparing", role: nil)
+    var placeholder = fixture.lead
+    placeholder.id = "preparing"; placeholder.kind = .codex; placeholder.isStarted = false; placeholder.launchGeneration = 0
+    placeholder.containerConfiguration = containerTeamConfiguration()
+    coordinator.fulfilProvisions(create: { _, _, _ in box.update { $0.append(placeholder) }; return placeholder })
+    awake.advance(10 * TeamSessionCoordinator.provisionTimeout)
+    coordinator.reconcile()
+    try lowExpect(coordinator.provision(id: preparing.id)?.failure == nil,
+                  "a container member's preparation was failed by the pick-up timeout")
+    _ = try coordinator.containerPreparation(id: preparing.id)
+}
+
 @MainActor let teamContainerLowChecks: [(String, () throws -> Void)] = [
+    ("team pane requests time out on awake time, before creation only", checkTeamPaneRequestsTimeOutOnAwakeTimeBeforeCreation),
     ("a container image check discards a result for changed inputs", checkContainerImageCheckDiscardsChangedInputs),
     ("a team container preparation ends as a stopped placeholder", checkTeamContainerPreparationEndsAsAStoppedPlaceholder),
     ("failed team pane requests are bounded per session", checkFailedTeamProvisionsAreBounded),

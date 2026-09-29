@@ -97,7 +97,13 @@ func checkParkedWaitsNeverStarveADone() throws {
     // More parked waits than the shared pool has threads (70 on the Mac the
     // review ran on), as orphaned `parley wait` retries leave behind.
     let waits = try (0..<80).map { _ in try fixture.post("wait", token: fixture.leadToken, item: handoffID) }
-    usleep(500_000)
+    // Every wait must be parked or refused before the done arrives: a fixed
+    // half second was too short on a loaded run, and a wait the transport
+    // reached only after the done returned at once and was counted as parked.
+    let limit = RelayFileTransport.defaultMaximumBlockingRequests
+    try waitExpect(eventually(within: 20) {
+        transport.activeBlockingRequests == limit && waits.filter { TransportFixture.status($0) == 503 }.count == waits.count - limit
+    }, "the 80 waits were not all parked or refused: \(transport.activeBlockingRequests) parked")
     let done = try fixture.post("done", token: fixture.workerToken, item: handoffID, body: "Finished.")
     let doneProcessed = eventually(within: 10) { TransportFixture.replied(done) }
     if !doneProcessed {
@@ -108,7 +114,6 @@ func checkParkedWaitsNeverStarveADone() throws {
     try waitExpect(TransportFixture.status(done) == 200, "the worker's done failed: \(String(describing: TransportFixture.status(done)))")
     try waitExpect(eventually(within: 10) { waits.allSatisfy(TransportFixture.replied) }, "the parked waits did not all return after done")
     // Past the blocking limit a wait is refused at once rather than parked.
-    let limit = RelayFileTransport.defaultMaximumBlockingRequests
     let statuses = waits.map(TransportFixture.status)
     try waitExpect(statuses.filter { $0 == 503 }.count == waits.count - limit && statuses.filter { $0 == 200 }.count == limit,
                    "the \(limit) admitted waits did not all return the result and the rest were not refused: \(statuses)")

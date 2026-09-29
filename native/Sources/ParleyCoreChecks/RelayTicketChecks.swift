@@ -40,12 +40,23 @@ enum TicketClient {
     }
 }
 
-/// An injectable clock the check can move forward.
+/// The three clocks a ticket could be aged on. `advance` is time the Mac is
+/// awake for; `sleep` moves the wall and monotonic clocks but not awake
+/// time; `step` moves the wall clock alone, as a clock change does.
 private final class TicketClock: @unchecked Sendable {
     private let lock = NSLock()
-    private var current = Date()
-    var now: Date { lock.withLock { current } }
-    func advance(by seconds: TimeInterval) { lock.withLock { current = current.addingTimeInterval(seconds) } }
+    private var wall = Date()
+    private var monotonic: UInt64 = 1_000_000_000
+    private var awake: UInt64 = 1_000_000_000
+    func advance(by seconds: TimeInterval) {
+        lock.withLock { wall = wall.addingTimeInterval(seconds); monotonic += UInt64(seconds * 1e9); awake += UInt64(seconds * 1e9) }
+    }
+    func sleep(for seconds: TimeInterval) { lock.withLock { wall = wall.addingTimeInterval(seconds); monotonic += UInt64(seconds * 1e9) } }
+    func step(by seconds: TimeInterval) { lock.withLock { wall = wall.addingTimeInterval(seconds) } }
+    var clocks: RelayTransportClocks {
+        RelayTransportClocks(wall: { self.lock.withLock { self.wall } }, monotonic: { self.lock.withLock { self.monotonic } },
+                             awake: { self.lock.withLock { self.awake } })
+    }
 }
 
 private func ticketDirectory() throws -> URL {
@@ -146,7 +157,7 @@ func checkTicketSocketIssuesAndRedeems() throws {
     let other = try credentials.token(for: "pane-b")
     let clock = TicketClock()
     let server = RelayTicketServer(socketFile: directory.appendingPathComponent("t.sock"), credentials: credentials,
-        paneGeneration: { $0 == "pane-a" ? 2 : $0 == "pane-b" ? 5 : nil }, clock: { clock.now })
+        paneGeneration: { $0 == "pane-a" ? 2 : $0 == "pane-b" ? 5 : nil }, clocks: clock.clocks)
     try server.start()
     defer { server.stop() }
     try ticketExpect(server.isListening && server.startFailure == nil, "the socket is not listening: \(server.startFailure ?? "")")
@@ -174,7 +185,22 @@ func checkTicketSocketIssuesAndRedeems() throws {
     let expiring = try ask(marker: "pane-a", presenting: token)
     clock.advance(by: RelayTicketServer.ticketLifetime + 1)
     try ticketExpect(!server.redeem(expiring, token: token, requestID: TicketClient.requestID), "an expired ticket redeemed")
-    try ticketExpect(server.issuedCount == 2 && server.refusedCount == 5, "counts are wrong: issued \(server.issuedCount), refused \(server.refusedCount)")
+    // Seen overnight on 28 September 2026: a shim got its ticket, the Mac
+    // slept before the transport redeemed it, and the command failed with
+    // "the ticket is invalid, expired or already used". A sleep or a clock
+    // change is not time the shim had to act.
+    let beforeSleep = try ask(marker: "pane-a", presenting: token)
+    clock.sleep(for: 3_600)
+    try ticketExpect(server.redeem(beforeSleep, token: token, requestID: TicketClient.requestID), "a ticket issued just before a sleep expired across it")
+    let beforeStep = try ask(marker: "pane-a", presenting: token)
+    clock.step(by: RelayTicketServer.ticketLifetime * 10)
+    try ticketExpect(server.redeem(beforeStep, token: token, requestID: TicketClient.requestID), "a wall-clock step expired a ticket")
+    let backwards = try ask(marker: "pane-a", presenting: token)
+    clock.step(by: -3_600)
+    clock.advance(by: RelayTicketServer.ticketLifetime + 1)
+    try ticketExpect(!server.redeem(backwards, token: token, requestID: TicketClient.requestID),
+                     "a ticket outlived its awake-time lifetime after the clock stepped back")
+    try ticketExpect(server.issuedCount == 5 && server.refusedCount == 5, "counts are wrong: issued \(server.issuedCount), refused \(server.refusedCount)")
     server.stop()
     try ticketExpect(!server.isListening && !FileManager.default.fileExists(atPath: server.socketFile.path), "stop left the socket behind")
     let tooLong = RelayTicketServer(socketFile: URL(fileURLWithPath: "/tmp/" + String(repeating: "x", count: 120) + ".sock"), credentials: credentials, paneGeneration: { _ in nil })
