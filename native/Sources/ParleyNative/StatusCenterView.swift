@@ -192,7 +192,10 @@ struct StatusCenterView: View {
             applyRequestedSegment()
         }
         .onChange(of: workspaceID) { _, _ in
-            selectedHandoffID = nil
+            // "Show this handoff" widens the scope and selects it in one
+            // update; keep a selection the new scope still shows.
+            selectedHandoffID = StatusCenterSelection.afterScopeChange(
+                selected: selectedHandoffID, visible: snapshot.handoffs.map(\.id))
             selectedBusyDraftID = nil
             historyExportSelection.removeAll()
             historyManagementNotice = nil
@@ -2256,9 +2259,8 @@ struct StatusCenterView: View {
                 includeDismissed: true
               ).handoffs.first(where: { $0.id == requested }) else { return }
         workspaceID = ""
-        let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
         segment = StatusCenterSegmentProjection.segment(
-            isActive: activeStates.contains(handoff.state),
+            isActive: handoff.state.isActive,
             hasUnreadResult: handoff.hasUnreadResult
         )
         select(handoff)

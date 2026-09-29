@@ -53,6 +53,15 @@ struct ReleaseLifecycleView: View {
                 .padding(.horizontal, 22)
                 .padding(.vertical, 10)
             }
+            Divider()
+            HStack {
+                Spacer()
+                // A sheet has no window close button; this is its only exit.
+                Button("Done") { model.releaseLifecyclePresented = false }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 12)
         }
         .frame(minWidth: 820, idealWidth: 900, minHeight: 680, idealHeight: 760)
         .sheet(isPresented: $model.betaFeedbackPresented) {

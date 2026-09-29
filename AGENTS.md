@@ -183,7 +183,14 @@ Production and a separate Development directory.
   never fires for a hidden scene window. Closed or ordered out is
   `released`: the view is destroyed, so no observer, timer, `TimelineView`
   or layout work remains, and reopening builds it fresh (filters and toggles
-  reset; selection lives in the model). Minimising or hiding the application
+  reset; selection lives in the model). A request that selects something in
+  a window (`requestedHelpTopicID`, `requestedStatusHandoffID`) is consumed
+  once applied; Help's never was, so asking for the same topic again did
+  nothing and every later plain opening jumped back to it (until 29 September
+  2026). A Status Center scope change keeps a selected handoff the new scope
+  still shows (`StatusCenterSelection.afterScopeChange`): "show this handoff"
+  widens the scope and selects it in one update, and the scope's change
+  handler used to clear it. Minimising or hiding the application
   suspends only a window that was on screen; a released window stays
   released through a global hide/unhide because that notification reaches
   closed windows too. `suspended` keeps the view and its
@@ -381,7 +388,8 @@ disabled and updater-initiated termination must pass through the ordinary
 pane-aware quit confirmation. The manual release check (Compatibility &
 Releases) is cancelled when the channel changes and publishes only a result
 for the channel still selected; a Beta check finishing after a switch to
-Stable used to show under Stable.
+Stable used to show under Stable. Its sheet closes with Done (Escape); it
+had no way to close before 29 September 2026.
 
 Creating a pane: the toolbar's Pane menu offers **Shell** and **Agent**, each
 with the same six split-and-folder items (`PaneCreationMenu`), never one
@@ -412,7 +420,23 @@ periodic timer paused. A live SwiftUI menu rebuilt its items during those
 updates and disrupted Move to Workspace. The sidebar right-click and
 Control-click menu uses `PaneContextMenu` with the same native item builder
 and shared action definition. Ordinary input passes through its transparent
-overlay; moving still revalidates the pane and destination by id.
+overlay; moving still revalidates the pane and destination by id. The
+workspace rows (sidebar and tab strip) and the attached and favourite folder
+rows use the same overlay through `snapshotContextMenu`, which also names every
+enabled item as a VoiceOver action (`ToolbarMenuAccessibility`), because the
+overlay is not in the accessibility tree and workspaces have no other route to
+their actions; the activity history is a `ToolbarActionMenu` whose items are
+built when it opens. All four were live SwiftUI menus until 29 September 2026.
+A disabled destructive item is drawn disabled, not red. The New Pane Folder
+menu, the workspace creation "+" and the notices' "+N" remain SwiftUI menus.
+
+A split divider pushes the resize cursor once on hover and pops it once
+(`ResizeCursorHold`): when the pointer leaves, zoomed or not, when a pane is
+zoomed, and when the divider disappears under the pointer, which sends no
+hover end. The pop used to sit behind the zoom check, so zooming with the
+pointer on a divider left a resize arrow over the terminals. The hold is a
+class in `@State`, so a hover changes no observed state and does not redraw
+the terminals beside the divider.
 
 A workspace is durable identity independent of folders. It may have zero or
 more explicit folder attachments used for opening and search, plus an optional
@@ -428,7 +452,15 @@ longer exists (`FolderListMaintenance`): recent history is pruned of missing
 folders at load and on every addition, favourites are the person's bookmarks
 and are only reported as missing, and **Manage Folders…** lists both with
 full paths, a MISSING mark, Use and Remove per entry and Clear Recent.
-Removing an entry forgets it; nothing on disk changes.
+Removing an entry forgets it; nothing on disk changes. Views compare and
+check folders through `AppModel.folderIdentity` (`FolderIdentityMemo`), which
+remembers each canonical spelling and existence answer for five seconds of
+uptime and forgets them on every explicit refresh (`refresh()` after a
+mutation, not the once-a-second tick), so a folder Parley's own action
+created or removed is read again at once: the sidebar used to realpath every
+favourite against every workspace attachment, and stat each favourite and
+recent folder, on every render. Actions such as toggling a favourite still
+decide from the disk (`isFavouriteFolder`).
 
 ## Relay and consultation contract
 

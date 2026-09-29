@@ -151,12 +151,18 @@ question, or the refusal is a bare error.
   creates a shell workspace on none.
 - Open a folder from Finder — same behaviour.
 - A folderless shell pane gets a safe cwd and does not silently attach it.
-- Delete a folder that appears under Recent in the New Pane Folder menu, then
-  open the menu: it is no longer offered. **Manage Folders…** lists favourites
+- Delete a folder that appears under Recent in the New Pane Folder menu, wait
+  five seconds, then open the menu: it is no longer offered. **Manage Folders…** lists favourites
   and recents with full paths, marks a deleted one MISSING with Use disabled,
   and Remove forgets it; **Clear Recent Folders** empties the history.
   **Fail:** a deleted folder is still offered, or removing an entry touches
   anything on disk.
+- Right-click a workspace row, an attached folder and a favourite folder while
+  an agent is working, and hold each menu open for a few seconds. **Fail:** a
+  menu redraws, closes or moves its items under the pointer. The recent
+  collaboration (clock) menu behaves the same while handoffs change.
+- Hover a split divider (resize cursor), zoom a pane with the keyboard, then
+  move over a terminal. **Fail:** the resize cursor stays.
 
 ## P2.3 Relay, Paste, Ask, Delegate
 
@@ -450,6 +456,10 @@ other than the command shown.
   that quitting goes through the pane-aware confirmation.
 - Compatibility & Releases: press Check with Beta selected and switch to
   Stable before it finishes. **Fail:** a Beta release appears under Stable.
+  Done (or Escape) closes the sheet.
+- Open a permission guide link twice (a handoff needing permission, Open
+  Permission Guide), choosing another Help topic in between: the second opens
+  the guide again. Then open Help from the menu: it does not jump to it.
 - Development: confirm Sparkle never runs and **DEV** is visible everywhere.
 
 ## P3.7 Isolation and uninstall
