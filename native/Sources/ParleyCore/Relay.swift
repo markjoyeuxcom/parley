@@ -3400,6 +3400,18 @@ public final class RelayBroker: @unchecked Sendable {
         return Array(values.prefix(max(0, limit)))
     }
 
+    /// Every handoff not yet in a terminal state, however much history there
+    /// is: the active-work checks must not depend on the history window.
+    public func activeHandoffs() -> [RelayHandoff] {
+        reconcileDelegations()
+        consultationCondition.lock()
+        let values = handoffRecords.values
+            .filter(\.state.isActive)
+            .sorted { $0.updatedAt > $1.updatedAt }
+        consultationCondition.unlock()
+        return values
+    }
+
     public func unreadHandoffs() -> [RelayHandoff] {
         reconcileDelegations()
         consultationCondition.lock()
@@ -4545,25 +4557,13 @@ public final class RelayBroker: @unchecked Sendable {
     }
 
     private func failureAssessment(kind: RelayHandoffKind, error: Error) -> RelayFailureAssessment {
-        let attention: RelayAttention?
-        let deliveryWasNotStarted: Bool
-        switch error as? ParleyWorkbenchError {
-        case .copilotTrustRequired:
-            attention = .permissionRequired
-            deliveryWasNotStarted = true
-        case .unsafeRelayTarget:
-            attention = .targetNotReady
-            deliveryWasNotStarted = true
-        case .paneNotFound:
-            attention = .targetUnavailable
-            deliveryWasNotStarted = true
-        case .noRelayText:
-            attention = nil
-            deliveryWasNotStarted = true
-        default:
-            attention = nil
-            deliveryWasNotStarted = false
+        let attention: RelayAttention? = switch error as? ParleyWorkbenchError {
+        case .copilotTrustRequired: .permissionRequired
+        case .unsafeRelayTarget: .targetNotReady
+        case .paneNotFound: .targetUnavailable
+        default: nil
         }
+        let deliveryWasNotStarted = ParleyWorkbenchError.refusedBeforeInput(error)
         let retryDisposition: RelayRetryDisposition = switch kind {
         case .relay, .paste:
             deliveryWasNotStarted ? .safe : .uncertain

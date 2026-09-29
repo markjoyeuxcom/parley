@@ -40,7 +40,8 @@ public enum ReviewDraftError: LocalizedError, Equatable {
 /// external diffs, pagers or optional index locks: every Git command runs
 /// inside `GitReadBoundary`, whose fixed guard is the only shell involved.
 /// The resulting handoff is bounded before it reaches a terminal.
-public final class ReviewDraftBuilder {
+/// Immutable after `init`, so the app can read a repository off the main actor.
+public final class ReviewDraftBuilder: @unchecked Sendable {
     public static let defaultMaximumBytes = 160_000
 
     private let gitExecutable: URL

@@ -30,7 +30,6 @@ From the repository root:
 
 ```bash
 npm run dev
-npm run dev:restart-protocol
 npm test
 npm run build
 npm run test:soak -- --rounds 25

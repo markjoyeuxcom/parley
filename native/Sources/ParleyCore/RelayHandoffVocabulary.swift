@@ -63,7 +63,7 @@ public enum RelayHandoffVerdict: String, CaseIterable, Codable, Equatable, Senda
     }
 }
 
-public enum RelayHandoffState: String, Codable, Equatable, Sendable {
+public enum RelayHandoffState: String, CaseIterable, Codable, Equatable, Sendable {
     case created
     case delivered
     case waiting
@@ -72,6 +72,17 @@ public enum RelayHandoffState: String, Codable, Equatable, Sendable {
     case cancelled
     case failed
     case interrupted
+}
+
+extension RelayHandoffState {
+    /// Work that has not reached a terminal state. Moving a pane and preparing
+    /// to uninstall refuse while any exists, and retention never prunes it.
+    public var isActive: Bool {
+        switch self {
+        case .created, .delivered, .waiting, .answered: true
+        case .completed, .cancelled, .failed, .interrupted: false
+        }
+    }
 }
 
 public enum RelayRetryDisposition: String, Codable, Equatable, Sendable {

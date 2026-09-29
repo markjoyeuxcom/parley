@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -41,10 +41,25 @@ test('ad-hoc beta signing avoids hardened library validation while Developer ID 
 
 test('development entry points always name the isolated Development runtime', () => {
   assert.match(packageJSON.scripts.dev, /--runtime development(?:\s|$)/)
-  assert.match(packageJSON.scripts['dev:restart-protocol'], /--runtime development(?:\s|$)/)
   assert.equal(packageJSON.scripts['dev:attach-production'], undefined)
   assert.equal(packageJSON.scripts['test:conformance'], undefined)
   assert.equal(packageJSON.scripts['test:conformance:production'], undefined)
+})
+
+// Panes live inside the app, so every agent pane is a stopped placeholder at
+// launch and none can be stale: a launch flag to restart stale panes never
+// found one (review of 22 September 2026). It is gone, not kept as a no-op.
+test('no launch option claims to restart stale protocol panes', () => {
+  assert.equal(packageJSON.scripts['dev:restart-protocol'], undefined)
+  const appModel = readFileSync(new URL('../native/Sources/ParleyNative/AppModel.swift', import.meta.url), 'utf8')
+  assert.doesNotMatch(appModel, /restart-stale-protocol/)
+  // Every living document; release notes are history and keep what they said.
+  for (const folder of ['../', '../native/', '../docs/']) {
+    const directory = new URL(folder, import.meta.url)
+    for (const name of readdirSync(directory).filter((entry) => entry.endsWith('.md'))) {
+      assert.doesNotMatch(readFileSync(new URL(name, directory), 'utf8'), /npm run dev:restart-protocol/, folder + name)
+    }
+  }
 })
 
 test('Info.plist describes the native foreground application', () => {

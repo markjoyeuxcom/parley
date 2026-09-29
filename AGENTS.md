@@ -73,7 +73,6 @@ npm run scan:public
 npm test
 npm run build
 npm run dev
-npm run dev:restart-protocol
 npm run test:soak -- --rounds 25
 ```
 
@@ -81,8 +80,11 @@ The root npm scripts are a dependency-free runner around
 `scripts/run-native-swift.mjs`. Do not run `npm install` at the repository root.
 The helper chooses a compatible installed macOS SDK and writable Swift caches.
 
-`dev:restart-protocol` deliberately restarts stale agent panes. Normal launch
-must never restart a surviving in-app pane.
+Normal launch must never restart a surviving in-app pane. There is no launch
+option that restarts stale-protocol panes: panes live inside the app, so at
+launch every agent pane is a stopped placeholder and none can be stale.
+The `dev:restart-protocol` script and its launch flag did nothing for that
+reason and were removed on 29 September 2026.
 
 ## Layout
 
@@ -147,10 +149,13 @@ Production and a separate Development directory.
   in memory at once (a repeated title changes nothing durable but still
   stamps pane activity), written at most once per second by a coalesced
   deferred write, and carried immediately by any other persist, stop, close
-  or shutdown. Working-directory, attach, detach and close callbacks persist
-  synchronously and run the full model refresh as before; a title change only
-  publishes the pane list once per run-loop turn with no relay fetch or
-  layout work, because no view renders titles today.
+  or shutdown. Attach, detach and close callbacks persist synchronously and
+  run the full model refresh as before; a title change only publishes the
+  pane list once per run-loop turn with no relay fetch or layout work,
+  because no view renders titles today. A working-directory report persists
+  and refreshes only when the folder changed: shells report it at every
+  prompt, and until 29 September 2026 each one rewrote the state file and
+  refreshed the model; an unchanged one only stamps activity in memory.
 - `GhosttyPaneRegistry` retains views by pane id across SwiftUI remounts and
   main-window hiding. `NativeTerminalHost` returns that exact retained view as
   its representable's view. Do not wrap it in a container that adopts the
@@ -373,7 +378,10 @@ person-approved installation; they are not a Parley daemon, coordination core
 or login item. Development must never start Sparkle or receive the Production
 feed. Production automatic checking is opt-in, background installation is
 disabled and updater-initiated termination must pass through the ordinary
-pane-aware quit confirmation.
+pane-aware quit confirmation. The manual release check (Compatibility &
+Releases) is cancelled when the channel changes and publishes only a result
+for the channel still selected; a Beta check finishing after a switch to
+Stable used to show under Stable.
 
 Creating a pane: the toolbar's Pane menu offers **Shell** and **Agent**, each
 with the same six split-and-folder items (`PaneCreationMenu`), never one
@@ -638,7 +646,18 @@ controller refuses another delivery to that pane until the first returns,
 including a nested call while the run loop is pumped. The target is re-resolved
 by pane id, launch generation and view identity before
 each step that sends input, and a pane that went away refuses rather than
-writing into a torn-down surface. Restoring the person's focus afterwards is not
+writing into a torn-down surface. Whether a failed delivery could have left
+text in the pane is one classification, `ParleyWorkbenchError.refusedBeforeInput`:
+the broker offers Retry Delivery only for such a refusal, and a voice draft
+whose delivery was attempted stays reviewable only after one. Everything before the paste refuses with
+one of its errors (a pane that is not ready or has gone, Copilot trust, a
+delivery already in progress, a changed voice destination), and every
+failure after the paste, before or at Enter, is `deliveryInterrupted`, which
+carries the cause. Until
+29 September 2026 the registry reported those later failures as "not ready",
+so Retry could paste the text a second time, and a voice send refused before
+any input read as possibly delivered. A record saved as safe to retry by an
+earlier version keeps that, since nothing tells its cause apart now. Restoring the person's focus afterwards is not
 delivery and never turns a completed submission into a reported failure. Bound
 those settles against a monotonic clock; a wall-clock deadline spins the main
 thread for the length of any backward step. Ghostty takes paste and Enter on
@@ -695,7 +714,8 @@ is explicit reselection. Paste and Send use the ordinary controller checks
 through to validation on the main actor before paste and before Enter, after
 each run-loop settle. Both participants of a voice Ask/Delegate are checked
 there too. A potentially partial delivery is copy/discard only, never an
-automatic retry. `VoiceHandoffRequest` is native-control-only and enters the
+automatic retry; a refusal before any input (Copilot trust not confirmed, a
+delivery already in progress) is not one, and the draft stays open to send. `VoiceHandoffRequest` is native-control-only and enters the
 existing broker correlation, idempotency and history paths. It creates no
 agent command and does not change AgentProtocol wording or version.
 
@@ -1850,6 +1870,9 @@ Ask, Compare, Decline or Discard and every add-source button wait, because
 an agent draft's revision changes when the capture lands. A second Retry of
 the same handoff is ignored while the first is in flight.
 A new UI route that pastes into or reads from a pane must set `reachesPane`.
+Review Changes reads its repository in a detached task as well (up to five
+Git commands with 5 s timeouts ran on the main actor until 29 September
+2026) and rechecks both panes' generations before its editable preview.
 
 ## Roles and mobility
 
@@ -1862,7 +1885,11 @@ Move preserves the exact retained Ghostty surface, pane id, process, vendor
 session, scrollback, credential and folder. Refuse moving any pane with an
 active handoff, or a role/lead collision (moving the last pane out leaves an
 empty source workspace); revalidate topology
-after confirmation. Team templates and configuration clone were removed in the
+after confirmation. The active handoffs come from the broker's own active
+listing (`/handoffs/active`, every handoff not yet terminal), as does Prepare
+to Uninstall's; both read the newest 500 of the history until 29 September
+2026, which held every active handoff only because retention keeps at most
+500 finished ones. Team templates and configuration clone were removed in the
 September 2026 reduction; saved layouts remain. Saved agent leaves and their
 default folder use the reviewed launch folder, while Shell leaves keep their
 current folder. A restored layout reopens with the automation policy it was

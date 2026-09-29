@@ -281,6 +281,19 @@ public struct RelayCoreClient: Sendable {
         return try JSONDecoder().decode(RelayActivityEvent.self, from: response.body)
     }
 
+    public func activeHandoffs() throws -> [RelayHandoff] {
+        let response = try request(
+            method: "GET",
+            path: "/handoffs/active",
+            headers: ["X-Parley-Control": controlToken],
+            body: Data()
+        )
+        guard response.status == 200 else {
+            throw RelayCoreError.response(response.status, String(decoding: response.body, as: UTF8.self))
+        }
+        return try JSONDecoder().decode([RelayHandoff].self, from: response.body)
+    }
+
     public func unreadHandoffs() throws -> [RelayHandoff] {
         let response = try request(
             method: "GET",
