@@ -1489,16 +1489,23 @@ public final class WorkbenchController: @unchecked Sendable {
         }
     }
 
-    public func terminalDidChangeWorkingDirectory(paneID: String, path: String) throws {
-        guard path.hasPrefix("/") else { return }
-        try lock.withLock {
+    /// Returns whether the pane's folder changed. Shells report their folder at
+    /// every prompt; an unchanged report only stamps activity in memory, as a
+    /// repeated title does, and writes nothing.
+    @discardableResult
+    public func terminalDidChangeWorkingDirectory(paneID: String, path: String) throws -> Bool {
+        guard path.hasPrefix("/") else { return false }
+        return try lock.withLock {
             // Guest OSC working-directory reports do not establish a host path
             // or broaden the folder used by context staging and request-run.
-            guard document.panes.first(where: { $0.id == paneID })?.containerConfiguration == nil else { return }
-            if document.panes.first(where: { $0.id == paneID })?.cwd != path {
-                copilotTrustConfirmations.removeValue(forKey: paneID)
+            guard let pane = document.panes.first(where: { $0.id == paneID }), pane.containerConfiguration == nil else { return false }
+            guard pane.cwd != path else {
+                document.activity[paneID] = Date()
+                return false
             }
+            copilotTrustConfirmations.removeValue(forKey: paneID)
             try updatePaneRuntime(paneID: paneID) { $0.cwd = path }
+            return true
         }
     }
 
@@ -1573,9 +1580,7 @@ public final class WorkbenchController: @unchecked Sendable {
 
     private func pastePrepared(_ text: String, into paneID: String, submit: Bool, reviewed: [VoiceDestination]? = nil) throws {
         try lock.withLock {
-            guard deliveringPaneIDs.insert(paneID).inserted else {
-                throw ParleyWorkbenchError.commandFailed("A delivery to this pane is already in progress. Wait for it to finish before sending again.")
-            }
+            guard deliveringPaneIDs.insert(paneID).inserted else { throw ParleyWorkbenchError.deliveryInProgress }
         }
         defer { _ = lock.withLock { deliveringPaneIDs.remove(paneID) } }
         let pane = try requireRelayPane(paneID)

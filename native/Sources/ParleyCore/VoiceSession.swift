@@ -120,6 +120,16 @@ public struct VoiceSession: Equatable, Sendable {
         phase = mayHaveDelivered ? .deliveryUncertain : .review
     }
 
+    /// A failure after delivery was attempted may have left text in the pane,
+    /// unless the pane refused it before any input; only that case keeps the
+    /// draft open for review and sending again.
+    public mutating func deliveryFailed(_ error: Error, afterAttempt attempted: Bool) {
+        let mayHaveDelivered = attempted && !ParleyWorkbenchError.refusedBeforeInput(error)
+        deliveryFailed(mayHaveDelivered
+            ? "Delivery was interrupted. Inspect the destination before sending anything again. You can copy or discard this draft. \(error.localizedDescription)"
+            : error.localizedDescription, mayHaveDelivered: mayHaveDelivered)
+    }
+
     public mutating func discard() { self = Self() }
 }
 

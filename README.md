@@ -587,7 +587,6 @@ No JavaScript dependencies are used at the repository root. Do not run
 
 ```bash
 npm run dev
-npm run dev:restart-protocol
 npm test
 npm run build
 npm run test:soak -- --rounds 25
@@ -598,8 +597,8 @@ and a separate preference suite. The packaged app always uses Production under
 `~/Library/Application Support/Parley Native/`. Development cannot install the
 machine-wide stable router or publish Production attention state.
 
-`dev:restart-protocol` deliberately restarts only stale agent panes. Normal
-launch never restarts a surviving in-app pane.
+Normal launch never restarts a surviving in-app pane; at launch every agent
+pane is a stopped placeholder that starts with the current protocol.
 
 The deterministic checks do not launch a vendor CLI or spend subscription
 quota. The Ghostty checks and soak use real local shells, exercise more than

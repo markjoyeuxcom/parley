@@ -259,6 +259,14 @@ public final class RelayHTTPServer: @unchecked Sendable {
                 )
                 return
             }
+            if request.method == "GET", request.path == "/handoffs/active" {
+                guard controlAuthorized(request, client: client) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                write(broker.activeHandoffs(), to: client)
+                return
+            }
             if request.method == "GET", request.path == "/handoffs/unread" {
                 guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)

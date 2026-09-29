@@ -448,6 +448,8 @@ other than the command shown.
   relaunching Parley, and Development and Production keep separate choices.
 - Production: check for updates manually. Confirm no background install and
   that quitting goes through the pane-aware confirmation.
+- Compatibility & Releases: press Check with Beta selected and switch to
+  Stable before it finishes. **Fail:** a Beta release appears under Stable.
 - Development: confirm Sparkle never runs and **DEV** is visible everywhere.
 
 ## P3.7 Isolation and uninstall
@@ -498,6 +500,9 @@ successful dictation test.
    reach the terminal behind it. Dictate again and confirm edits are retained.
    Switch the active pane: the named destination must remain unchanged. Paste
    must not press Enter; Send must. Discard before either must deliver nothing.
+   Send to a Copilot pane whose folder trust is not confirmed: the draft stays
+   open with the trust message and can be sent after confirming. **Fail:** it
+   reads "Check delivery in the pane" and offers only copy or discard.
    Close, move, restart or change the reviewed folder of the bound pane before
    sending; refuse until explicit reselection. Exercise Copilot without its
    native folder-trust confirmation; Voice must not bypass it.

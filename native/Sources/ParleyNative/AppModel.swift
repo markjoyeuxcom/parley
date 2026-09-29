@@ -252,6 +252,8 @@ final class AppModel: ObservableObject {
     /// an agent draft (the core records the part as soon as it runs, so a
     /// second click would add a duplicate) or the person's own Git Diff.
     @Published private(set) var contextCaptureInFlight = false
+    /// Review Changes is reading the repository; a second click waits.
+    private var reviewDraftInFlight = false
     /// Retry Delivery requests still waiting on the core; a second retry of
     /// the same handoff would only be refused.
     private var retryingHandoffIDs: Set<String> = []
@@ -626,7 +628,7 @@ final class AppModel: ObservableObject {
                 cwd: defaultFolder,
                 createIfMissing: true
             )
-            var livePanes = try controller.listPanes()
+            let livePanes = try controller.listPanes()
             var liveWorkspaces = try controller.listWorkspaces()
             let credentials = try RelayCredentials(
                 file: controller.applicationDirectory.appendingPathComponent("relay-tokens.json")
@@ -681,14 +683,6 @@ final class AppModel: ObservableObject {
                 coreAvailable = false
                 coreError = error.localizedDescription
                 startupError = "The Parley relay is unavailable. Your terminal panes are still available.\n\n\(error.localizedDescription)"
-            }
-            // This migration is destructive and therefore opt-in at process
-            // launch. Normal UI reattachment always preserves conversations.
-            if Self.hasArgument("--restart-stale-protocol") {
-                for paneID in AgentProtocol.stalePaneIDs(in: livePanes) {
-                    try controller.restartPane(paneID)
-                }
-                livePanes = try controller.listPanes()
             }
             if let previous = workspaceContinuity.selectedWorkspace(in: liveWorkspaces),
                !previous.isActive {
@@ -1217,7 +1211,7 @@ final class AppModel: ObservableObject {
             do {
                 let eligible = try await Task.detached(priority: .utility) {
                     let consultations = try relayClient.consultations()
-                    let handoffs = try relayClient.handoffs(limit: 500)
+                    let handoffs = try relayClient.activeHandoffs()
                     return CoordinationShutdownPolicy.canStop(
                         activeConsultationCount: consultations.count,
                         handoffs: handoffs
@@ -1307,6 +1301,10 @@ final class AppModel: ObservableObject {
         guard channel != releaseChannel else { return }
         releaseChannel = channel
         preferences.set(channel.rawValue, forKey: Self.releaseChannelKey)
+        // A check still running was for the previous channel: its result
+        // must not appear under this one.
+        releaseTask?.cancel()
+        releaseChecking = false
         releaseCheck = nil
         releaseLifecycleMessage = nil
     }
@@ -1322,11 +1320,11 @@ final class AppModel: ObservableObject {
         releaseTask = Task { [weak self] in
             do {
                 let result = try await service.check(channel: channel, currentVersion: currentVersion)
-                guard !Task.isCancelled, let self else { return }
+                guard !Task.isCancelled, let self, self.releaseChannel == channel else { return }
                 self.releaseCheck = result
                 self.releaseChecking = false
             } catch {
-                guard !Task.isCancelled, let self else { return }
+                guard !Task.isCancelled, let self, self.releaseChannel == channel else { return }
                 self.releaseChecking = false
                 self.releaseLifecycleMessage = error.localizedDescription
             }
@@ -5137,9 +5135,10 @@ final class AppModel: ObservableObject {
             try controller.pasteVoice(reviewed.text, destination: reviewed.destination, submit: submit)
             voice.discard()
         } catch {
-            voice.session.deliveryFailed(attempted
-                ? "Delivery was interrupted. Inspect the destination before sending anything again. You can copy or discard this draft. \(error.localizedDescription)"
-                : error.localizedDescription, mayHaveDelivered: attempted)
+            // A refusal before any input (Copilot trust, a delivery in
+            // progress) keeps the draft reviewable; anything else may have
+            // left text in the pane.
+            voice.session.deliveryFailed(error, afterAttempt: attempted)
         }
     }
 
@@ -6556,10 +6555,28 @@ final class AppModel: ObservableObject {
     }
 
     func reviewChanges(with target: WorkbenchPane) {
-        perform {
-            guard let source = activePane, let reviewDraftBuilder else { return }
-            let draft = try reviewDraftBuilder.changes(in: source.launchWorkingDirectory)
-            try sendReview(draft, from: source, to: target)
+        guard let source = activePane, let reviewDraftBuilder, !reviewDraftInFlight else { return }
+        // Up to five Git commands with 5 s timeouts: never on the main thread.
+        let folder = source.launchWorkingDirectory
+        reviewDraftInFlight = true
+        Task { @MainActor [weak self] in
+            defer { self?.reviewDraftInFlight = false }
+            do {
+                let draft = try await Task.detached(priority: .userInitiated) {
+                    try reviewDraftBuilder.changes(in: folder)
+                }.value
+                guard let self else { return }
+                // The preview names both panes; they may have changed during the read.
+                guard let current = self.panes.first(where: { $0.id == source.id }),
+                      current.launchGeneration == source.launchGeneration,
+                      let currentTarget = self.panes.first(where: { $0.id == target.id }),
+                      currentTarget.launchGeneration == target.launchGeneration else {
+                    throw RelayUIError.message("A pane changed while its repository was being read. Choose Review again.")
+                }
+                self.perform { try self.sendReview(draft, from: current, to: currentTarget) }
+            } catch {
+                NSAlert(error: error).runModal()
+            }
         }
     }
 
@@ -7157,7 +7174,7 @@ final class AppModel: ObservableObject {
     private func verifiedActiveHandoffCount(for pane: WorkbenchPane, required: Bool) throws -> Int {
         let history: [RelayHandoff]
         if let relayClient {
-            history = try relayClient.handoffs(limit: 500)
+            history = try relayClient.activeHandoffs()
         } else if required && pane.kind.isAgent {
             throw RelayUIError.message(
                 "Parley cannot verify this agent’s active handoffs while the core service is unavailable. Restore the core connection before moving it."
@@ -7166,16 +7183,8 @@ final class AppModel: ObservableObject {
             history = handoffs
         }
         return history.filter {
-            ($0.sourcePaneID == pane.id || $0.targetPaneID == pane.id)
-                && Self.isActiveMobilityHandoffState($0.state)
+            ($0.sourcePaneID == pane.id || $0.targetPaneID == pane.id) && $0.state.isActive
         }.count
-    }
-
-    private static func isActiveMobilityHandoffState(_ state: RelayHandoffState) -> Bool {
-        switch state {
-        case .created, .delivered, .waiting, .answered: true
-        case .completed, .cancelled, .failed, .interrupted: false
-        }
     }
 
     private func showPaneMobilityRefusal(
@@ -8451,10 +8460,6 @@ final class AppModel: ObservableObject {
         let arguments = ProcessInfo.processInfo.arguments
         guard let index = arguments.firstIndex(of: name), arguments.indices.contains(index + 1) else { return nil }
         return arguments[index + 1]
-    }
-
-    private static func hasArgument(_ name: String) -> Bool {
-        ProcessInfo.processInfo.arguments.contains(name)
     }
 
     private static var isBundledApplication: Bool {

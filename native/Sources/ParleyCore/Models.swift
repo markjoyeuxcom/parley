@@ -414,9 +414,31 @@ public enum ParleyWorkbenchError: LocalizedError, Equatable {
     /// A native worktree removal is in flight for this folder; no process may
     /// start or be created inside it until that finishes.
     case folderReservedForRemoval(String)
+    /// Another delivery to the same pane had not finished; nothing was sent.
+    case deliveryInProgress
+    /// The text reached the named pane, and a later step of the delivery (the
+    /// pane going away before Enter, Enter refused) failed for the reason given.
+    case deliveryInterrupted(String, reason: String)
+
+    /// Whether a failed delivery was refused before any input reached the
+    /// pane, so sending the same text again cannot duplicate it. It decides
+    /// the broker's Retry Delivery and the voice draft's review state alike,
+    /// so a writer must never report a failure after the paste with one of
+    /// these: that is `deliveryInterrupted`. Anything unknown may have started.
+    public static func refusedBeforeInput(_ error: Error) -> Bool {
+        if error is VoiceError { return true }
+        switch error as? ParleyWorkbenchError {
+        case .copilotTrustRequired, .unsafeRelayTarget, .paneNotFound, .noRelayText, .deliveryInProgress: return true
+        default: return false
+        }
+    }
 
     public var errorDescription: String? {
         switch self {
+        case .deliveryInProgress:
+            "A delivery to this pane is already in progress. Wait for it to finish before sending again."
+        case let .deliveryInterrupted(name, reason):
+            "The text was pasted into \(name), but the delivery then failed: \(reason) Check that pane before sending anything again."
         case let .folderReservedForRemoval(path):
             "\(path) is being removed as a Git worktree right now. Wait for that removal to finish or fail, then try again."
         case let .invalidDirectory(path):

@@ -256,8 +256,10 @@ final class GhosttyPaneRegistry {
                 }
             },
             onWorkingDirectory: { [weak self] paneID, path in
-                try? self?.workbench?.terminalDidChangeWorkingDirectory(paneID: paneID, path: path)
-                self?.onPaneStateChanged?()
+                // Shells report their folder at every prompt; only a change refreshes.
+                if (try? self?.workbench?.terminalDidChangeWorkingDirectory(paneID: paneID, path: path)) == true {
+                    self?.onPaneStateChanged?()
+                }
             },
             onAttach: { [weak self] paneID in
                 try? self?.workbench?.terminalDidAttach(paneID: paneID)
@@ -335,30 +337,37 @@ final class GhosttyPaneRegistry {
         // delivery that needs its pane focused (Copilot's submission) moves
         // the person's focus, and `DeliveryFocus` gives it back.
         guard timing.focusesTarget else {
-            try deliver(text, to: entry, paneID: paneID, submit: submit, timing: timing, validate: validate)
+            try deliver(text, to: entry, paneID: paneID, name: pane.displayName, submit: submit, timing: timing, validate: validate)
             return
         }
         try deliveryFocus.deliver(focusing: entry.view, paneID: paneID, beforeRestoring: timing.beforeRestoringFocus,
                                   settle: { settleTerminalInput(for: $0) }) {
-            try deliver(text, to: entry, paneID: paneID, submit: submit, timing: timing, validate: validate)
+            try deliver(text, to: entry, paneID: paneID, name: pane.displayName, submit: submit, timing: timing, validate: validate)
         }
     }
 
-    private func deliver(_ text: String, to entry: Entry, paneID: String, submit: Bool,
+    /// Everything before the paste refuses with an error that says no input
+    /// began; everything after it is `deliveryInterrupted`, because the text
+    /// is already in the pane (`ParleyWorkbenchError.refusedBeforeInput`).
+    private func deliver(_ text: String, to entry: Entry, paneID: String, name: String, submit: Bool,
                          timing: PaneSubmissionTiming, validate: () throws -> Void) throws {
         settleTerminalInput(for: timing.afterFocus)
         try requireLiveTarget(paneID, entry)
         try validate()
+        // False only when there is no surface, so nothing was written.
         guard entry.view.paste(text: text) else {
             throw ParleyWorkbenchError.unsafeRelayTarget(paneID)
         }
-        if submit {
+        guard submit else { return }
+        do {
             settleTerminalInput(for: timing.afterPaste)
             try requireLiveTarget(paneID, entry)
             try validate()
             guard entry.view.sendKey(.enter) else {
                 throw ParleyWorkbenchError.unsafeRelayTarget(paneID)
             }
+        } catch {
+            throw ParleyWorkbenchError.deliveryInterrupted(name, reason: error.localizedDescription)
         }
     }
 
