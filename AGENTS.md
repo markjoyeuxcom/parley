@@ -685,7 +685,9 @@ whose delivery was attempted stays reviewable only after one. Everything before 
 one of its errors (a pane that is not ready or has gone, Copilot trust, a
 delivery already in progress, a changed voice destination), and every
 failure after the paste, before or at Enter, is `deliveryInterrupted`, which
-carries the cause. Until
+carries the cause. Those steps are `PaneInputDelivery` (ParleyCore), which
+the registry runs with its surface and the checks run scripted, each step
+made to fail in turn. Until
 29 September 2026 the registry reported those later failures as "not ready",
 so Retry could paste the text a second time, and a voice send refused before
 any input read as possibly delivered. A record saved as safe to retry by an
