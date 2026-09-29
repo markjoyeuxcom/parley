@@ -346,28 +346,17 @@ final class GhosttyPaneRegistry {
         }
     }
 
-    /// Everything before the paste refuses with an error that says no input
-    /// began; everything after it is `deliveryInterrupted`, because the text
-    /// is already in the pane (`ParleyWorkbenchError.refusedBeforeInput`).
+    /// The steps and their error reporting are `PaneInputDelivery`'s: before
+    /// the paste a refusal, after it an interruption.
     private func deliver(_ text: String, to entry: Entry, paneID: String, name: String, submit: Bool,
                          timing: PaneSubmissionTiming, validate: () throws -> Void) throws {
-        settleTerminalInput(for: timing.afterFocus)
-        try requireLiveTarget(paneID, entry)
-        try validate()
-        // False only when there is no surface, so nothing was written.
-        guard entry.view.paste(text: text) else {
-            throw ParleyWorkbenchError.unsafeRelayTarget(paneID)
-        }
-        guard submit else { return }
-        do {
-            settleTerminalInput(for: timing.afterPaste)
-            try requireLiveTarget(paneID, entry)
-            try validate()
-            guard entry.view.sendKey(.enter) else {
-                throw ParleyWorkbenchError.unsafeRelayTarget(paneID)
-            }
-        } catch {
-            throw ParleyWorkbenchError.deliveryInterrupted(name, reason: error.localizedDescription)
+        try withoutActuallyEscaping(validate) { validate in
+            try PaneInputDelivery.deliver(text, into: paneID, name: name, submit: submit, timing: timing, steps: .init(
+                settle: { [unowned self] in settleTerminalInput(for: $0) },
+                requireLive: { [unowned self] in try requireLiveTarget(paneID, entry) },
+                validate: validate,
+                paste: { entry.view.paste(text: $0) },
+                enter: { entry.view.sendKey(.enter) }))
         }
     }
 

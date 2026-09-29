@@ -77,3 +77,39 @@ public enum GhosttyLaunchCommand {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 }
+
+/// The steps of one input delivery into a pane, in order, and how a failure
+/// at each is reported. Everything before the paste refuses with an error
+/// `ParleyWorkbenchError.refusedBeforeInput` recognises; everything after it
+/// is `deliveryInterrupted`, because the text is already in the pane. The
+/// registry runs these with its Ghostty surface; checks run them scripted.
+public enum PaneInputDelivery {
+    public struct Steps {
+        public var settle: (TimeInterval) -> Void
+        public var requireLive: () throws -> Void
+        public var validate: () throws -> Void
+        public var paste: (String) -> Bool
+        public var enter: () -> Bool
+        public init(settle: @escaping (TimeInterval) -> Void, requireLive: @escaping () throws -> Void, validate: @escaping () throws -> Void,
+                    paste: @escaping (String) -> Bool, enter: @escaping () -> Bool) {
+            self.settle = settle; self.requireLive = requireLive; self.validate = validate; self.paste = paste; self.enter = enter
+        }
+    }
+    public static func deliver(_ text: String, into paneID: String, name: String, submit: Bool,
+                               timing: PaneSubmissionTiming, steps: Steps) throws {
+        steps.settle(timing.afterFocus)
+        try steps.requireLive()
+        try steps.validate()
+        // False only when there is no surface, so nothing was written.
+        guard steps.paste(text) else { throw ParleyWorkbenchError.unsafeRelayTarget(paneID) }
+        guard submit else { return }
+        do {
+            steps.settle(timing.afterPaste)
+            try steps.requireLive()
+            try steps.validate()
+            guard steps.enter() else { throw ParleyWorkbenchError.unsafeRelayTarget(paneID) }
+        } catch {
+            throw ParleyWorkbenchError.deliveryInterrupted(name, reason: error.localizedDescription)
+        }
+    }
+}

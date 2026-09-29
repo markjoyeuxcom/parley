@@ -12,7 +12,7 @@ private func tomlExpect(_ condition: @autoclosure () throws -> Bool, _ message: 
 /// an escape JSON allows but TOML does not (`\/`) silently turns the
 /// protocol into one escaped line. `JSONDecoder` accepts `\/` and could not
 /// catch that; this reader refuses it.
-private func readTOMLBasicString(_ text: Substring) throws -> (value: String, rest: Substring) {
+func readTOMLBasicString(_ text: Substring) throws -> (value: String, rest: Substring) {
     func fail(_ reason: String) -> NSError {
         NSError(domain: "CodexTOML", code: 2, userInfo: [NSLocalizedDescriptionKey: "not a TOML basic string: \(reason)"])
     }

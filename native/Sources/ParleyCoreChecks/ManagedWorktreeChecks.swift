@@ -1256,4 +1256,13 @@ func worktreeLowFindingChecks() throws {
     let denied = f.service.facts(for: tree)
     try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: parent)
     try wtExpect(denied.registered == nil, "a folder behind a permission denial read as \(String(describing: denied.registered)), not unknown")
+    // (1) Last, because it changes main: run Integrate's exact argv in the
+    // primary checkout. With the tag v2 beside the branch v2, the merge must
+    // bring in the branch's commit (a short name would have merged the tag).
+    try wtExpect(argv.first == "/usr/bin/git", "Integrate no longer runs the fixed Git: \(argv)")
+    try f.git(Array(argv.dropFirst()), in: f.repo)
+    // The tag points at main, so merging it would make no commit and no HEAD^2.
+    let merged = try? f.git(["rev-parse", "--verify", "--quiet", "HEAD^2"], in: f.repo)
+    try wtExpect(merged == branchCommit,
+                 "Integrate's argv merged \(merged ?? "nothing (the tag v2, already in main)") rather than the branch v2")
 }

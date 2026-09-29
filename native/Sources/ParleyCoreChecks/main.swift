@@ -3717,11 +3717,10 @@ private func checkSharedProtocolLaunchAdapters() throws {
         codexProtocolArgument.split(separator: "=", maxSplits: 1).last.map(String.init),
         "Codex protocol value disappeared"
     )
-    // JSONDecoder accepts `\/`, which TOML rejects; the strict TOML reading
-    // is "codex configuration values are valid toml".
-    try expect(!codexValue.contains("\\/"), "Codex developer instructions contain an escape TOML does not define")
-    let decodedCodex = try JSONDecoder().decode(String.self, from: Data(codexValue.utf8))
-    try expect(decodedCodex == AgentProtocol.text, "Codex launch adapter changed the shared protocol")
+    // Codex reads the value as TOML, so read it the way Codex does: a
+    // JSONDecoder accepted `\/`, which TOML rejects, and never saw the bug.
+    let decodedCodex = try readTOMLBasicString(codexValue[...])
+    try expect(decodedCodex.rest.isEmpty && decodedCodex.value == AgentProtocol.text, "Codex launch adapter changed the shared protocol")
 
     let agy = AgentProtocol.command(for: .agy, protocolDirectory: protocolDirectory)
     try expect(agy == ["agy", "--add-dir", protocolDirectory.path], "Agy launch adapter did not add the canonical rules workspace")

@@ -175,22 +175,65 @@ private final class ModelFailures: @unchecked Sendable {
 /// After the text is in the pane, a failure (the pane went away before Enter,
 /// Enter refused, the reviewed voice destination changed) is an interruption:
 /// the registry used "not ready" for these, which the broker reads as input
-/// never having begun.
+/// never having begun. The steps run here as the registry runs them, with
+/// each one scripted to fail in turn.
 func checkRegistryFailuresAfterThePasteAreInterruptions() throws {
+    func run(submit: Bool = true, failLive: Int? = nil, failValidate: Int? = nil, pasteWrites: Bool = true, enterWorks: Bool = true)
+        -> (log: [String], error: Error?) {
+        var log: [String] = []
+        var liveCalls = 0, validateCalls = 0
+        let steps = PaneInputDelivery.Steps(
+            settle: { log.append("settle \($0)") },
+            requireLive: {
+                liveCalls += 1; log.append("live")
+                if liveCalls == failLive { throw ParleyWorkbenchError.unsafeRelayTarget("pane") }
+            },
+            validate: {
+                validateCalls += 1; log.append("validate")
+                if validateCalls == failValidate { throw VoiceError.unavailable("the destination changed") }
+            },
+            paste: { log.append("paste \($0)"); return pasteWrites },
+            enter: { log.append("enter"); return enterWorks })
+        do {
+            try PaneInputDelivery.deliver("hello", into: "pane", name: "Codex", submit: submit,
+                timing: PaneSubmissionTiming(afterFocus: 0.1, afterPaste: 0.25, beforeRestoringFocus: 0.1), steps: steps)
+            return (log, nil)
+        } catch { return (log, error) }
+    }
+    let delivered = run()
+    try modelExpect(delivered.error == nil && delivered.log == ["settle 0.1", "live", "validate", "paste hello", "settle 0.25", "live", "validate", "enter"],
+                    "a delivery ran its steps as \(delivered.log)")
+    let pasteOnly = run(submit: false)
+    try modelExpect(pasteOnly.error == nil && pasteOnly.log == ["settle 0.1", "live", "validate", "paste hello"],
+                    "a paste without Enter ran \(pasteOnly.log)")
+    for (name, result) in [("a pane gone before the paste", run(failLive: 1)), ("a destination changed before the paste", run(failValidate: 1)),
+                           ("a surface that took no text", run(pasteWrites: false))] {
+        guard let error = result.error else { throw modelFailure("\(name) delivered") }
+        try modelExpect(ParleyWorkbenchError.refusedBeforeInput(error) && !result.log.contains("enter"),
+                        "\(name) was not a refusal before input: \(error)")
+    }
+    try modelExpect(!run(failLive: 1).log.contains { $0.hasPrefix("paste") }, "text was pasted into a pane that had gone")
+    for (name, result) in [("a pane gone before Enter", run(failLive: 2)), ("a destination changed before Enter", run(failValidate: 2)),
+                           ("Enter refused", run(enterWorks: false))] {
+        guard let error = result.error else { throw modelFailure("\(name) delivered") }
+        guard case ParleyWorkbenchError.deliveryInterrupted("Codex", _)? = error as? ParleyWorkbenchError,
+              !ParleyWorkbenchError.refusedBeforeInput(error) else {
+            throw modelFailure("\(name) after the paste was reported as \(error), not an interruption")
+        }
+    }
+    guard case ParleyWorkbenchError.deliveryInterrupted(_, let reason)? = run(failValidate: 2).error as? ParleyWorkbenchError,
+          reason.contains("the destination changed") else { throw modelFailure("an interruption lost its cause") }
+
+    // The registry delivers through exactly these steps.
     let reader = try appSource("ParleyNative", "GhosttyPaneRegistry.swift")
     let body = try functionBody(reader, "private func deliver(_ text: String, to entry: Entry")
-    guard let paste = body.range(of: "entry.view.paste(text: text)") else { throw modelFailure("deliver no longer pastes through the view") }
-    let before = body[..<paste.lowerBound], after = body[paste.upperBound...]
-    try modelExpect(before.contains("try requireLiveTarget(") && before.contains("try validate()"),
-                    "the checks before the paste moved")
-    guard let open = after.range(of: "do {"), let caught = after.range(of: "} catch {"),
-          open.lowerBound < caught.lowerBound else {
-        throw modelFailure("the steps after the paste are not caught as one interruption")
+    try modelExpect(body.contains("PaneInputDelivery.deliver(") && !body.contains("sendKey(.enter) else")
+                    && !body.contains("deliveryInterrupted"), "the registry runs its own delivery steps instead of PaneInputDelivery")
+    // And hands it the real steps, not placeholders that would always pass.
+    for wiring in ["submit: submit", "timing: timing", "settleTerminalInput(for: $0)", "try requireLiveTarget(paneID, entry)",
+                   "validate: validate", "entry.view.paste(text: $0)", "entry.view.sendKey(.enter)"] {
+        try modelExpect(body.contains(wiring), "the registry does not pass \(wiring) to PaneInputDelivery")
     }
-    let guarded = after[open.upperBound..<caught.lowerBound]
-    try modelExpect(guarded.contains("requireLiveTarget") && guarded.contains("validate()") && guarded.contains("sendKey(.enter)"),
-                    "a step after the paste escapes the interruption")
-    try modelExpect(after[caught.upperBound...].contains("deliveryInterrupted("), "an interruption after the paste is not reported as one")
 }
 
 /// Switching the release channel while a check ran showed the Beta result
