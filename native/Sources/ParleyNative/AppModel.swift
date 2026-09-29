@@ -3759,22 +3759,24 @@ final class AppModel: ObservableObject {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         performAfterContainerStops(candidates) { [self] in
             guard let controller else { return }
-            var skipped: [String] = []
-            for pane in candidates {
-                let live = try controller.listPanes()
-                guard session.stoppedPlaceholders(in: live).contains(where: { $0.id == pane.id }) else {
-                    skipped.append("\(pane.displayName) (no longer a stopped placeholder of this session)")
-                    continue
-                }
-                try controller.closePane(pane.id)
-                if focusCanvasPaneID == pane.id { focusCanvasPaneID = nil }
-            }
-            try refresh()
-            if !skipped.isEmpty {
+            let outcome = TeamPlaceholderClosing.close(candidates,
+                stillStopped: { id in session.stoppedPlaceholders(in: try controller.listPanes()).contains { $0.id == id } },
+                close: { id in
+                    try controller.closePane(id)
+                    if focusCanvasPaneID == id { focusCanvasPaneID = nil }
+                })
+            // Refresh whatever happened: some panes may have closed.
+            var refreshFailure: String?
+            do { try refresh() } catch { refreshFailure = error.localizedDescription }
+            let name = { (id: String) in candidates.first { $0.id == id }?.displayName ?? id }
+            let lines = outcome.skipped.map { "\(name($0)) (no longer a stopped placeholder of this session)" }
+                + outcome.failed.map { "\(name($0.paneID)) (could not be closed: \($0.reason))" }
+                + (refreshFailure.map { ["The window could not be refreshed afterwards: \($0)"] } ?? [])
+            if !lines.isEmpty {
                 let note = NSAlert()
                 note.messageText = "Some panes were not closed"
-                note.informativeText = skipped.joined(separator: "\n")
-                note.alertStyle = .informational
+                note.informativeText = lines.joined(separator: "\n")
+                note.alertStyle = outcome.failed.isEmpty ? .informational : .warning
                 note.runModal()
             }
         }

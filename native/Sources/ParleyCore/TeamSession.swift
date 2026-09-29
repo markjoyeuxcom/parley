@@ -514,10 +514,13 @@ public struct TeamMemberStopOutcome: Codable, Equatable, Sendable {
 }
 
 /// Executes a stop plan against the workbench and classifies each outcome
-/// from what the workbench reports afterwards. `stopPaneProcess` terminates
-/// and mutates pane state before it records credentials and persistence, so
-/// a thrown error is re-read: a pane that now shows stopped is
-/// stopped-but-unrecorded, a pane still started is failed.
+/// from what the workbench reports afterwards: a thrown error is re-read, a
+/// pane still started is failed and a pane that now shows stopped is
+/// stopped-but-unrecorded. Since 29 September 2026 `stopPaneProcess` saves
+/// the stop before it ends the process and puts the pane back when the save
+/// fails, so a stop that could not be recorded reads failed and stays
+/// retryable; the stopped reading remains for any stop that fails after
+/// the state changed.
 public enum TeamStopExecution {
     public static func execute(plan: [TeamStopPlanner.Entry], stop: (String) throws -> Void,
                                currentPane: (String) -> WorkbenchPane?) -> [TeamMemberStopOutcome] {
@@ -857,5 +860,42 @@ extension TeamSession {
     public func work(in handoffs: [RelayHandoff]) -> [RelayHandoff] {
         let scope = TeamSessionWorkScope(session: self)
         return handoffs.filter(scope.includes).sorted { $0.updatedAt > $1.updatedAt }
+    }
+}
+
+/// Close stopped team panes, one pane at a time. Each pane is re-checked
+/// just before it closes (the person may have restarted it since the
+/// confirmation), and one pane that fails to close no longer stops the rest:
+/// the loop used to end at the first failure, before the app's refresh.
+public enum TeamPlaceholderClosing {
+    public struct Failure: Equatable, Sendable {
+        public let paneID: String
+        public let reason: String
+    }
+
+    public struct Outcome: Equatable, Sendable {
+        public var closed: [String] = []
+        /// No longer a stopped placeholder of the session when its turn came.
+        public var skipped: [String] = []
+        /// Could not be closed, or its state could not be read to tell.
+        public var failed: [Failure] = []
+    }
+
+    public static func close(_ candidates: [WorkbenchPane], stillStopped: (String) throws -> Bool,
+                             close: (String) throws -> Void) -> Outcome {
+        var outcome = Outcome()
+        for pane in candidates {
+            do {
+                guard try stillStopped(pane.id) else {
+                    outcome.skipped.append(pane.id)
+                    continue
+                }
+                try close(pane.id)
+                outcome.closed.append(pane.id)
+            } catch {
+                outcome.failed.append(Failure(paneID: pane.id, reason: error.localizedDescription))
+            }
+        }
+        return outcome
     }
 }
