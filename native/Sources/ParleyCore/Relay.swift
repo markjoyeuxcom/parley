@@ -1054,6 +1054,7 @@ public final class RelayBroker: @unchecked Sendable {
             let approvedTarget = reviewed.requestedTargetPaneID ?? target.id
             consultationCondition.unlock()
 
+            let refusedBeforeInput = LockedBox(false)
             let response = handleAsk(
                 token: token,
                 target: approvedTarget,
@@ -1061,9 +1062,11 @@ public final class RelayBroker: @unchecked Sendable {
                 idempotencyKey: idempotencyKey,
                 humanInitiated: true,
                 preserveFormatting: true,
-                onAccepted: onAccepted
+                onAccepted: onAccepted,
+                onWriterFailed: { refusedBeforeInput.set(ParleyWorkbenchError.refusedBeforeInput($0)) }
             )
-            finishContextReview(draftID, response: response, idempotencyKey: idempotencyKey, sourcePaneID: sender.id)
+            finishContextReview(draftID, response: response, idempotencyKey: idempotencyKey, sourcePaneID: sender.id,
+                                refusedBeforeInput: refusedBeforeInput.value)
             return response
         } catch let error as BrokerFailure {
             return RelayTextResponse(status: error.status, text: error.message)
@@ -1163,7 +1166,9 @@ public final class RelayBroker: @unchecked Sendable {
     /// pack directly and recorded no handoff, so the reply only ever appeared
     /// in the target's terminal. The review is approved before any terminal
     /// input, completed once the Ask is accepted, returned to draft when the
-    /// Ask is refused before delivery, and failed when delivery itself fails.
+    /// Ask is refused before any input (no handoff, or a writer refusal
+    /// `ParleyWorkbenchError.refusedBeforeInput` recognises), and failed
+    /// whenever input may have begun, a cancellation mid-paste included.
     /// The call returns when the answer arrives or the consultation times out.
     public func completeContextDraft(_ approval: AgentContextReviewApproval) -> RelayTextResponse {
         let prepared: (source: WorkbenchPane, target: WorkbenchPane, rendered: String, key: String)
@@ -1225,6 +1230,7 @@ public final class RelayBroker: @unchecked Sendable {
         }
 
         let completionPersistence = LockedBox<Error?>(nil)
+        let refusedBeforeInput = LockedBox(false)
         let response = handleAsk(
             token: sourceToken,
             target: prepared.target.id,
@@ -1240,13 +1246,18 @@ public final class RelayBroker: @unchecked Sendable {
                     state: .completed,
                     detail: "Reviewed and sent by the person using Parley as correlated Ask \(handoffID)."
                 ))
-            }
+            },
+            onWriterFailed: { refusedBeforeInput.set(ParleyWorkbenchError.refusedBeforeInput($0)) }
         )
 
         // onAccepted ran only if the Ask was created and delivered. Otherwise
-        // decide from the durable facts: a handoff that exists and failed is a
-        // delivery failure; no handoff means the Ask was refused before any
-        // terminal input, and the draft is still sendable.
+        // decide, as the agent's own context Ask does (`finishContextReview`):
+        // no handoff, or a writer that refused before any input (Copilot
+        // trust, a pane not ready, another delivery in progress), leaves the
+        // draft sendable. Any other handoff was handed to the writer and input
+        // may have begun: it failed, or was cancelled or interrupted while
+        // its text was being pasted. Reopening that draft would offer the
+        // same text for a second send.
         consultationCondition.lock()
         let reviewState = contextReviewRecords[approval.reviewID]?.state
         let handoff = handoffRecords.values.first {
@@ -1254,11 +1265,13 @@ public final class RelayBroker: @unchecked Sendable {
         }
         consultationCondition.unlock()
         if reviewState == .approved {
-            if let handoff, handoff.state == .failed {
+            if let handoff, !refusedBeforeInput.value {
                 _ = updateContextReview(
                     approval.reviewID,
                     state: .failed,
-                    detail: "Context delivery failed: \(response.text). Check the target before retrying."
+                    detail: handoff.state == .failed
+                        ? "Context delivery failed: \(response.text). Check the target before retrying."
+                        : "Context delivery ended \(handoff.state.rawValue) after it began: \(response.text). Part of it may already be in \(prepared.target.displayName)'s input; check that pane before sending it again."
                 )
             } else {
                 _ = updateContextReview(approval.reviewID, state: .draft, detail: "Not sent: \(response.text)")
@@ -1381,10 +1394,12 @@ public final class RelayBroker: @unchecked Sendable {
         if !ids.isEmpty { noteChangeLocked() }
     }
 
-    /// An Ask refused before any delivery (a busy target) left no handoff and
-    /// sent nothing, so the review goes back to a draft, as the person's own
-    /// send does; only one that reached the target and then failed is failed.
-    private func finishContextReview(_ reviewID: String, response: RelayTextResponse, idempotencyKey: String, sourcePaneID: String) {
+    /// An Ask refused before any delivery (a busy target, which leaves no
+    /// handoff, or a writer that refused before input) sent nothing, so the
+    /// review goes back to a draft, as the person's own send does; only one
+    /// whose input may have begun is failed.
+    private func finishContextReview(_ reviewID: String, response: RelayTextResponse, idempotencyKey: String, sourcePaneID: String,
+                                     refusedBeforeInput: Bool) {
         consultationCondition.lock()
         guard var review = contextReviewRecords[reviewID] else {
             consultationCondition.unlock()
@@ -1396,7 +1411,7 @@ public final class RelayBroker: @unchecked Sendable {
         if (200..<300).contains(response.status) {
             review.state = .completed
             review.detail = response.text
-        } else if asked {
+        } else if asked && !refusedBeforeInput {
             review.state = .failed
             review.detail = response.text
         } else {
@@ -2629,7 +2644,8 @@ public final class RelayBroker: @unchecked Sendable {
         relationship: RelayHandoffRelationship? = nil,
         onSubmitted: (() -> Void)? = nil,
         onAccepted: ((String) -> Void)? = nil,
-        reviewedVoice: VoiceHandoffRequest? = nil
+        reviewedVoice: VoiceHandoffRequest? = nil,
+        onWriterFailed: ((Error) -> Void)? = nil
     ) -> RelayTextResponse {
         let recordedOrigin = transitionOrigin ?? (humanInitiated ? .human : nil)
         let sender: WorkbenchPane
@@ -2763,6 +2779,10 @@ public final class RelayBroker: @unchecked Sendable {
             consultationCondition.unlock()
             onAccepted?(handoff.id)
         } catch {
+            // Whether input began is the writer's to say
+            // (`ParleyWorkbenchError.refusedBeforeInput`); a context send
+            // decides from it whether its draft may be sent again.
+            onWriterFailed?(error)
             let response = RelayTextResponse(
                 status: 409,
                 text: "Parley could not submit the question: \(error.localizedDescription)"
