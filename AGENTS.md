@@ -1859,12 +1859,21 @@ shows the question and the returned result. It is not a direct paste: v0.1.40
 pasted the pack and recorded no handoff, and the reply only ever appeared in
 the target's terminal. The review is approved before any terminal input,
 completed (naming the handoff) once the Ask is accepted, handed back to
-`.draft` with a "Not sent" detail when the Ask is refused before delivery (a
-busy target, for instance), and `.failed` when delivery itself fails. The
+`.draft` with a "Not sent" detail when the Ask is refused before any input
+(a busy target, which leaves no handoff, or a writer refusal
+`ParleyWorkbenchError.refusedBeforeInput` recognises, such as Copilot's
+folder trust not yet confirmed, which `handleAsk` reports through
+`onWriterFailed`), and `.failed` whenever input may have begun: a delivery
+that failed after its paste, and an Ask cancelled or interrupted while its
+text was being pasted. Until 29 September 2026 only a failed handoff
+counted, so a send cancelled mid-paste went back to a sendable draft
+(0bfdfb2a), while one the writer refused before input, which sent nothing,
+was closed for good. The
 call returns with the answer or the consultation timeout, which is why it is
 a tracked request and runs off the main actor. The agent's own `parley ask
---context` follows the same rule since 28 September 2026: approved, then
-refused before any handoff existed, it goes back to `.draft` ("Not sent")
+--context` follows the same rule since 28 September 2026 (the writer's own
+refusal since 29 September): approved, then refused before any input, it
+goes back to `.draft` ("Not sent")
 instead of `.failed`, which lost the approval. Its approval timeout is saved
 through `persistContextRealityLocked`, so a failed save is kept and retried
 rather than leaving a pending approval on disk. Every context review save

@@ -24,10 +24,10 @@ func checkContextSendRecoveryKeepsEditsOnlyWhenNothingWasDelivered() throws {
                       workspaceID: "@ctx", relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "Ctx", inputAvailable: true)
     }
     let source = pane("source", .claude), target = pane("target", .codex), lead = pane("lead", .agy)
-    final class Delivery: @unchecked Sendable { var fail = false }
+    final class Delivery: @unchecked Sendable { var error: Error? }
     let delivery = Delivery()
     let broker = RelayBroker(credentials: credentials, panes: { [source, target, lead] }, paste: { _, _ in },
-                             submit: { paneID, _ in if delivery.fail { throw ParleyWorkbenchError.unsafeRelayTarget(paneID) } },
+                             submit: { _, _ in if let error = delivery.error { throw error } },
                              consultationTimeout: 1, livenessPollInterval: 0.01,
                              contextReviewStore: try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json")))
     func stage(_ name: String) throws -> AgentContextReview {
@@ -110,11 +110,26 @@ func checkContextSendRecoveryKeepsEditsOnlyWhenNothingWasDelivered() throws {
         throw fail("a draft the agent turned into an Ask was reopened as the person's copy: \(askedDecision)")
     }
 
+    // The writer refused before any input (Copilot's folder trust not yet
+    // confirmed): nothing was sent, so the edits come back for another send.
+    delivery.error = ParleyWorkbenchError.copilotTrustRequired
+    let trustDraft = try stage("trust")
+    let trustEdits = edited(trustDraft)
+    try recoveryExpect(send(trustDraft, pack: trustEdits, revision: trustDraft.updatedAt, key: "ctx-trust").status != 200, "an untrusted send succeeded")
+    delivery.error = nil
+    guard case let .reopen(trustBack) = decide(trustDraft, sent: trustEdits, revision: trustDraft.updatedAt),
+          trustBack.pack.note == "edited note" else {
+        throw fail("a send the writer refused before input was not reopened with the person's edits")
+    }
+    _ = send(trustDraft, pack: trustEdits, revision: trustBack.updatedAt, key: "ctx-trust-again")
+    try recoveryExpect(broker.contextReviews().first { $0.id == trustDraft.id }?.state == .completed,
+                       "the reopened edits could not be sent once the refusal was resolved")
+
     // Delivery failed part-way: offered to copy, never reopened for a second send.
-    delivery.fail = true
+    delivery.error = ParleyWorkbenchError.deliveryInterrupted("target", reason: "Enter was refused")
     let failedDraft = try stage("failed")
     _ = send(failedDraft, pack: edited(failedDraft), revision: failedDraft.updatedAt, key: "ctx-failed")
-    delivery.fail = false
+    delivery.error = nil
     try recoveryExpect(broker.contextReviews().first { $0.id == failedDraft.id }?.state == .failed, "a failed delivery did not mark the review failed")
     guard case .copyOnly = decide(failedDraft, sent: edited(failedDraft), revision: failedDraft.updatedAt) else {
         throw fail("a failed delivery was offered for a second send")
@@ -127,6 +142,108 @@ func checkContextSendRecoveryKeepsEditsOnlyWhenNothingWasDelivered() throws {
     }
 }
 
+/// Prax 0bfdfb2a (a fresh-context reviewer of 844fa81d): the person cancels
+/// the Ask while its text is being pasted, and the paste then fails after
+/// input began. The broker returned the cancellation's response and left the
+/// handoff cancelled, not failed, and the draft went back to a sendable
+/// draft, so recovery would reopen text that may already sit in the target's
+/// input line. Once a handoff exists, anything but a clean refusal before
+/// its creation leaves the draft closed.
+func checkACancelledSendDuringDeliveryIsNotReopened() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-ctxcancel-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    func pane(_ id: String, _ kind: PaneKind) -> WorkbenchPane {
+        WorkbenchPane(id: id, kind: kind, customName: id, terminalTitle: "", cwd: directory.path, currentCommand: "x", isActive: false,
+                      workspaceID: "@ctx", relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "Ctx", inputAvailable: true)
+    }
+    let source = pane("source", .claude), target = pane("target", .codex)
+    final class Holder: @unchecked Sendable { var broker: RelayBroker?; var cancelled: RelayTextResponse? }
+    let holder = Holder()
+    let broker = RelayBroker(credentials: credentials, panes: { [source, target] }, paste: { _, _ in }, submit: { _, _ in },
+        contextSubmit: { paneID, _ in
+            // The person presses Cancel Ask while the pack is being pasted...
+            if let broker = holder.broker, let asking = broker.handoffs().first(where: { $0.kind == .ask && $0.state == .created }) {
+                holder.cancelled = broker.cancelHandoff(asking.id)
+            }
+            // ...and Enter then fails, after the text reached the pane.
+            throw ParleyWorkbenchError.deliveryInterrupted(paneID, reason: "the pane went away before Enter")
+        },
+        consultationTimeout: 1, livenessPollInterval: 0.01,
+        contextReviewStore: try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json")))
+    holder.broker = broker
+    let file = directory.appendingPathComponent("notes.md")
+    try "original\n".write(to: file, atomically: true, encoding: .utf8)
+    let staged = broker.handleContextDraft(token: try credentials.token(for: source.id), name: "notes", path: file.path, text: "original\n")
+    try recoveryExpect(staged.status == 201, "the draft was not staged: \(staged.text)")
+    let review = try recoveryRequire(broker.contextReviews().first, "the staged draft is missing")
+    var pack = review.pack
+    pack.note = "edited"
+    let response = broker.completeContextDraft(AgentContextReviewApproval(reviewID: review.id, expectedUpdatedAt: review.updatedAt,
+        targetPaneID: target.id, pack: pack, idempotencyKey: "ctx-cancel"))
+    try recoveryExpect(holder.cancelled?.status == 200, "the fixture could not cancel the Ask mid-delivery: \(String(describing: holder.cancelled))")
+    try recoveryExpect(response.status != 200, "a cancelled, interrupted send reported success")
+    let after = try recoveryRequire(broker.contextReviews().first { $0.id == review.id }, "the review disappeared")
+    try recoveryExpect(after.state != .draft && after.state != .awaitingReview,
+                       "a send cancelled after its paste began left a sendable draft (\(after.state)): \(after.detail ?? "")")
+    if case .reopen = ContextSendRecovery.decide(reviewID: review.id, sent: pack, sentRevision: review.updatedAt, fresh: broker.contextReviews()) {
+        throw NSError(domain: "ContextSendRecovery", code: 1, userInfo: [NSLocalizedDescriptionKey: "recovery reopened a send whose text may be in the target"])
+    }
+}
+
+/// The agent's own `parley ask --context`, approved by the person: a writer
+/// that refused before any input leaves the draft for another send, as the
+/// person's own send does; one interrupted after its paste closes it.
+func checkAnAgentContextAskFollowsItsWriter() throws {
+    let directory = URL(fileURLWithPath: "/tmp/parley-ctxagent-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("relay-tokens.json"))
+    func pane(_ id: String, _ kind: PaneKind) -> WorkbenchPane {
+        WorkbenchPane(id: id, kind: kind, customName: id, terminalTitle: "", cwd: directory.path, currentCommand: "x", isActive: false,
+                      workspaceID: "@ctx", relayEnabled: true, protocolVersion: AgentProtocol.version, workspaceName: "Ctx", inputAvailable: true)
+    }
+    let source = pane("source", .claude), target = pane("target", .codex)
+    final class Delivery: @unchecked Sendable { var error: Error? }
+    let delivery = Delivery()
+    let broker = RelayBroker(credentials: credentials, panes: { [source, target] }, paste: { _, _ in }, submit: { _, _ in },
+        contextSubmit: { _, _ in if let error = delivery.error { throw error } },
+        consultationTimeout: 1, livenessPollInterval: 0.01,
+        contextReviewStore: try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json")))
+    let sourceToken = try credentials.token(for: source.id)
+    func ask(_ name: String, failing error: Error) throws -> AgentContextReview {
+        let file = directory.appendingPathComponent("\(name).md")
+        try "\(name)\n".write(to: file, atomically: true, encoding: .utf8)
+        try recoveryExpect(broker.handleContextDraft(token: sourceToken, name: name, path: file.path, text: "\(name)\n").status == 201, "no draft")
+        let draft = try recoveryRequire(broker.contextReviews().first { $0.pack.name == name }, "the draft is missing")
+        delivery.error = error
+        defer { delivery.error = nil }
+        final class Result: @unchecked Sendable { let lock = NSLock(); var response: RelayTextResponse? }
+        let result = Result()
+        Thread.detachNewThread {
+            let response = broker.handleContextAsk(token: sourceToken, draftID: draft.id, target: target.id, text: "Please review.",
+                                                   idempotencyKey: "agent-\(name)")
+            result.lock.withLock { result.response = response }
+        }
+        let deadline = Date().addingTimeInterval(3)
+        while broker.contextReviews().first(where: { $0.id == draft.id })?.state != .awaitingReview, Date() < deadline { usleep(10_000) }
+        let awaiting = try recoveryRequire(broker.contextReviews().first { $0.id == draft.id && $0.state == .awaitingReview }, "the Ask never awaited review")
+        _ = broker.approveContextReview(reviewID: draft.id, pack: awaiting.pack, targetPaneID: target.id)
+        let finish = Date().addingTimeInterval(5)
+        while result.lock.withLock({ result.response }) == nil, Date() < finish { usleep(10_000) }
+        try recoveryExpect(result.lock.withLock { result.response }?.status ?? 200 != 200, "a refused or interrupted context Ask reported success")
+        return try recoveryRequire(broker.contextReviews().first { $0.id == draft.id }, "the review disappeared")
+    }
+    let refused = try ask("refused", failing: ParleyWorkbenchError.copilotTrustRequired)
+    try recoveryExpect(refused.state == .draft && (refused.detail ?? "").hasPrefix("Not sent"),
+                       "an agent context Ask the writer refused before input was left \(refused.state)")
+    let interrupted = try ask("interrupted", failing: ParleyWorkbenchError.deliveryInterrupted("target", reason: "Enter was refused"))
+    try recoveryExpect(interrupted.state == .failed, "an agent context Ask interrupted after its paste was left \(interrupted.state)")
+}
+
 @MainActor let contextSendRecoveryChecks: [(String, () throws -> Void)] = [
+    ("an agent context ask follows its writer", checkAnAgentContextAskFollowsItsWriter),
+    ("a context send cancelled during delivery is not reopened", checkACancelledSendDuringDeliveryIsNotReopened),
     ("context send recovery keeps edits only when nothing was delivered", checkContextSendRecoveryKeepsEditsOnlyWhenNothingWasDelivered),
 ]
