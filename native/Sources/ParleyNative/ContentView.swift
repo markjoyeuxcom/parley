@@ -869,6 +869,7 @@ struct ContentView: View {
                     items.append(.action("Confirm Copilot Folder Trust…") { model.confirmCopilotFolderTrust(pane) })
                 }
                 items.append(.action("Restart Fresh Session…") { model.restart(pane) })
+                items.append(.action("Stop…") { model.stop(pane) })
             }
         } else {
             items.append(.action("Restart…") { model.restart(pane) })

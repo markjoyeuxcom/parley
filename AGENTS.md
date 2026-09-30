@@ -205,8 +205,11 @@ Production and a separate Development directory.
   coordination core. There is no separate Stop Everything action: the
   quit-time choice was removed in the 30 August 2026 native cutover, and the
   quit dialog offers Quit Parley or Cancel only. One pane ends when the person
-  exits its CLI, closes it or restarts it; a container pane can also be stopped
-  from Status Center > Health > Containers. Help, README, INSTALL and the
+  exits its CLI, chooses Stop… in its menu (a started agent pane; since 1
+  October 2026, `AppModel.stop`: container cleanup through
+  `performAfterContainerStops`, then `stopPaneProcess` with the reviewed
+  generation, leaving a stopped placeholder), closes it or restarts it; a
+  container pane can also be stopped from Status Center > Health > Containers. Help, README, INSTALL and the
   protocol text described the removed item for two weeks; do not reintroduce
   the name without the button. `shutdown` checks every container first,
   saves every pane stopped, and ends the surfaces only once that is durable;

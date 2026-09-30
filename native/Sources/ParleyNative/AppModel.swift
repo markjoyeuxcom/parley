@@ -7324,6 +7324,27 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Ends a started agent pane's process and keeps the pane, stopped, to be
+    /// started or resumed later. A container pane's container is stopped
+    /// first, as Close stops it; its home volume, with the vendor's login and
+    /// conversations, stays. Until 1 October 2026 the only way to stop a
+    /// container pane without closing it was Status Center's Stop and Remove.
+    func stop(_ pane: WorkbenchPane) {
+        let alert = NSAlert()
+        alert.messageText = "Stop \(pane.displayName)?"
+        alert.informativeText = pane.containerConfiguration == nil
+            ? "The \(pane.kind.label) process ends and the pane stays, stopped. Start it again from its menu later."
+            : "The \(pane.kind.label) process ends, its container is stopped and removed, and the pane stays, stopped. The pane's saved vendor login and conversations are kept. Start it again from its menu later."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Stop")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        performAfterContainerStops([pane]) { [self] in
+            try controller?.stopPaneProcess(pane.id, expectedGeneration: pane.launchGeneration)
+            try refresh()
+        }
+    }
+
     func resume(_ pane: WorkbenchPane) {
         guard let plan = VendorResumeAdapter.plan(for: pane.kind) else { return }
 
