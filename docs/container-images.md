@@ -201,6 +201,62 @@ Exit 78 means the image does not meet the contract. Parley's own review runs
 this and then starts the vendor executable, so an image passing here can still
 be refused if the vendor binary itself will not start.
 
+## Reaching a service on your Mac
+
+A pane runs with `--network=bridge`, so the vendor inside can reach services
+on your Mac as any container on your Docker runtime can. Parley adds nothing
+for this and takes nothing away. Three things decide whether it works:
+
+- **The address.** `host.docker.internal` names the Mac from inside the
+  container. OrbStack forwards it to services the Mac binds only to
+  `127.0.0.1` (checked on 30 September 2026). Other runtimes were not checked,
+  and a service bound only to loopback may be out of reach through them.
+- **Configuration.** Parley passes none of your own environment variables and
+  no mounts beyond those listed above. A tool that needs an address or a
+  setting gets it from the image (`ENV`) or from a file in the pane's home
+  volume, written from inside the pane. Never put a token or password in an
+  image: anyone with the image can read its layers.
+- **Host checks.** A local service that guards against DNS rebinding refuses a
+  request whose `Host` header is not a loopback name, so it answers on the Mac
+  and returns 403 through `host.docker.internal`. Allow that one name in the
+  service's own configuration rather than turning the guard off.
+
+What this opens: every process in that container, and in any other container
+on the same Docker runtime, can reach the service, and with **Bypass vendor
+permissions** the vendor uses it without asking. The container remains the
+boundary for your files, not for what the service will do when a container
+asks. Only the image probe runs with `--network=none`.
+
+Instructions do not follow either. A vendor in a container does not read your
+Mac's global instruction files (`~/.claude/CLAUDE.md` and each vendor's
+equivalent): its home is the pane's volume, which the image cannot pre-fill.
+Put guidance for the tool in the project's own `AGENTS.md`, or in the vendor's
+global rules from inside the pane, where the volume keeps it.
+
+### Example: Agy with the Prax CLI
+
+`docs/parley-agy-prax.Dockerfile` is the exact file that built a working image
+on 30 September 2026: Agy plus the CLI of Prax, a memory app that listens on
+the Mac's loopback. What it took:
+
+- **The CLI on Linux.** The Mac's `prax` command runs the app's macOS binary,
+  which cannot run here, but the CLI itself is plain Node. The image is based
+  on `node:22-slim`, which passes the probe unmodified, and carries a copy of
+  the app's `Contents/Resources/resources/app` folder behind a two-line shim.
+  The shim names `/usr/local/bin/node`, because Parley replaces `PATH`.
+- **The address.** `PRAX_API_URL=http://host.docker.internal:49636` is part
+  of the image. 49636 is the port the app chose on first launch and saved in
+  `~/Library/Application Support/com.moomora.prax/webview-port`; use yours.
+- **The host check.** On the Mac, run
+  `launchctl setenv PRAX_ALLOWED_HOSTS host.docker.internal`, then quit and
+  reopen Prax. `host.docker.internal` then gets through and any other name
+  still gets 403. The setting lasts until you log out or restart. No token was
+  needed, because the forwarded connection reaches the app from loopback.
+
+Checked by running the probe above, then `agy --version`, `prax doctor` and
+`prax task list --all-projects` as your uid with every capability dropped, no
+new privileges, Parley's `PATH` and an empty home.
+
 ## Known limits
 
 - Selecting Codex without **Bypass vendor permissions** requires Codex's own
@@ -212,8 +268,11 @@ be refused if the vendor binary itself will not start.
   login persistence across relaunch are human compatibility checks. Passing the
   probe does not establish any of them. Copilot documents a device-code
   sign-in for containers, which needs no published port; Agy documents a
-  copy-the-address, paste-the-code flow for hosts without a browser. Neither
-  had been signed in from a Parley container when this was written.
+  copy-the-address, paste-the-code flow for hosts without a browser. Agy was
+  signed in from a Parley container on 25 September 2026: its login survived
+  the container's removal and a fresh start, and a resumed session took up the
+  protocol. How it signed in was not recorded. Copilot had not been signed in
+  from one when this was written.
 - Agy's own `--sandbox` inside an unprivileged container is untested, as
   Codex's default sandbox was; if it cannot start, the launch fails visibly
   and Bypass vendor permissions is the container-only alternative.
