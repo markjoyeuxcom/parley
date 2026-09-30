@@ -165,3 +165,52 @@ func checkWindowTitlebarPreferences() throws {
         print("Both chrome paths honour default, Maximize, Fill, Minimize and None without changing system preferences")
     }
 }
+
+/// The rule itself, placed directly in the native title bar rather than left
+/// to where macOS happens to lay out an empty title (Agy's review of MR !131):
+/// a label that neither edits, selects nor acts is title-bar space; an
+/// editable or selectable field, a label with an action or a click
+/// recogniser, and a text view keep their clicks.
+func checkTitlebarLabelsAndFields() throws {
+    try MainActor.assumeIsolated {
+        _ = NSApplication.shared
+        let window = ChromeProbeWindow(contentRect: NSRect(x: 20, y: 20, width: 600, height: 200),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window.title = ""
+        window.orderFront(nil)
+        defer { window.orderOut(nil) }
+        guard let titlebar = window.standardWindowButton(.closeButton)?.superview else {
+            throw NSError(domain: "WindowChrome", code: 2, userInfo: [NSLocalizedDescriptionKey: "no native title bar view to place fixtures in"])
+        }
+        final class Target: NSObject { @objc func act(_ sender: Any?) {} }
+        let target = Target()
+        let actionLabel = NSTextField(labelWithString: "Action")
+        actionLabel.target = target
+        actionLabel.action = #selector(Target.act(_:))
+        let gestureLabel = NSTextField(labelWithString: "Gesture")
+        gestureLabel.addGestureRecognizer(NSClickGestureRecognizer())
+        let selectable = NSTextField(labelWithString: "Selectable")
+        selectable.isSelectable = true
+        let cases: [(String, NSView, Bool)] = [
+            ("a passive label", NSTextField(labelWithString: "Label"), true),
+            ("an editable field", NSTextField(string: "Editable"), false),
+            ("a selectable field", selectable, false),
+            ("a label with an action", actionLabel, false),
+            ("a label with a click recogniser", gestureLabel, false),
+            ("a text view", NSTextView(frame: .zero), false),
+        ]
+        for (name, view, titleBarSpace) in cases {
+            view.frame = NSRect(x: 200, y: 2, width: 120, height: 18)
+            titlebar.addSubview(view)
+            defer { view.removeFromSuperview() }
+            let point = view.convert(NSPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil)
+            guard window.contentView?.superview?.hitTest(point).map({ $0 === view || $0.isDescendant(of: view) }) == true else {
+                throw NSError(domain: "WindowChrome", code: 3, userInfo: [NSLocalizedDescriptionKey: "\(name) was not hit in the title bar; the fixture no longer lands"])
+            }
+            let before = window.zooms
+            let handled = WindowTitlebarDoubleClick.handle(chromeEvent(window, point), in: window, preference: "Maximize")
+            try chromeExpect(handled == titleBarSpace && window.zooms - before == (titleBarSpace ? 1 : 0),
+                             "\(name) in the title bar was \(handled ? "treated as title-bar space" : "given its own click"), expected the other")
+        }
+    }
+}

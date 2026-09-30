@@ -69,8 +69,9 @@ public enum WindowTitlebarDoubleClick {
             // window. macOS 27 keeps an empty title's label, 10 points wide,
             // in the middle of the bar; counted as a control it left that
             // spot to AppKit (Prax 1f609d36). A field that edits or selects
-            // text still keeps its clicks.
-            if let field = view as? NSTextField, !field.isEditable, !field.isSelectable {
+            // text, or a label that acts on a click, keeps its clicks.
+            if let field = view as? NSTextField, !field.isEditable, !field.isSelectable,
+               field.action == nil, field.gestureRecognizers.isEmpty {
                 hit = view.superview
                 continue
             }

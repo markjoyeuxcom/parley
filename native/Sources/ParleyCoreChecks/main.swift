@@ -10063,6 +10063,7 @@ let checks: [(String, () throws -> Void)] = [
     ("window chrome toolbar drag and double-click", checkWindowToolbarDragArea),
     ("window chrome full title-bar double-click", checkWindowTitlebarDoubleClick),
     ("window chrome respects title-bar double-click preferences", checkWindowTitlebarPreferences),
+    ("window chrome treats a title-bar label as title bar and keeps fields' clicks", checkTitlebarLabelsAndFields),
     ("menu-safe periodic refresh", checkMenuTrackingRefreshPolicy),
     ("Pane actions workspace submenu remains stable during live updates", { try checkPaneActionsMenuTracking() }),
     ("Pane actions workspace sidebar submenu remains stable during live updates", { try checkPaneActionsMenuTracking(contextual: true) }),
