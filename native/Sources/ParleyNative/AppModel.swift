@@ -3926,8 +3926,9 @@ final class AppModel: ObservableObject {
                 if let active = refreshedPanes.first(where: \.isActive) {
                     selectedPaneIDs[active.workspaceID] = active.id
                 }
-                // The registry keeps records for workspaces a stopped server
-                // no longer lists; a write failure must not break refresh.
+                // Every live workspace, never a subset: the registry makes room
+                // for a new workspace by dropping records whose workspace is
+                // absent from this list. A write failure must not break refresh.
                 _ = try? workspaceRegistry.synchronize(
                     workspaces: refreshedWorkspaces,
                     selectedPaneIDs: selectedPaneIDs
@@ -8119,6 +8120,13 @@ final class AppModel: ObservableObject {
                 layout,
                 replacing: workspace?.id
             )
+            // The replaced workspace is gone, as after a close: its record
+            // goes too, rather than staying until the registry fills.
+            if let replaced = workspace {
+                try? workspaceRegistry.remove(workspaceID: replaced.workspaceID)
+                nativeLayouts.removeValue(forKey: replaced.workspaceID)
+                nativeSplitFractions.removeValue(forKey: replaced.workspaceID)
+            }
             recordRestoredNativeLayout(layout.root, workspace: restored)
             try recordSuccessfulActivity(RelayActivityEventRequest(
                 kind: .workspaceRestored,

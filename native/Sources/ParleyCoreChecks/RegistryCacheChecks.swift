@@ -109,3 +109,79 @@ func registryInterleavedWriteChecks() throws {
     for _ in 0..<3 { _ = try store.profiles() }
     try cacheExpect(store.fileReads == profileReads, "unchanged profile reads after the replacement were decoded again")
 }
+
+/// The registry keeps a record while its workspace is absent, and it held at
+/// most 200: a saved layout replacing a workspace never removed the old
+/// record, so they built up, and past 200 every new workspace silently lost
+/// its saved layout (the callers use try?). A full registry now makes room
+/// from the absent workspace unused longest, and refuses only when every
+/// record belongs to a live workspace (Prax a444e68e, 30 September 2026).
+func registryMakesRoomFromAbsentWorkspaces() throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("parley-registry-room-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: folder) }
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let registry = WorkspaceRegistry(file: folder.appendingPathComponent("workspace-registry.json"))
+    func workspace(_ id: String) -> WorkbenchWorkspace { WorkbenchWorkspace(id: id, name: id, isActive: false, workspaceID: id) }
+    func fail(_ message: String) -> NSError { NSError(domain: "WorkspaceRegistry", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+
+    // Fill it: 200 workspaces. Every one is then used again except w57, so
+    // w57 is the absent workspace unused longest and must be the one to go;
+    // records made together share their creation time, so a check that only
+    // counted could not tell the oldest from any other (Agy's review of MR
+    // !129).
+    let all = (0..<200).map { workspace("w\($0)") }
+    try registry.synchronize(workspaces: all)
+    for index in 0..<200 where index != 57 { _ = try registry.updateSelectedPane(workspaceID: "w\(index)", paneID: "p\(index)") }
+
+    // Only the first ten are still live; a new one needs a record.
+    try registry.synchronize(workspaces: Array(all.prefix(10)) + [workspace("new")])
+    var ids = Set(try registry.records().map(\.workspaceID))
+    guard ids.contains("new"), ids.count == 200 else { throw fail("a full registry did not make room for a new workspace: \(ids.count) records") }
+    guard (0..<10).allSatisfy({ ids.contains("w\($0)") }) else { throw fail("making room evicted a live workspace") }
+    guard !ids.contains("w57") else { throw fail("making room did not drop the absent workspace unused longest") }
+
+    // Every record live: a further new workspace is refused, and says so.
+    let live = try registry.records().map { workspace($0.workspaceID) }
+    do {
+        try registry.synchronize(workspaces: live + [workspace("one-too-many")])
+        throw fail("a registry of 200 live workspaces took another")
+    } catch let error as WorkspaceRegistryError {
+        guard case .invalid = error else { throw fail("unexpected refusal: \(error)") }
+    }
+    ids = Set(try registry.records().map(\.workspaceID))
+    guard !ids.contains("one-too-many"), ids.count == 200 else { throw fail("a refused synchronize changed the registry") }
+
+    // A record written before `updatedAt` existed reads as distantPast, the
+    // oldest there is: it goes before any record with a time.
+    let legacyFolder = folder.appendingPathComponent("legacy", isDirectory: true)
+    try FileManager.default.createDirectory(at: legacyFolder, withIntermediateDirectories: true)
+    let legacyFile = legacyFolder.appendingPathComponent("workspace-registry.json")
+    try WorkspaceRegistry(file: legacyFile).synchronize(workspaces: all)
+    var document = try JSONSerialization.jsonObject(with: Data(contentsOf: legacyFile)) as! [String: Any]
+    document["records"] = (document["records"] as! [[String: Any]]).map { record in
+        var record = record
+        if record["workspaceID"] as? String == "w123" { record.removeValue(forKey: "updatedAt") }
+        return record
+    }
+    try OwnerOnlyFile.write(try JSONSerialization.data(withJSONObject: document), to: legacyFile)
+    let legacy = WorkspaceRegistry(file: legacyFile)
+    try legacy.synchronize(workspaces: [workspace("newer")])
+    let legacyIDs = Set(try legacy.records().map(\.workspaceID))
+    guard legacyIDs.contains("newer"), !legacyIDs.contains("w123") else { throw fail("a record with no time was not the first to go") }
+
+    // A saved layout replacing a workspace removes the replaced record and its
+    // in-memory layout and divider positions, as a close does. Read with
+    // comments removed, so a comment naming a call cannot stand in for it.
+    let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+    let model = SwiftSourceReader(try String(contentsOf: sources.appendingPathComponent("ParleyNative/AppModel.swift"), encoding: .utf8)).text
+    guard let replace = model.range(of: "replacing: workspace?.id"),
+          let next = model.range(of: "try refresh()", range: replace.upperBound..<model.endIndex) else {
+        throw fail("the saved-layout replace path was not found")
+    }
+    let replacePath = model[replace.upperBound..<next.lowerBound]
+    for call in ["workspaceRegistry.remove(workspaceID: replaced.workspaceID)",
+                 "nativeLayouts.removeValue(forKey: replaced.workspaceID)",
+                 "nativeSplitFractions.removeValue(forKey: replaced.workspaceID)"] where !replacePath.contains(call) {
+        throw fail("replacing a workspace with a saved layout does not run \(call)")
+    }
+}

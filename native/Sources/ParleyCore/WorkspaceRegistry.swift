@@ -159,8 +159,13 @@ public final class WorkspaceRegistry {
     }
 
     /// Upserts every workspace that carries a durable identity; live-window-id
-    /// fallbacks are ignored rather than poisoning the registry. Records whose
-    /// workspace is absent are kept. Returns true when the file changed.
+    /// fallbacks are ignored rather than poisoning the registry. `workspaces`
+    /// is every live workspace. Records whose workspace is absent are kept
+    /// until a new workspace needs the room: then the absent one unused
+    /// longest goes, and only a registry whose every record is live refuses
+    /// (a saved layout replacing a workspace used to leave its record, so
+    /// they built up until new workspaces silently lost their layouts).
+    /// Returns true when the file changed.
     @discardableResult
     public func synchronize(
         workspaces: [WorkbenchWorkspace],
@@ -169,6 +174,7 @@ public final class WorkspaceRegistry {
         try lock.withLock {
             var document = try readDocument()
             var changed = false
+            let live = Set(workspaces.map(\.workspaceID))
             for workspace in workspaces where isDurable(workspace.workspaceID) {
                 let selected = selectedPaneIDs[workspace.workspaceID]
                 if let index = document.records.firstIndex(where: {
@@ -186,10 +192,15 @@ public final class WorkspaceRegistry {
                         changed = true
                     }
                 } else {
-                    guard document.records.count < Self.maximumRecords else {
-                        throw WorkspaceRegistryError.invalid(
-                            "at most \(Self.maximumRecords) workspaces may be recorded"
-                        )
+                    if document.records.count >= Self.maximumRecords {
+                        guard let absent = document.records.indices
+                            .filter({ !live.contains(document.records[$0].workspaceID) })
+                            .min(by: { document.records[$0].updatedAt < document.records[$1].updatedAt }) else {
+                            throw WorkspaceRegistryError.invalid(
+                                "at most \(Self.maximumRecords) workspaces may be recorded"
+                            )
+                        }
+                        document.records.remove(at: absent)
                     }
                     document.records.append(WorkspaceRegistryRecord(
                         workspaceID: workspace.workspaceID,
