@@ -8,10 +8,15 @@ private func pollExpect(_ condition: @autoclosure () throws -> Bool, _ message: 
 /// Waits for the transport's quiet streak to back the timer off. The streak
 /// is counted in ticks, and a loaded CI runner delivers utility-priority
 /// timer ticks late, so a check waits for the state rather than a fixed time.
+/// A failure names what happened during this wait, not since the transport
+/// started: earlier requests' ticks would otherwise hide a quiet window.
 private func waitUntilIdle(_ transport: RelayFileTransport, timeout: TimeInterval = 8) throws {
     let deadline = Date().addingTimeInterval(timeout)
+    let ticks = transport.tickCount, active = transport.activeTickCount
+    let saturated = transport.saturatedTickCount, pending = transport.pendingTickCount
+    let wakes = transport.watcherWakeCount
     while transport.currentPollInterval != TransportPollSchedule.idleInterval {
-        try pollExpect(Date() < deadline, "the transport did not back off within \(timeout) s (interval \(transport.currentPollInterval), ticks \(transport.tickCount))")
+        try pollExpect(Date() < deadline, "the transport did not back off within \(timeout) s (interval \(transport.currentPollInterval); during the wait: ticks \(transport.tickCount - ticks), active \(transport.activeTickCount - active) of which saturated \(transport.saturatedTickCount - saturated), pending \(transport.pendingTickCount - pending), watcher wakes \(transport.watcherWakeCount - wakes))")
         Thread.sleep(forTimeInterval: 0.05)
     }
 }
@@ -161,6 +166,9 @@ let idlePollingChecks: [(String, () throws -> Void)] = [
             idle.append(try directRequest())
         }
         try pollExpect(transport.watcherWakeCount >= wakesBefore + 5, "the inbox watcher did not wake the transport for each idle request (\(transport.watcherWakeCount - wakesBefore) wakes)")
+        // The diagnostic counters are wired: each claimed request made a tick active.
+        try pollExpect(transport.activeTickCount >= 5, "the transport counted \(transport.activeTickCount) active ticks for five claimed requests")
+        try pollExpect(transport.saturatedTickCount == 0, "the transport counted \(transport.saturatedTickCount) saturated ticks for five requests one at a time")
         var active: [Double] = []
         for _ in 0..<5 { active.append(try directRequest()) }
         let idleMedian = idle.sorted()[2], activeMedian = active.sorted()[2]
