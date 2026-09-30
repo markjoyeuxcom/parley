@@ -9,7 +9,7 @@ container panes now cover all four vendors, a reviewed container-only bypass
 exists, and one image can carry every vendor. Current guidance (building and
 using images, signing in, known limits) is in
 [container-images.md](container-images.md), and the acceptance steps are in
-[test-scenarios.md](test-scenarios.md), P1.3.
+[test-scenarios.md, P1.3](test-scenarios.md#p13-container-pane-acceptance).
 
 ## Environment
 

@@ -71,7 +71,7 @@ expect "$work/claude" 256 "$sum"
 place "$work/claude" claude
 printf 'claude %s\n' "$version"
 
-# Codex and its code-mode helper, which Codex runs beside itself.
+# Codex, and its code-mode helper for Codex's optional code_mode_host feature.
 github_asset openai/codex codex-aarch64-unknown-linux-musl.tar.gz "$work/codex.tar.gz"
 unpack_single "$work/codex.tar.gz" codex
 github_asset openai/codex codex-code-mode-host-aarch64-unknown-linux-musl.tar.gz "$work/host.tar.gz"

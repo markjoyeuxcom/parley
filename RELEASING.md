@@ -240,6 +240,6 @@ vendor versions from inside that image (`docs/parley-agents-fetch.sh` prints
 the versions it fetched for the one-image recipe in
 `docs/container-images.md`). Run the three explicit Docker checks against
 that image (bypass, transport and Ghostty; the commands are in AGENTS.md and
-the image guide), then the person-supervised steps in `docs/test-scenarios.md`,
-P1.3. Do not mount host credentials or replace subscription login with API
+the image guide), then the person-supervised steps in
+[docs/test-scenarios.md, P1.3](docs/test-scenarios.md#p13-container-pane-acceptance). Do not mount host credentials or replace subscription login with API
 keys, and never claim that an original vendor process survived a relaunch.

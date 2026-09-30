@@ -689,8 +689,8 @@ unmounted. Objects, refs, hooks and configuration remain shared.
 Changes to shared hooks or executable Git configuration can cause commands to run on your Mac, outside the container, during later host Git operations. Parley does not review those changes again. The Docker socket and host vendor login are
 not mounted. Sign in inside the container
 ([Signing in](docs/container-images.md#signing-in)); the pane's private named
-volume keeps vendor login, configuration and saved conversations, across
-restarts and a change of image. Codex's separately selected legacy Landlock
+volume keeps vendor login, configuration and saved conversations across pane
+restarts and a change of image (a Parley relaunch is not yet checked). Codex's separately selected legacy Landlock
 mode is a temporary test option for compatible images when the default
 Bubblewrap sandbox is unavailable. Codex has deprecated it and plans to remove
 it; vendor permission prompts remain active. Submodules and arbitrary additional

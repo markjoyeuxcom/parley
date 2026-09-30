@@ -86,7 +86,7 @@ Current guidance (the image contract, one image for every vendor, using and
 changing an image, signing in, reaching a service on the Mac, known limits) is
 in [docs/container-images.md](docs/container-images.md); the first OrbStack
 spike is recorded in [docs/container-pane-spike.md](docs/container-pane-spike.md),
-and the acceptance steps are in [docs/test-scenarios.md](docs/test-scenarios.md), P1.3.
+and the acceptance steps are in [docs/test-scenarios.md, P1.3](docs/test-scenarios.md#p13-container-pane-acceptance).
 
 Mark's release decision on 9 September: this is a greenfield project; ship the
 reviewed implementation with its tested configuration and known limitations.

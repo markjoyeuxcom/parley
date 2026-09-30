@@ -58,11 +58,10 @@ handoffs work. Agy reports hook state as Unknown by design.
 1. Start one container pane per vendor: Claude, Codex, Agy and Copilot
    (Runs › In a container in each review; `parley-agents:local` carries all
    four, see `docs/container-images.md`).
-2. Sign each in. Claude: paste-code flow. Codex: either device code (no
-   port) or, with **Published port** set to 1455 in the container review,
-   browser sign-in — the callback must complete on the Mac. Agy: choose
-   Google OAuth, open the printed address on the Mac and paste the code
-   back. Copilot: confirm folder trust first, then its device-code flow.
+2. Sign each in, by the vendor's flow in `docs/container-images.md`
+   ([Signing in](container-images.md#signing-in)). For Codex, try both device
+   code and browser sign-in with **Published port** set to 1455; the
+   callback must complete on the Mac.
    **Fail:** the vendor cannot write its home (Agy: "mkdir
    /home/parley/.gemini: permission denied"; Copilot: "EACCES … .cache"),
    which every image with a `/home/parley` directory did before 14

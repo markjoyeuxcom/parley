@@ -94,7 +94,8 @@ the vendor. Each pane still runs in a container of its own, with its own home
 volume, sign-in and pane credential; only the image is shared.
 
 `docs/parley-agents-fetch.sh` fetches the Linux arm64 builds of Claude Code,
-Codex (with the code-mode helper it runs beside itself), Agy and Copilot, and
+Codex (with its optional code-mode helper, for Codex's `code_mode_host`
+feature), Agy and Copilot, and
 checks each against the checksum its publisher states: Claude's release
 manifest, GitHub's recorded digest for Codex and Copilot, and Agy's manifest.
 It also copies the Prax app's payload (see [Reaching a service on your
@@ -236,14 +237,19 @@ printf "PROBE OK\n"'
 
 Exit 78 means the image does not meet the contract. Parley's own review runs
 this and then starts the vendor executable, so an image passing here can still
-be refused if the vendor binary itself will not start.
+be refused if the vendor binary itself will not start. The vendor start is
+`--version`, except for Codex without bypass, where it is
+`codex sandbox -- /bin/true`, which also shows whether Codex's sandbox works
+there. With bypass selected, each vendor starts with its bypass flag.
 
 ## Using an image for a pane
 
 - **A new pane.** Choose **Pane › New Agent Pane…** (or the toolbar's Pane
   menu › Agent), pick the vendor, set **Runs** to **In a container**, type the
   image name (for example `parley-agents:local`), decide on **Bypass vendor
-  permissions**, then press **Check Image and Daemon** and Start. The check
+  permissions** (the flags it passes and what it opens are in the
+  [README](../README.md#container-panes-experimental)), then press **Check
+  Image and Daemon** and Start. The check
   runs the probe and pins the image's ID for that launch.
 - **Each start is checked.** A start, restart or resume review fills in the
   pane's image name and asks for the check again, and Start waits for it. The
@@ -286,7 +292,7 @@ again. Command-click opens a printed address in your Mac's browser.
   which needs no port. Not yet signed in from a container.
 
 Whether login survives quitting and relaunching Parley is still a human check
-(`docs/test-scenarios.md`, P1.3).
+([test-scenarios.md, P1.3](test-scenarios.md#p13-container-pane-acceptance)).
 
 ## Reaching a service on your Mac
 
@@ -403,7 +409,9 @@ whether a harvest hook there reaches Prax, was not checked.
   establishes none of them. What has been observed is under
   [Signing in](#signing-in).
 - Agy's own `--sandbox` inside an unprivileged container is untested, as
-  Codex's default sandbox was; if it cannot start, the launch fails visibly
-  and Bypass vendor permissions is the container-only alternative.
+  Codex's default sandbox was, and **Check Image and Daemon** cannot show it:
+  the check runs `agy --version`, while a pane without bypass starts Agy with
+  `--sandbox`. If it cannot start, the launch fails visibly and Bypass vendor
+  permissions is the container-only alternative.
 - Parley does not build, pull, update or recommend images, and nothing here is
   a supported base. You own the image and what is in it.
