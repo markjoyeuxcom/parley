@@ -86,6 +86,43 @@ so `/usr/bin/stat` does not exist either way. Adding the symlink fixes it, and
 `stat` is the only path Alpine is missing — `/usr/bin/id`, `/usr/bin/printf`
 and `/usr/bin/tr` are already there.
 
+## Every vendor in one image
+
+One image can carry all four vendors, and this is the simplest way to run
+container panes: build it once, then choose it for any agent pane, whatever
+the vendor. Each pane still runs in a container of its own, with its own home
+volume, sign-in and pane credential; only the image is shared.
+
+`docs/parley-agents-fetch.sh` fetches the Linux arm64 builds of Claude Code,
+Codex (with the code-mode helper it runs beside itself), Agy and Copilot, and
+checks each against the checksum its publisher states: Claude's release
+manifest, GitHub's recorded digest for Codex and Copilot, and Agy's manifest.
+It also copies the Prax app's payload (see [Reaching a service on your
+Mac](#reaching-a-service-on-your-mac)). Nothing is pinned: it takes Claude's
+stable release and the latest of the others, and prints what it fetched.
+
+```bash
+sh docs/parley-agents-fetch.sh ~/parley-agents
+docker build -t parley-agents:local -f docs/parley-agents.Dockerfile ~/parley-agents
+```
+
+`docs/parley-agents.Dockerfile` puts the four executables at the paths Parley
+expects on `node:22-slim`, which passes the probe unmodified and supplies the
+Node that Prax's CLI needs. Rebuild when a vendor or Prax updates.
+
+On 30 September 2026 this built a 1.9 GB image with Claude Code 2.1.285, Codex
+0.159.2, Agy 1.2.14, Copilot 1.0.90 and Prax 0.39.0. It passed the probe
+below; every vendor printed its version with and without its bypass flag as
+an arbitrary uid with no capabilities and no network; and Parley's three
+Docker checks passed against it, from the repository:
+
+```bash
+for check in bypass transport ghostty; do
+  node scripts/run-native-swift.mjs run --package-path native \
+    parley-native-checks --container-$check-spike parley-agents:local
+done
+```
+
 ## Example: Debian base
 
 Fetch the vendor's Linux build for your architecture rather than pinning a
@@ -148,8 +185,8 @@ COPY --chmod=0755 copilot /usr/local/bin/copilot
 RUN mkdir -p /home/parley
 ```
 
-The exact file that built the verified four-vendor test image is
-`docs/parley-agents.Dockerfile`.
+To carry both, and Claude Code and Codex too, see [Every vendor in one
+image](#every-vendor-in-one-image).
 
 Two things Parley learned building this on 14 September 2026:
 
@@ -233,19 +270,19 @@ equivalent): its home is the pane's volume, which the image cannot pre-fill.
 Put guidance for the tool in the project's own `AGENTS.md`, or in the vendor's
 global rules from inside the pane, where the volume keeps it.
 
-### Example: Agy with the Prax CLI
+### Example: the Prax CLI
 
-`docs/parley-agy-prax.Dockerfile` is the exact file that built a working image
-on 30 September 2026: Agy plus the CLI of Prax, a memory app that listens on
-the Mac's loopback. What it took:
+`docs/parley-agents.Dockerfile` ([Every vendor in one
+image](#every-vendor-in-one-image)) carries the CLI of Prax, a memory app that
+listens on the Mac's loopback. What it took:
 
 - **The CLI on Linux.** The Mac's `prax` command runs the app's macOS binary,
   which cannot run here, but the CLI itself is plain Node. The image is based
-  on `node:22-slim`, which passes the probe unmodified, and carries a copy of
-  the app's `Contents/Resources/resources/app` folder. Prax's own installer
-  writes the `prax` shim at build time with `--cli`, into `/usr/local/bin`,
-  which is on the `PATH` Parley gives a pane; the shim names
-  `/usr/local/bin/node`, because Parley replaces `PATH`.
+  on `node:22-slim` and carries a copy of the app's
+  `Contents/Resources/resources/app` folder. Prax's own installer writes the
+  `prax` shim at build time with `--cli`, into `/usr/local/bin`, which is on
+  the `PATH` Parley gives a pane; the shim names `/usr/local/bin/node`,
+  because Parley replaces `PATH`.
 - **The address.** `PRAX_API_URL=http://host.docker.internal:49636` is part
   of the image. 49636 is the port the app chose on first launch and saved in
   `~/Library/Application Support/com.moomora.prax/webview-port`; use yours.
@@ -257,8 +294,9 @@ the Mac's loopback. What it took:
 - **Instructions, skills and hooks.** On the Mac, Prax's installer
   (`install.sh --instructions --cli --hooks`) writes all three under `HOME`.
   In a pane that is the volume, which the image cannot fill, so run it inside
-  the pane once, after the pane has started; the volume keeps the result.
-  Find the pane's container by its label and run the installer there:
+  each pane once, after the pane has started; the volume keeps the result,
+  and a new pane has a new volume. Find the pane's container by its label and
+  run the installer there:
 
   ```bash
   docker ps --filter label=com.parley.pane \
@@ -273,29 +311,35 @@ the Mac's loopback. What it took:
   installer at the build's shim, so the instructions teach `prax …`. Without
   it the installer looks in `~/.local/bin`, which is not on Parley's `PATH`,
   and teaches the skill scripts' full paths instead. It recognises only a
-  shim it wrote itself, so an image built from an earlier version of this
-  file, whose shim was written by hand, gets the full paths too: rebuild it
-  first. Restart the pane afterwards so the vendor reads its new
-  instructions. Agy takes `~/.gemini/GEMINI.md` as its global rules: on the
-  Mac, Agy reported the Prax section from that file as its global user rule
-  (30 September 2026).
+  shim it wrote itself, so an image whose shim was written by hand (the
+  Agy-only recipe this file replaced on 30 September 2026) gets the full
+  paths too: rebuild it first. Restart the pane afterwards so the vendor
+  reads its new instructions.
+
+  The instructions go where each vendor reads its global rules:
+  `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` and `~/.gemini/GEMINI.md` (on
+  the Mac, Agy reported the Prax section from that file as its global user
+  rule, 30 September 2026). Copilot reads `~/.copilot/instructions` only when
+  `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` names it, and in a container that
+  variable names only Parley's protocol folder, so a Copilot pane does not get
+  them this way.
+
   `--hooks` writes the harvest hook for Claude Code, Codex and Copilot, and
   the instructions then teach `Remember:` proposals, which only those hooks
-  collect. The installer has no hook for Agy, on the Mac or here, so no hook
-  collects the `Remember:` lines Agy writes in either place, and in this
-  Agy-only image the hook files wait for a vendor the image does not carry.
-  Copilot reads `~/.copilot/instructions` only when
-  `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` names it, and in a container that
-  variable names only Parley's protocol folder.
+  collect. Codex runs a new hook only after you trust it with `/hooks` inside
+  the pane. The installer has no hook for Agy, on the Mac or here, so no hook
+  collects the `Remember:` lines Agy writes in either place.
 
-Checked by running the probe above, then `agy --version`, `prax doctor` and
-`prax task list --all-projects` as your uid with every capability dropped, no
-new privileges, Parley's `PATH` and an empty home. The installer step was
-checked on a volume chowned as Parley's initializer does it, in a container
-created with the pane's flags: the instructions taught `prax`, `prax recall`
-ran from inside, and a new container on the same volume found everything in
-place. Whether a signed-in Agy in a container takes up those instructions
-was not checked.
+Checked by running `prax doctor`, `prax task list --all-projects` and `prax
+recall` as your uid with every capability dropped, no new privileges,
+Parley's `PATH` and an empty home: each reached the app (`prax doctor` exits 2
+for warnings about the library itself, as it does on the Mac), and a request
+with another `Host` name got 403. The installer step was checked on a volume chowned as Parley's
+initializer does it, in a container created with the pane's flags: it wrote
+all four instruction files teaching `prax`, the three hooks named the image's
+Node, and a new container on the same volume found everything in place.
+Whether a signed-in vendor in a container takes up those instructions, and
+whether a harvest hook there reaches Prax, was not checked.
 
 ## Known limits
 
