@@ -280,7 +280,7 @@ func checkWorkspaceSidebarWiring() throws {
     let positions = headers.map { sectioned.range(of: $0)?.lowerBound }
     try sidebarExpect(!positions.contains(nil) && zip(positions, positions.dropFirst()).allSatisfy { $0! < $1! },
                       "the sidebar sections are missing or out of order")
-    try sidebarExpect(sectioned.contains("model.workspaceSidebarSections") && sectioned.contains("movePinnedWorkspaces"),
+    try sidebarExpect(sectioned.contains("model.workspaceSidebarSections") && sectioned.contains("moveWorkspaces(inSubset: sections.pinned"),
                       "the sidebar does not draw the derived sections")
     try sidebarExpect(try body(view, "private func workspaceMenuItems(").contains("Pin to Sidebar"), "workspaces cannot be pinned")
     // Mark Seen must be reachable for a failure, which has no result text.

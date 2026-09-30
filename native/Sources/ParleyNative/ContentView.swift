@@ -305,7 +305,7 @@ struct ContentView: View {
                 ForEach(sections.pinned.compactMap { byID[$0] }) { workspace in
                     workspaceShortcutRow(workspace, trailing: nil)
                 }
-                .onMove { model.movePinnedWorkspaces(fromOffsets: $0, toOffset: $1) }
+                .onMove { model.moveWorkspaces(inSubset: sections.pinned, fromOffsets: $0, toOffset: $1) }
             } header: {
                 sidebarSectionHeader("PINNED")
             }
@@ -323,10 +323,45 @@ struct ContentView: View {
         let allExpanded = allWorkspacesExpandedChoice ?? sections.allExpandedByDefault
         Section {
             if allExpanded {
-                ForEach(model.workspaces) { workspace in
-                    workspaceSidebarRow(workspace)
+                if sections.groups.isEmpty {
+                    ForEach(model.workspaces) { workspace in
+                        workspaceSidebarRow(workspace)
+                    }
+                    .onMove { model.moveWorkspaces(fromOffsets: $0, toOffset: $1) }
+                } else {
+                    // The person's groups in their order, then Ungrouped. A drag
+                    // reorders within one group; Move to Group moves between them.
+                    ForEach(sections.groups) { group in
+                        workspaceGroupHeaderRow(group)
+                        if !group.isCollapsed {
+                            ForEach(group.workspaces.compactMap { byID[$0] }) { workspace in
+                                workspaceSidebarRow(workspace)
+                            }
+                            .onMove { model.moveWorkspaces(inSubset: group.workspaces, fromOffsets: $0, toOffset: $1) }
+                        }
+                    }
+                    if !sections.ungrouped.isEmpty {
+                        HStack(spacing: 6) {
+                            Text("Ungrouped")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text("\(sections.ungrouped.count)")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced).monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.leading, 23)
+                        .padding(.trailing, 7)
+                        .frame(minHeight: 22)
+                        .accessibilityElement(children: .combine)
+                        .listRowInsets(EdgeInsets(top: 1, leading: 5, bottom: 1, trailing: 5))
+                        .listRowBackground(Color.clear)
+                        ForEach(sections.ungrouped.compactMap { byID[$0] }) { workspace in
+                            workspaceSidebarRow(workspace)
+                        }
+                        .onMove { model.moveWorkspaces(inSubset: sections.ungrouped, fromOffsets: $0, toOffset: $1) }
+                    }
                 }
-                .onMove { model.moveWorkspaces(fromOffsets: $0, toOffset: $1) }
             }
         } header: {
             HStack(spacing: 6) {
@@ -342,6 +377,48 @@ struct ContentView: View {
                 workspaceActionsMenu
             }
         }
+    }
+
+    /// A group in All Workspaces: click to show or hide its workspaces.
+    private func workspaceGroupHeaderRow(_ group: WorkspaceSidebarSections.Group) -> some View {
+        Button {
+            model.setCollapsed(!group.isCollapsed, for: group)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: group.isCollapsed ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 12)
+                Text(group.name)
+                    .font(.system(size: 11, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("\(group.workspaces.count)")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 7)
+            .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Group \(group.name)")
+        .accessibilityValue("\(group.workspaces.count) workspace\(group.workspaces.count == 1 ? "" : "s"), \(group.isCollapsed ? "collapsed" : "expanded")")
+        .accessibilityHint(group.isCollapsed ? "Show its workspaces" : "Hide its workspaces")
+        .snapshotContextMenu(workspaceGroupMenuItems(group))
+        .listRowInsets(EdgeInsets(top: 1, leading: 5, bottom: 1, trailing: 5))
+        .listRowBackground(Color.clear)
+    }
+
+    private func workspaceGroupMenuItems(_ group: WorkspaceSidebarSections.Group) -> [ToolbarMenuItem] {
+        [
+            .action("Rename Group…") { model.renameWorkspaceGroup(group) },
+            .action("Move Group Up", isEnabled: model.canMoveWorkspaceGroup(group, by: -1)) { model.moveWorkspaceGroup(group, by: -1) },
+            .action("Move Group Down", isEnabled: model.canMoveWorkspaceGroup(group, by: 1)) { model.moveWorkspaceGroup(group, by: 1) },
+            .separator,
+            .action("Delete Group…", isDestructive: true) { model.deleteWorkspaceGroup(group) },
+        ]
     }
 
     /// While filtering, matches only: the workspaces, then this workspace's panes.
@@ -640,12 +717,13 @@ struct ContentView: View {
         .fixedSize()
         .accessibilityLabel("Create workspace")
         .help("Create workspace")
-        .accessibilityHint("Create a folderless workspace or create one from a saved layout")
+        .accessibilityHint("Create a folderless workspace, one from a saved layout, or a group")
     }
 
     @ViewBuilder
     private var workspaceCreationMenuItems: some View {
         Button("New Workspace", action: model.createWorkspace)
+        Button("New Group…") { model.newWorkspaceGroup(moving: nil) }
         if !model.savedLayouts.isEmpty {
             Menu("From Saved Layout") {
                 ForEach(model.savedLayouts) { layout in
@@ -661,6 +739,15 @@ struct ContentView: View {
         var items: [ToolbarMenuItem] = [
             .action("Rename…") { model.rename(workspace) },
             .action(workspace.pinned ? "Unpin from Sidebar" : "Pin to Sidebar") { model.setPinned(!workspace.pinned, for: workspace) },
+            .submenu("Move to Group", items: model.workspaceGroups.map { group in
+                .action(group.name, systemImage: workspace.groupID == group.id ? "checkmark" : nil) { model.move(workspace, toGroup: group.id) }
+            } + [
+                .action("Ungrouped", systemImage: model.workspaceGroups.contains(where: { $0.id == workspace.groupID }) ? nil : "checkmark") {
+                    model.move(workspace, toGroup: nil)
+                },
+                .separator,
+                .action("New Group…") { model.newWorkspaceGroup(moving: workspace) },
+            ]),
             .action("Save Layout…") { model.saveLayout(of: workspace) },
         ]
         if !model.savedLayouts.isEmpty {

@@ -102,8 +102,79 @@ public struct WorkspaceActivityCache: Sendable {
     }
 }
 
+/// One of the person's named groups in All Workspaces (Mark's decision, 30
+/// September 2026). Native presentation metadata in the workbench document:
+/// it never reaches an agent, grants nothing and closes nothing.
+public struct WorkspaceGroup: Identifiable, Equatable, Codable, Sendable {
+    public static let maximumNameLength = 64
+
+    public var id: String
+    public var name: String
+    /// Whether the sidebar shows the group's workspaces; kept with the group
+    /// so a person with many workspaces finds them as they left them.
+    public var isCollapsed: Bool
+
+    public init(id: String, name: String, isCollapsed: Bool = false) {
+        self.id = id
+        self.name = name
+        self.isCollapsed = isCollapsed
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, isCollapsed }
+
+    /// A record without its collapsed state reads as expanded: the document
+    /// decodes whole, so one strict field would stop the workbench loading.
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        isCollapsed = try values.decodeIfPresent(Bool.self, forKey: .isCollapsed) ?? false
+    }
+
+    /// The trimmed name, or why it cannot be used: empty, longer than 64
+    /// characters, not one line of text, the sidebar's own "Ungrouped", or
+    /// already another group's name (ignoring case), since two of one name
+    /// could not be told apart. Only true control characters are refused;
+    /// format characters such as an emoji joiner or a direction mark are text.
+    public static func validatedName(_ proposed: String, among groups: [WorkspaceGroup], excluding groupID: String? = nil) -> Result<String, WorkspaceGroupNameError> {
+        let name = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return .failure(.empty) }
+        guard name.count <= maximumNameLength else { return .failure(.tooLong) }
+        guard !name.unicodeScalars.contains(where: { $0.properties.generalCategory == .control || CharacterSet.newlines.contains($0) }) else {
+            return .failure(.notOneLine)
+        }
+        guard name.caseInsensitiveCompare("Ungrouped") != .orderedSame else { return .failure(.reserved) }
+        guard !groups.contains(where: { $0.id != groupID && $0.name.caseInsensitiveCompare(name) == .orderedSame }) else {
+            return .failure(.duplicate(name))
+        }
+        return .success(name)
+    }
+}
+
+public enum WorkspaceGroupNameError: Error, Equatable, LocalizedError {
+    case empty, tooLong, notOneLine, reserved
+    case duplicate(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .empty: "A group needs a name."
+        case .tooLong: "A group name can be at most \(WorkspaceGroup.maximumNameLength) characters."
+        case .notOneLine: "A group name must be one line of text."
+        case .reserved: "Ungrouped is the sidebar's own name for workspaces in no group."
+        case let .duplicate(name): "There is already a group named \(name)."
+        }
+    }
+}
+
 /// Which workspaces each sidebar section lists, by `workspaceID`.
 public struct WorkspaceSidebarSections: Equatable, Sendable {
+    /// A group as All Workspaces shows it: its workspaces in the workspace order.
+    public struct Group: Identifiable, Equatable, Sendable {
+        public var id: String
+        public var name: String
+        public var isCollapsed: Bool
+        public var workspaces: [String]
+    }
     /// Recent lists at most this many.
     public static let recentLimit = 5
     /// Up to this many workspaces the whole list is short enough to open by
@@ -123,8 +194,14 @@ public struct WorkspaceSidebarSections: Equatable, Sendable {
     /// Every workspace in the person's order.
     public var all: [String]
     public var allExpandedByDefault: Bool
+    /// The person's groups in their order, empty ones included so they can be
+    /// deleted. Empty when there are no groups: All is then a plain list.
+    public var groups: [Group] = []
+    /// Workspaces in no group, or in one that no longer exists.
+    public var ungrouped: [String] = []
 
-    public static func derive(workspaces: [WorkbenchWorkspace], needsPerson: (String) -> Int) -> WorkspaceSidebarSections {
+    public static func derive(workspaces: [WorkbenchWorkspace], groups workspaceGroups: [WorkspaceGroup] = [],
+                              needsPerson: (String) -> Int) -> WorkspaceSidebarSections {
         let current = workspaces.first(where: \.isActive)?.workspaceID
         let order = Dictionary(workspaces.enumerated().map { ($1.workspaceID, $0) }, uniquingKeysWith: { first, _ in first })
         let attention = workspaces
@@ -143,31 +220,43 @@ public struct WorkspaceSidebarSections: Equatable, Sendable {
                 .prefix(recentLimit)
                 .map(\.workspaceID)
         }
+        let known = Set(workspaceGroups.map(\.id))
+        let members = Dictionary(grouping: workspaces.filter { $0.groupID.map(known.contains) ?? false }, by: { $0.groupID! })
         return WorkspaceSidebarSections(
             current: current,
             needsAttention: attention,
             pinned: workspaces.filter(\.pinned).map(\.workspaceID),
             recent: recent,
             all: workspaces.map(\.workspaceID),
-            allExpandedByDefault: compact
+            allExpandedByDefault: compact,
+            groups: workspaceGroups.map {
+                Group(id: $0.id, name: $0.name, isCollapsed: $0.isCollapsed, workspaces: (members[$0.id] ?? []).map(\.workspaceID))
+            },
+            ungrouped: workspaces.filter { !($0.groupID.map(known.contains) ?? false) }.map(\.workspaceID)
         )
     }
 
-    /// A drag within Pinned, as SwiftUI's `onMove` reports it (`destination`
-    /// is the position the item is dropped before), carried out on the whole
-    /// workspace order: the moved workspace goes just before the pinned one it
-    /// was dropped before, or just after the last pinned one. Returns the
-    /// `onMove` offsets for the whole list, or nil for no move.
+    /// A drag within Pinned, carried out on the whole workspace order.
     public static func pinnedMove(source: Int, destination: Int, pinned: [String], all: [String]) -> (source: Int, destination: Int)? {
-        guard pinned.indices.contains(source), (0...pinned.count).contains(destination),
+        subsetMove(source: source, destination: destination, subset: pinned, all: all)
+    }
+
+    /// A drag within a list that shows part of the workspace order (Pinned or
+    /// a group), as SwiftUI's `onMove` reports it (`destination` is the
+    /// position the item is dropped before), carried out on the whole order:
+    /// the moved workspace goes just before the one it was dropped before, or
+    /// just after the subset's last. Returns the `onMove` offsets for the
+    /// whole list, or nil for no move.
+    public static func subsetMove(source: Int, destination: Int, subset: [String], all: [String]) -> (source: Int, destination: Int)? {
+        guard subset.indices.contains(source), (0...subset.count).contains(destination),
               destination != source, destination != source + 1,
-              let from = all.firstIndex(of: pinned[source]) else { return nil }
+              let from = all.firstIndex(of: subset[source]) else { return nil }
         let to: Int
-        if destination == pinned.count {
-            guard let last = pinned.last, let lastIndex = all.firstIndex(of: last) else { return nil }
+        if destination == subset.count {
+            guard let last = subset.last, let lastIndex = all.firstIndex(of: last) else { return nil }
             to = lastIndex + 1
         } else {
-            guard let before = all.firstIndex(of: pinned[destination]) else { return nil }
+            guard let before = all.firstIndex(of: subset[destination]) else { return nil }
             to = before
         }
         return (from, to)

@@ -201,6 +201,8 @@ final class AppModel: ObservableObject {
         // The workspace activity index maps each workspace's ids.
         didSet { attentionInputGeneration &+= 1 }
     }
+    /// The person's workspace groups, in order (All Workspaces).
+    @Published private(set) var workspaceGroups: [WorkspaceGroup] = []
     @Published private(set) var commandRuns: [ReviewedCommandRun] = []
     @Published private(set) var commandRunGrants: [ReviewedCommandGrant] = []
     @Published private(set) var commandRunError: String?
@@ -713,6 +715,7 @@ final class AppModel: ObservableObject {
             reviewDraftBuilder = ReviewDraftBuilder(environment: controller.environment)
             contextPackBuilder = ContextPackBuilder(environment: controller.environment)
             workspaces = liveWorkspaces
+            workspaceGroups = try controller.listWorkspaceGroups()
             panes = livePanes
             ghosttyRegistry.bind(controller)
             ghosttyRegistry.select(paneID: livePanes.first(where: \.isActive)?.id)
@@ -3246,7 +3249,7 @@ final class AppModel: ObservableObject {
     /// The sidebar's sections, in the workspace order.
     var workspaceSidebarSections: WorkspaceSidebarSections {
         let index = workspaceActivityIndex
-        return WorkspaceSidebarSections.derive(workspaces: workspaces, needsPerson: { index.activity(for: $0).needsPerson })
+        return WorkspaceSidebarSections.derive(workspaces: workspaces, groups: workspaceGroups, needsPerson: { index.activity(for: $0).needsPerson })
     }
 
     func unreadResultCount(forWorkspace workspaceID: String) -> Int {
@@ -3871,6 +3874,8 @@ final class AppModel: ObservableObject {
                     saveWorkspaceContinuity()
                 }
                 if refreshedWorkspaces != workspaces { workspaces = refreshedWorkspaces }
+                let refreshedGroups = try controller.listWorkspaceGroups()
+                if refreshedGroups != workspaceGroups { workspaceGroups = refreshedGroups }
                 let refreshedPanes = try controller.listPanes()
                 if refreshedPanes != panes { panes = refreshedPanes }
                 ghosttyRegistry.retainOnly(paneIDs: Set(refreshedPanes.map(\.id)))
@@ -7563,18 +7568,117 @@ final class AppModel: ObservableObject {
         perform {
             guard let controller else { return }
             try controller.setWorkspacePinned(workspace.workspaceID, pinned: pinned)
-            try refresh()
+            try refresh(includingRelay: false)
         }
     }
 
-    /// A drag within the sidebar's Pinned section, carried out on the whole
-    /// workspace order.
-    func movePinnedWorkspaces(fromOffsets offsets: IndexSet, toOffset destination: Int) {
-        let sections = workspaceSidebarSections
+    /// A drag within a list that shows part of the workspace order (Pinned,
+    /// a group or Ungrouped), carried out on the whole order.
+    func moveWorkspaces(inSubset subset: [String], fromOffsets offsets: IndexSet, toOffset destination: Int) {
         guard offsets.count == 1, let source = offsets.first,
-              let move = WorkspaceSidebarSections.pinnedMove(source: source, destination: destination,
-                                                             pinned: sections.pinned, all: sections.all) else { return }
+              let move = WorkspaceSidebarSections.subsetMove(source: source, destination: destination,
+                                                             subset: subset, all: workspaces.map(\.workspaceID)) else { return }
         moveWorkspaces(fromOffsets: IndexSet(integer: move.source), toOffset: move.destination)
+    }
+
+    // Workspace groups. Each asks the controller, which saves or rolls back
+    // whole, then refreshes without the relay, which a group never changes;
+    // nothing here grants, starts or closes anything.
+
+    /// Asks for a group name and checks it here, so a name that cannot be
+    /// used asks again with the text kept and the reason shown.
+    private func promptForGroupName(title: String, informative: String, initial: String, button: String,
+                                    excluding groupID: String? = nil) -> String? {
+        var text = initial
+        var problem: String?
+        while true {
+            let alert = NSAlert()
+            alert.messageText = title
+            alert.informativeText = problem.map { "\($0)\n\n\(informative)" } ?? informative
+            let field = NSTextField(string: text)
+            field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
+            alert.accessoryView = field
+            alert.addButton(withTitle: button)
+            alert.addButton(withTitle: "Cancel")
+            alert.window.initialFirstResponder = field
+            guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+            text = field.stringValue
+            switch WorkspaceGroup.validatedName(text, among: workspaceGroups, excluding: groupID) {
+            case let .success(name): return name
+            case let .failure(error): problem = error.localizedDescription
+            }
+        }
+    }
+
+    /// Creates a group last, moving `workspace` into it when given.
+    func newWorkspaceGroup(moving workspace: WorkbenchWorkspace?) {
+        guard let name = promptForGroupName(
+            title: "New group",
+            informative: workspace.map { "\($0.name) moves into the new group. Groups only arrange the sidebar." }
+                ?? "Groups only arrange the sidebar; nothing is opened or closed.",
+            initial: "", button: "Create") else { return }
+        perform {
+            guard let controller else { return }
+            _ = try controller.createWorkspaceGroup(name: name, moving: workspace?.workspaceID)
+            try refresh(includingRelay: false)
+        }
+    }
+
+    func renameWorkspaceGroup(_ group: WorkspaceSidebarSections.Group) {
+        guard let name = promptForGroupName(title: "Rename group", informative: "Its workspaces stay in it.",
+                                            initial: group.name, button: "Rename", excluding: group.id) else { return }
+        perform {
+            guard let controller else { return }
+            try controller.renameWorkspaceGroup(group.id, name: name)
+            try refresh(includingRelay: false)
+        }
+    }
+
+    func deleteWorkspaceGroup(_ group: WorkspaceSidebarSections.Group) {
+        let alert = NSAlert()
+        alert.messageText = "Delete the group “\(group.name)”?"
+        alert.informativeText = group.workspaces.isEmpty
+            ? "The group is empty."
+            : "Its \(group.workspaces.count) workspace\(group.workspaces.count == 1 ? "" : "s") move\(group.workspaces.count == 1 ? "s" : "") to Ungrouped. No workspace or pane is closed."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Delete Group")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        perform {
+            guard let controller else { return }
+            try controller.deleteWorkspaceGroup(group.id)
+            try refresh(includingRelay: false)
+        }
+    }
+
+    /// Moves a workspace into a group, or to Ungrouped with nil.
+    func move(_ workspace: WorkbenchWorkspace, toGroup groupID: String?) {
+        perform {
+            guard let controller else { return }
+            try controller.setWorkspaceGroup(workspace.workspaceID, groupID: groupID)
+            try refresh(includingRelay: false)
+        }
+    }
+
+    func canMoveWorkspaceGroup(_ group: WorkspaceSidebarSections.Group, by offset: Int) -> Bool {
+        guard let index = workspaceGroups.firstIndex(where: { $0.id == group.id }) else { return false }
+        return workspaceGroups.indices.contains(index + offset)
+    }
+
+    func moveWorkspaceGroup(_ group: WorkspaceSidebarSections.Group, by offset: Int) {
+        perform {
+            guard let controller else { return }
+            try controller.moveWorkspaceGroup(group.id, by: offset)
+            try refresh(includingRelay: false)
+        }
+    }
+
+    func setCollapsed(_ collapsed: Bool, for group: WorkspaceSidebarSections.Group) {
+        perform {
+            guard let controller else { return }
+            try controller.setWorkspaceGroupCollapsed(group.id, collapsed: collapsed)
+            try refresh(includingRelay: false)
+        }
     }
 
     func moveWorkspaces(fromOffsets offsets: IndexSet, toOffset destination: Int) {
