@@ -109,3 +109,49 @@ func registryInterleavedWriteChecks() throws {
     for _ in 0..<3 { _ = try store.profiles() }
     try cacheExpect(store.fileReads == profileReads, "unchanged profile reads after the replacement were decoded again")
 }
+
+/// The registry keeps a record while its workspace is absent, and it held at
+/// most 200: a saved layout replacing a workspace never removed the old
+/// record, so they built up, and past 200 every new workspace silently lost
+/// its saved layout (the callers use try?). A full registry now makes room
+/// from the absent workspace unused longest, and refuses only when every
+/// record belongs to a live workspace (Prax a444e68e, 30 September 2026).
+func registryMakesRoomFromAbsentWorkspaces() throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("parley-registry-room-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: folder) }
+    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    let registry = WorkspaceRegistry(file: folder.appendingPathComponent("workspace-registry.json"))
+    func workspace(_ id: String) -> WorkbenchWorkspace { WorkbenchWorkspace(id: id, name: id, isActive: false, workspaceID: id) }
+    func fail(_ message: String) -> NSError { NSError(domain: "WorkspaceRegistry", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+
+    // Fill it: 200 workspaces, the first ten used most recently.
+    let all = (0..<200).map { workspace("w\($0)") }
+    try registry.synchronize(workspaces: all)
+    for index in 0..<10 { _ = try registry.updateSelectedPane(workspaceID: "w\(index)", paneID: "p\(index)") }
+
+    // Only the first ten are still live; a new one needs a record.
+    try registry.synchronize(workspaces: Array(all.prefix(10)) + [workspace("new")])
+    var ids = Set(try registry.records().map(\.workspaceID))
+    guard ids.contains("new"), ids.count == 200 else { throw fail("a full registry did not make room for a new workspace: \(ids.count) records") }
+    guard (0..<10).allSatisfy({ ids.contains("w\($0)") }) else { throw fail("making room evicted a live workspace") }
+
+    // Every record live: a further new workspace is refused, and says so.
+    let live = try registry.records().map { workspace($0.workspaceID) }
+    do {
+        try registry.synchronize(workspaces: live + [workspace("one-too-many")])
+        throw fail("a registry of 200 live workspaces took another")
+    } catch let error as WorkspaceRegistryError {
+        guard case .invalid = error else { throw fail("unexpected refusal: \(error)") }
+    }
+    ids = Set(try registry.records().map(\.workspaceID))
+    guard !ids.contains("one-too-many"), ids.count == 200 else { throw fail("a refused synchronize changed the registry") }
+
+    // A saved layout replacing a workspace removes the replaced record, as a close does.
+    let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+    let model = try String(contentsOf: sources.appendingPathComponent("ParleyNative/AppModel.swift"), encoding: .utf8)
+    guard let replace = model.range(of: "replacing: workspace?.id"),
+          let next = model.range(of: "try refresh()", range: replace.upperBound..<model.endIndex),
+          model[replace.upperBound..<next.lowerBound].contains("workspaceRegistry.remove(workspaceID:") else {
+        throw fail("replacing a workspace with a saved layout leaves the replaced workspace's registry record")
+    }
+}

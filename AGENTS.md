@@ -2061,7 +2061,18 @@ saved with; `createWorkspaceLocked` takes the policy as a required argument
 restore validates that every pane it replaces may end, builds and saves
 against a snapshot it puts back on any failure, and ends the replaced panes
 only after the new state is saved; its rollback puts back the recorded
-host launch permissions too. Closing a workspace checks every pane
+host launch permissions too.
+
+Each workspace's native split tree, split fractions and selected pane live in
+`workspace-registry.json` (`WorkspaceRegistry`, at most 200 records). A
+record outlives its workspace's absence from the workbench, and closing a
+workspace removes it. A saved layout replacing a workspace now removes the
+replaced record as well. Until 30 September 2026 it did not, so records built
+up, and once 200 were held every new workspace silently lost its layout,
+because the callers use `try?` (Prax a444e68e). `synchronize` is given every
+live workspace. When a new one needs a record in a full registry, it drops the
+absent workspace unused longest, and it refuses only when all 200 records are
+live. Closing a workspace checks every pane
 (`requireTerminableLocked`) before ending any, so a container not confirmed
 stopped refuses the close without ending its siblings, and then does the
 same: it saves the workspace's removal and ends the panes only once that is
