@@ -294,10 +294,31 @@ func checkWorkspaceSidebarWiring() throws {
                       "Mark Seen is offered only inside the result block, which a failure never reaches")
 }
 
+/// A plain-style button answers clicks only on its drawn pixels unless its
+/// label has a hit shape, so a 9-point chevron took several attempts to hit
+/// (Mark's report on v0.1.63, 30 September 2026). Every disclosure chevron in
+/// the sidebar gives its label a hit shape before the plain style is applied.
+func checkSidebarDisclosureHitTargets() throws {
+    let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+    let view = try String(contentsOf: sources.appendingPathComponent("ParleyNative/ContentView.swift"), encoding: .utf8)
+    var searchFrom = view.startIndex
+    var chevrons = 0
+    while let chevron = view.range(of: "\"chevron.", range: searchFrom..<view.endIndex) {
+        guard let style = view.range(of: ".buttonStyle(.plain)", range: chevron.upperBound..<view.endIndex) else { break }
+        let label = view[chevron.lowerBound..<style.lowerBound]
+        let line = view[..<chevron.lowerBound].components(separatedBy: "\n").count
+        try sidebarExpect(label.contains(".contentShape("), "the chevron button at ContentView.swift:\(line) has no hit shape")
+        chevrons += 1
+        searchFrom = style.upperBound
+    }
+    try sidebarExpect(chevrons >= 5, "found only \(chevrons) sidebar chevrons; the scan no longer matches the view")
+}
+
 @MainActor let workspaceSidebarChecks: [(String, () throws -> Void)] = [
     ("workspace sidebar sections at fifty workspaces", checkWorkspaceSidebarSectionsAtFiftyWorkspaces),
     ("workspace activity matches the per-workspace scans", checkWorkspaceActivityMatchesPerWorkspaceScans),
     ("workspace pins and recency persist and roll back", checkWorkspacePinsAndRecencyPersist),
     ("workspace sidebar draws the derived sections", checkWorkspaceSidebarWiring),
     ("needs attention clears when a failure is seen or a day old", checkNeedsAttentionClearsWhenSeenOrOld),
+    ("sidebar disclosure chevrons have a full hit target", checkSidebarDisclosureHitTargets),
 ]
