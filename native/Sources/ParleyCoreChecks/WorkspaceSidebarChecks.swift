@@ -283,6 +283,15 @@ func checkWorkspaceSidebarWiring() throws {
     try sidebarExpect(sectioned.contains("model.workspaceSidebarSections") && sectioned.contains("movePinnedWorkspaces"),
                       "the sidebar does not draw the derived sections")
     try sidebarExpect(try body(view, "private func workspaceMenuItems(").contains("Pin to Sidebar"), "workspaces cannot be pinned")
+    // Mark Seen must be reachable for a failure, which has no result text.
+    let history = try body(view, "private func activityHistoryItem(")
+    guard let resultBlock = history.range(of: "if let result = item.resultText"),
+          let open = history[resultBlock.upperBound...].firstIndex(of: "{"),
+          let resultBody = SwiftSourceReader(String(history[open...])).balanced(at: String(history[open...]).startIndex) else {
+        throw NSError(domain: "WorkspaceSidebar", code: 4, userInfo: [NSLocalizedDescriptionKey: "the history menu's result block was not found"])
+    }
+    try sidebarExpect(history.contains("Mark Seen") && !resultBody.contains("Mark Seen"),
+                      "Mark Seen is offered only inside the result block, which a failure never reaches")
 }
 
 @MainActor let workspaceSidebarChecks: [(String, () throws -> Void)] = [

@@ -1621,13 +1621,18 @@ struct ContentView: View {
            let failure = item.transitions.last?.detail, !failure.isEmpty {
             items.append(.message(failure))
         }
+        var offeredRead = false
         if let result = item.resultText, !result.isEmpty, item.state == .completed || item.kind == .delegate {
             items += [.separator, .message(result)]
             if item.hasUnreadResult {
                 items.append(.action("Mark Result Read") { model.markRead(item) })
-            } else if item.awaitsAcknowledgement {
-                items.append(.action("Mark Seen") { model.markRead(item) })
+                offeredRead = true
             }
+        }
+        // A failure or request usually has no result text, so this sits
+        // outside the result block (Agy's review of MR !124).
+        if item.awaitsAcknowledgement, !offeredRead {
+            items.append(.action("Mark Seen") { model.markRead(item) })
         }
         items += [
             .separator,
