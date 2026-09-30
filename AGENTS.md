@@ -1792,6 +1792,16 @@ Every lifecycle stop the app makes names the generation it reviewed:
 cleanup in `GhosttyPaneRegistry` stopped whatever pane generation was current
 once its detached Docker cleanup returned, so a pane restarted meanwhile lost
 its new session.
+`prepareContainerStop(_:requiringWorkspace:)` takes the workspace requirement
+with no default. `performAfterContainerStops` (Close, Stop… and the bulk
+actions) checks the pane's workspace again after cleanup, so it passes true
+and a pane moved after its review is refused before any Docker command; Team
+Stop, restart, the team's failed-start cleanup, shutdown and lost-client
+reconciliation follow the pane wherever it is and pass false. `movePane`
+refuses while the pane's container is being prepared or stopped
+(`containerPreparations`): a move during that cleanup used to leave the
+caller refusing after the container was already gone (the team review of the
+pane Stop, 1 October 2026; `checkContainerStopAndMoveExclude`).
 Stop/close/restart/quit must stop the owned container before terminating its
 host surface; a failed stop refuses the lifecycle operation. Old records are
 shown in Status Center and never adopted as surviving sessions. No daemon

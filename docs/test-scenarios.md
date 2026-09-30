@@ -73,10 +73,11 @@ handoffs work. Agy reports hook state as Unknown by design.
    pane badge and review must say so). Try one allowed and one refused
    operation and record what the vendor actually did; hook signals are not
    proof.
-6. Close and restart the pane. **Login must persist.** Then choose **Stop…**
-   in the pane's menu: the pane stays, stopped, and Status Center → Health →
+6. Restart the pane. **Login must persist.** Then choose **Stop…** in the
+   pane's menu: the pane stays, stopped, and Status Center → Health →
    Containers shows its container removed. Start it again from its menu:
-   **login must persist** there too.
+   **login must persist** there too. (Close Pane is different: it removes the
+   pane, and a new pane starts with a new, empty home volume.)
 7. Quit Parley entirely, relaunch, start the pane again. Login still persists.
 8. Status Center → Health → Containers: confirm the records make sense.
 9. Stop a pane while it is working, then quit the Docker runtime during a

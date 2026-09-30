@@ -33,6 +33,7 @@ var containerPaneChecks: [(String, () throws -> Void)] { [
     ("container follow-up cleanup continues after one failed receipt", checkContainerCleanupContinuation),
     ("container recorded removal recovers a failed preparation", checkContainerPreparedRemovalRecovery),
     ("container old receipt removal preserves a replacement at the same generation", checkContainerOldReceiptRemoval),
+    ("container stop and move exclude each other: no move during cleanup, no cleanup for a moved review", checkContainerStopAndMoveExclude),
     ("container controller refuses folders inside relay transport before mutation", checkContainerTransportFolderRefusal),
     ("container projection refuses both directions of control-path overlap", checkContainerControlPathOverlap),
     ("container controller keeps Docker outside its lock and binds restart receipts", checkContainerControllerLifecycle),
@@ -448,8 +449,18 @@ private final class ContainerLifecycleRunner: CommandRunning, @unchecked Sendabl
     let entered = DispatchSemaphore(value: 0)
     let release = DispatchSemaphore(value: 0)
     var pauseNextCreate = false
+    /// Holds the next `docker stop` or `rm` until released, so a check can act
+    /// while a container is being stopped.
+    let stopEntered = DispatchSemaphore(value: 0)
+    let stopRelease = DispatchSemaphore(value: 0)
+    var pauseNextStop = false
     func run(executable: URL, arguments a: [String], environment: [String: String], input: Data?) throws -> CommandOutput {
         calls.append(a)
+        if pauseNextStop, a.contains("stop") || a.contains("rm") {
+            pauseNextStop = false
+            stopEntered.signal()
+            guard stopRelease.wait(timeout: .now() + 5) == .success else { throw NSError(domain: "test stop release timed out", code: 1) }
+        }
         var text = ""
         if a.contains("context") { text = "unix:///tmp/docker.sock" }
         else if a.contains("info") { text = daemon }
@@ -529,12 +540,12 @@ func checkContainerControllerLifecycle() throws {
     try containerExpect(firstLaunch.command.contains("sandbox-exec") && firstLaunch.command.contains("--attach"), "Docker attach lost the host client boundary")
     let token = try credentials.token(for: pane.id)
     runner.daemon = "changed-daemon"
-    do { try controller.prepareContainerStop(active); throw NSError(domain: "stopped through changed daemon", code: 1) }
+    do { try controller.prepareContainerStop(active, requiringWorkspace: false); throw NSError(domain: "stopped through changed daemon", code: 1) }
     catch is ContainerPaneError {}
     try containerExpect(try credentials.token(for: pane.id) == token, "failed cleanup rotated the active pane credential")
     try containerExpect(try controller.listPanes().first { $0.id == pane.id }?.isStarted == true, "failed cleanup claimed the pane stopped")
     runner.daemon = "daemon-one"
-    try controller.prepareContainerStop(active)
+    try controller.prepareContainerStop(active, requiringWorkspace: false)
     try controller.stopPaneProcess(pane.id, expectedGeneration: nil)
     try controller.prepareContainerStart(pane.id, configuration: configuration, permissionProfile: profile, launchMode: .resume)
     try controller.startPane(pane.id, permissionProfile: profile, launchMode: .resume, containerConfiguration: configuration)
@@ -624,13 +635,59 @@ func checkContainerPreparedRemovalRecovery() throws {
             try fixture.controller.prepareContainerStart(pane.id, configuration: fixture.configuration, permissionProfile: profile)
             try fixture.controller.startPane(pane.id, permissionProfile: profile, containerConfiguration: fixture.configuration)
             let active = try fixture.controller.listPanes().first { $0.id == pane.id }!
-            try fixture.controller.prepareContainerStop(active)
+            try fixture.controller.prepareContainerStop(active, requiringWorkspace: false)
             try fixture.controller.stopPaneProcess(pane.id, expectedGeneration: nil)
         default:
             try fixture.controller.closePane(pane.id)
             try containerExpect(try !fixture.controller.listPanes().contains { $0.id == pane.id }, "recovered pane could not close")
         }
     }
+}
+
+/// A container pane moved while its container was being stopped lost the
+/// container and kept running: the caller's own check refused the moved pane
+/// only after Docker cleanup (the team review of the pane Stop, 1 October
+/// 2026). A move now waits for the cleanup, and a cleanup that requires the
+/// reviewed workspace refuses a pane moved before it began, touching nothing.
+func checkContainerStopAndMoveExclude() throws {
+    try requireContainerControllerShell()
+    let fixture = try ContainerReviewFixture()
+    let pane = try fixture.stoppedPane(folder: fixture.project.path)
+    let profile = try fixture.profile(folder: pane.cwd)
+    try fixture.controller.prepareContainerStart(pane.id, configuration: fixture.configuration, permissionProfile: profile)
+    try fixture.controller.startPane(pane.id, permissionProfile: profile, containerConfiguration: fixture.configuration)
+    let reviewed = try fixture.controller.listPanes().first { $0.id == pane.id }!
+    let home = reviewed.workspaceID
+    let other = try fixture.controller.createWorkspace(folder: fixture.project.path, name: "Elsewhere")
+
+    _ = try fixture.controller.movePane(pane.id, toWorkspaceID: other.workspaceID, activeHandoffCount: 0)
+    let containers = fixture.runner.containers
+    do {
+        try fixture.controller.prepareContainerStop(reviewed, requiringWorkspace: true)
+        throw NSError(domain: "a pane moved after its review had its container stopped", code: 1)
+    } catch is ContainerPaneError {}
+    try containerExpect(fixture.runner.containers == containers, "the refused cleanup reached Docker")
+
+    let moved = try fixture.controller.listPanes().first { $0.id == pane.id }!
+    fixture.runner.pauseNextStop = true
+    let finished = DispatchSemaphore(value: 0)
+    var cleanupError: Error?
+    Thread {
+        do { try fixture.controller.prepareContainerStop(moved, requiringWorkspace: true) } catch { cleanupError = error }
+        finished.signal()
+    }.start()
+    guard fixture.runner.stopEntered.wait(timeout: .now() + 5) == .success else {
+        throw NSError(domain: "the container cleanup never reached Docker", code: 1)
+    }
+    var moveDuringCleanup: Error?
+    do { _ = try fixture.controller.movePane(pane.id, toWorkspaceID: home, activeHandoffCount: 0) } catch { moveDuringCleanup = error }
+    fixture.runner.stopRelease.signal()
+    guard finished.wait(timeout: .now() + 5) == .success else { throw NSError(domain: "the container cleanup never finished", code: 1) }
+    if let cleanupError { throw cleanupError }
+    try containerExpect(moveDuringCleanup is ContainerPaneError, "a pane moved while its container was being stopped")
+    try fixture.controller.stopPaneProcess(pane.id, expectedGeneration: moved.launchGeneration)
+    let stopped = try fixture.controller.listPanes().first { $0.id == pane.id }!
+    try containerExpect(!stopped.isStarted && stopped.workspaceID == other.workspaceID, "the stopped pane is not where the cleanup found it")
 }
 
 func checkContainerTransportFolderRefusal() throws {
@@ -674,7 +731,7 @@ func checkContainerOldReceiptRemoval() throws {
     let profile = try fixture.profile(folder: pane.cwd)
     try fixture.controller.prepareContainerStart(pane.id, configuration: fixture.configuration, permissionProfile: profile)
     let oldRecord = try fixture.service.records().first { $0.paneID == pane.id && !$0.removed }!
-    try fixture.controller.prepareContainerStop(pane)
+    try fixture.controller.prepareContainerStop(pane, requiringWorkspace: false)
     let removedRecord = try fixture.service.records().first { $0.id == oldRecord.id }!
     var replacement = fixture.configuration
     replacement.daemonID = "daemon-two"
@@ -689,7 +746,7 @@ func checkContainerOldReceiptRemoval() throws {
     try containerExpect(candidate == nil && fixture.runner.containers == containers, "old receipt removal stopped a newer container at the reused generation")
     try containerExpect(try fixture.credentials.token(for: pane.id) == token, "old receipt removal changed the replacement capability")
     try containerExpect(try fixture.controller.listPanes().first { $0.id == pane.id }?.isStarted == true, "replacement pane lost its running state")
-    try fixture.controller.prepareContainerStop(active)
+    try fixture.controller.prepareContainerStop(active, requiringWorkspace: false)
     try fixture.controller.stopPaneProcess(pane.id, expectedGeneration: nil)
 }
 
@@ -817,7 +874,7 @@ func checkContainerTeamController() throws {
     let started = try controller.listPanes().first { $0.id == pending.pane.id }!
     let members = try coordinator.stop(id: proposal.id, reason: "fixture Stop")
     try containerExpect(members.count == 1 && members[0].owns(started), "team Stop lost the initial activated generation")
-    try controller.prepareContainerStop(started)
+    try controller.prepareContainerStop(started, requiringWorkspace: false)
     try controller.stopPaneProcess(started.id, expectedGeneration: started.launchGeneration)
     try containerExpect(fixture.runner.containers.isEmpty && (try fixture.service.records()).allSatisfy(\.removed), "team Stop left its owned container")
     try containerExpect(try controller.listPanes().first { $0.id == lead.id }?.isStarted == true, "team Stop touched the requesting pane")
@@ -1007,7 +1064,7 @@ func checkContainerBypassController() throws {
         try containerExpect(started.containerConfiguration == reviewed && started.permissionEnforcement == .guidanceOnly, "bypass pane falsely advertised enforced profile")
         let saved = try JSONDecoder().decode(WorkbenchPane.self, from: JSONEncoder().encode(started))
         try containerExpect(saved.containerConfiguration?.bypassVendorPermissions == true, "pane persistence lost bypass")
-        try fixture.controller.prepareContainerStop(started)
+        try fixture.controller.prepareContainerStop(started, requiringWorkspace: false)
         try fixture.controller.stopPaneProcess(pane.id, expectedGeneration: nil)
         try fixture.controller.startPane(pane.id, permissionProfile: profile)
         let host = try fixture.controller.listPanes().first { $0.id == pane.id }!

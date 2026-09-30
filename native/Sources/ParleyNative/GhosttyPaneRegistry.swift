@@ -234,7 +234,7 @@ final class GhosttyPaneRegistry {
                    closed.containerConfiguration != nil {
                     Task { [weak self] in
                         do {
-                            try await Task.detached(priority: .utility) { try workbench.prepareContainerStop(closed) }.value
+                            try await Task.detached(priority: .utility) { try workbench.prepareContainerStop(closed, requiringWorkspace: false) }.value
                         } catch {
                             NSAlert(error: ContainerPaneError.refused("The container client ended, but cleanup was not confirmed. Its receipt remains in Status Center. \(error.localizedDescription)")).runModal()
                             return

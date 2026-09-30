@@ -3617,7 +3617,7 @@ final class AppModel: ObservableObject {
                           coordinator.sessions().first(where: { $0.id == session.id })?.members.contains(where: { $0.owns(current) }) == true else {
                         throw TeamSessionError.invalid("The pane changed generation; its replacement was left alone.")
                     }
-                    try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(current) }.value
+                    try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(current, requiringWorkspace: false) }.value
                     // Cleanup is confirmed. A pane started again meanwhile is a
                     // new session, left alone; that is not a cleanup failure.
                     if let now = try? controller.listPanes().first(where: { $0.id == pane.id }), now.launchGeneration != current.launchGeneration {
@@ -3854,7 +3854,7 @@ final class AppModel: ObservableObject {
         let cleanupFailures = await Task.detached(priority: .userInitiated) {
             var failures: [String: String] = [:]
             for pane in containers {
-                do { try controller.prepareContainerStop(pane) }
+                do { try controller.prepareContainerStop(pane, requiringWorkspace: false) }
                 catch { failures[pane.id] = error.localizedDescription }
             }
             return failures
@@ -4992,7 +4992,7 @@ final class AppModel: ObservableObject {
             throw RelayUIError.message("That pane no longer exists.")
         }
         if reviewed.containerConfiguration != nil {
-            try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(reviewed) }.value
+            try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(reviewed, requiringWorkspace: false) }.value
             try controller.stopPaneProcess(paneID, expectedGeneration: reviewed.launchGeneration)
         } else if configuration != nil, reviewed.isStarted {
             try controller.stopPaneProcess(paneID, expectedGeneration: reviewed.launchGeneration)
@@ -5023,7 +5023,7 @@ final class AppModel: ObservableObject {
             do {
                 var failures: [String] = []
                 for pane in reviewed where pane.containerConfiguration != nil {
-                    do { try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(pane) }.value }
+                    do { try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(pane, requiringWorkspace: true) }.value }
                     catch { failures.append("\(pane.displayName): \(error.localizedDescription)") }
                 }
                 if !failures.isEmpty { throw ContainerPaneError.refused(failures.joined(separator: "\n")) }

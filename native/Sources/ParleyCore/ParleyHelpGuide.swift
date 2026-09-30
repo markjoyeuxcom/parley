@@ -1171,7 +1171,7 @@ public enum ParleyHelpGuide {
                     items: [
                         "Press Command-Q to quit the app. Closing the main window with its red button leaves Parley running; closing auxiliary windows releases their local content as described in Settings and appearance.",
                         "An owned Production or Development runtime always confirms before quitting, offering Quit Parley or Cancel, even when every agent is stopped or dead.",
-                        "There is no separate Stop Everything action. To end one pane, exit the CLI inside it (for example /exit or Control-D), choose Stop… in its menu, which keeps the pane to start again, use Close Pane, or restart it; a container pane can also be stopped from Status Center > Health > Containers. To end every pane, quit.",
+                        "There is no separate Stop Everything action. To end one pane, exit the CLI inside it (for example /exit or Control-D), choose Stop… in a started agent pane's menu, which keeps the pane to start again, use Close Pane, or restart it; a container pane can also be stopped from Status Center > Health > Containers. To end every pane, quit.",
                         "Closing the main window keeps panes running while Parley remains open. Quitting ends every pane process and the app-resident coordination core.",
                         "If Parley cannot verify that every pane stopped, it reports the failure and keeps the app open instead of claiming shutdown succeeded.",
                     ]
