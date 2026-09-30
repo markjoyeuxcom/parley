@@ -238,6 +238,29 @@ Exit 78 means the image does not meet the contract. Parley's own review runs
 this and then starts the vendor executable, so an image passing here can still
 be refused if the vendor binary itself will not start.
 
+## Using an image for a pane
+
+- **A new pane.** Choose **Pane › New Agent Pane…** (or the toolbar's Pane
+  menu › Agent), pick the vendor, set **Runs** to **In a container**, type the
+  image name (for example `parley-agents:local`), decide on **Bypass vendor
+  permissions**, then press **Check Image and Daemon** and Start. The check
+  runs the probe and pins the image's ID for that launch.
+- **Each start is checked.** A start, restart or resume review fills in the
+  pane's image name and asks for the check again, and Start waits for it. The
+  check reads the name afresh. That is where a rebuilt image, or a different
+  name you type, takes effect. A running pane keeps the image it was checked
+  with, so rebuilding a tag changes nothing for it until it starts again.
+- **The home volume belongs to the pane, not the image.** It is named after
+  the pane, so its sign-in, conversations and anything written into its home
+  (such as the [Prax step](#example-the-prax-cli)) survive restarts and a
+  change of image. A new pane starts with an empty one. Delete a volume in
+  **Status Center › Health › Containers**.
+- **The first run of a pane,** in order: sign in (each vendor's flow is in
+  `docs/test-scenarios.md`, P1.3), run anything that writes into its home,
+  then restart it with Resume so the vendor reads what was written.
+- **Old images.** Remove one with `docker image rm <name>` once no pane uses
+  it. Docker refuses while a container still uses it.
+
 ## Reaching a service on your Mac
 
 A pane runs with `--network=bridge`, so the vendor inside can reach services
