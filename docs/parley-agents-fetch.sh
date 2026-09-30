@@ -5,8 +5,8 @@
 # payload. Parley never builds or pulls images; this is the person's own step
 # (docs/container-images.md).
 #
-#   sh docs/parley-agents-fetch.sh <folder>
-#   docker build -t parley-agents:local -f docs/parley-agents.Dockerfile <folder>
+#   sh docs/parley-agents-fetch.sh <folder> &&
+#     docker build -t parley-agents:local -f docs/parley-agents.Dockerfile <folder>
 #
 # Nothing is pinned: each run takes Claude's stable release and the latest
 # release of the others, and prints the versions it fetched. Needs curl, jq,
@@ -22,9 +22,15 @@ trap 'rm -rf "$work"' EXIT INT TERM
 
 fail() { printf 'parley-agents-fetch: %s\n' "$1" >&2; exit 1; }
 
-# expect <file> <algorithm bits> <hex digest>
+# expect <file> <algorithm bits> <hex digest>. The published digest must be
+# the full length of lowercase hex and shasum must succeed: an empty digest
+# and a failed, empty reading must never count as a match.
 expect() {
-  actual="$(shasum -a "$2" "$1" | cut -d' ' -f1)"
+  case "$2" in 256) length=64 ;; 512) length=128 ;; *) fail "unsupported digest size $2" ;; esac
+  case "$3" in *[!0-9a-f]*) fail "$(basename "$1"): published digest is not hex: $3" ;; esac
+  [ "${#3}" -eq "$length" ] || fail "$(basename "$1"): published digest is not $length characters: $3"
+  reading="$(shasum -a "$2" "$1")" || fail "$(basename "$1"): could not compute its checksum"
+  actual="${reading%% *}"
   [ "$actual" = "$3" ] || fail "$(basename "$1"): checksum mismatch (expected $3, got $actual)"
 }
 
@@ -32,18 +38,22 @@ expect() {
 # replaces whatever had that name, a directory included (mv would otherwise
 # move the file into it and succeed).
 place() {
+  [ -f "$1" ] && [ ! -L "$1" ] || fail "$2: expected a regular file, not a link or folder"
   rm -rf "${out:?}/$2"
   mv "$1" "$out/$2"
   chmod 0755 "$out/$2"
+  [ -f "$out/$2" ] && [ ! -L "$out/$2" ] || fail "$2 did not land as a file in $out"
 }
 
-# The one file a release tarball holds, placed as <folder>/<name>.
+# The one file a release tarball holds, placed as <folder>/<name>. Hidden
+# entries count, so a link beside a hidden target is refused too.
 unpack_single() {
+  name="$2"
   rm -rf "$work/unpack" && mkdir "$work/unpack"
   tar -xzf "$1" -C "$work/unpack"
-  set -- "$work"/unpack/* "$2"
-  [ "$#" -eq 2 ] && [ -f "$1" ] || fail "expected one file in the archive for $2"
-  place "$1" "$2"
+  [ "$(ls -A "$work/unpack" | wc -l | tr -d ' ')" = 1 ] || fail "expected one file in the archive for $name"
+  set -- "$work"/unpack/*
+  place "$1" "$name"
 }
 
 # github_asset <owner/repo> <asset name> <file>: the asset of the latest
@@ -90,7 +100,6 @@ curl -fsSL "$(jq -r .url "$work/agy.json")" -o "$work/agy.tar.gz"
 expect "$work/agy.tar.gz" 512 "$sum"
 rm -rf "$work/unpack" && mkdir "$work/unpack"
 tar -xzf "$work/agy.tar.gz" -C "$work/unpack" antigravity
-[ -f "$work/unpack/antigravity" ] || fail "Agy's archive holds no antigravity executable"
 place "$work/unpack/antigravity" agy
 printf 'agy %s\n' "$(jq -r .version "$work/agy.json")"
 

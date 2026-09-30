@@ -7,8 +7,8 @@
 #
 # Fetch and check the inputs, then build (both commands from the repository):
 #
-#   sh docs/parley-agents-fetch.sh <folder>
-#   docker build -t parley-agents:local -f docs/parley-agents.Dockerfile <folder>
+#   sh docs/parley-agents-fetch.sh <folder> &&
+#     docker build -t parley-agents:local -f docs/parley-agents.Dockerfile <folder>
 #
 # Rebuild when a vendor or Prax updates. node:22-slim passes Parley's image
 # probe unmodified and supplies the Node that Prax's CLI needs; the vendor

@@ -103,8 +103,8 @@ Mac](#reaching-a-service-on-your-mac)). Nothing is pinned: it takes Claude's
 stable release and the latest of the others, and prints what it fetched.
 
 ```bash
-sh docs/parley-agents-fetch.sh ~/parley-agents
-docker build -t parley-agents:local -f docs/parley-agents.Dockerfile ~/parley-agents
+sh docs/parley-agents-fetch.sh ~/parley-agents &&
+  docker build -t parley-agents:local -f docs/parley-agents.Dockerfile ~/parley-agents
 ```
 
 `docs/parley-agents.Dockerfile` puts the four executables at the paths Parley
@@ -368,8 +368,8 @@ listens on the Mac's loopback. What it took:
   it the installer looks in `~/.local/bin`, which is not on Parley's `PATH`,
   and teaches the skill scripts' full paths instead. It recognises only a
   shim it wrote itself, so an image whose shim was written by hand (the
-  Agy-only recipe this file replaced on 30 September 2026) gets the full
-  paths too: rebuild it first. Restart the pane afterwards so the vendor
+  Agy-only recipe merged in MR !133) gets the full paths too: rebuild it
+  first. Restart the pane afterwards so the vendor
   reads its new instructions.
 
   The instructions go where each vendor reads its global rules:
