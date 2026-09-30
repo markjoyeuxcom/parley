@@ -1,6 +1,7 @@
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
+import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -58,6 +59,41 @@ export function scanText(text, source) {
     .map(({ rule }) => ({ rule, source }))
 }
 
+// Every rule matches within one line, so history is scanned line by line from
+// a stream with no size limit. It used to be read into one 128 MB buffer, and
+// the scan failed closed once `git log -p` outgrew it (24.8 MB on 30 September
+// 2026, growing about 3 MB a month). The deliberate fixtures are single lines
+// too, so removing them per line is the same as removing them from the whole.
+export async function scanHistoryStream(input, source = '<git-history>') {
+  const found = new Map()
+  const allFixtures = [...deliberateFixtures.values()].flat()
+  for await (const line of createInterface({ input, crlfDelay: Infinity })) {
+    let inspected = line
+    for (const fixture of allFixtures) inspected = inspected.replaceAll(fixture, '')
+    for (const finding of scanText(inspected, source)) found.set(finding.rule, finding)
+  }
+  return rules.filter(({ rule }) => found.has(rule)).map(({ rule }) => found.get(rule))
+}
+
+// `git log -p` as a stream, with its exit status checked once it has been read.
+async function scanGitHistory() {
+  const child = spawn('git', ['log', '-p', '--all', '--full-history', '--no-color', '--no-ext-diff'], {
+    cwd: repositoryRoot,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stderr = ''
+  child.stderr.setEncoding('utf8')
+  child.stderr.on('data', (chunk) => { stderr += chunk })
+  const exited = new Promise((resolveExit, rejectExit) => {
+    child.on('error', rejectExit)
+    child.on('close', (status) => resolveExit(status))
+  })
+  const findings = await scanHistoryStream(child.stdout)
+  const status = await exited
+  if (status !== 0) throw new Error(stderr.trim() || 'git log -p failed')
+  return findings
+}
+
 export function scanHistoricalPaths(paths) {
   return paths.filter((path) => sensitiveHistoricalPath.test(path))
 }
@@ -74,7 +110,7 @@ function runGit(arguments_) {
   return result.stdout
 }
 
-function scanRepository() {
+async function scanRepository() {
   const findings = []
   const trackedPaths = runGit([
     'ls-files', '--cached', '--others', '--exclude-standard', '-z',
@@ -93,11 +129,7 @@ function scanRepository() {
     findings.push({ rule: 'sensitive-historical-path', source: path })
   }
 
-  let history = runGit(['log', '-p', '--all', '--full-history', '--no-color', '--no-ext-diff'])
-  for (const fixtures of deliberateFixtures.values()) {
-    for (const fixture of fixtures) history = history.replaceAll(fixture, '')
-  }
-  findings.push(...scanText(history, '<git-history>'))
+  findings.push(...await scanGitHistory())
 
   const unique = [...new Map(findings.map((finding) => [
     `${finding.rule}\0${finding.source}`,
@@ -119,5 +151,8 @@ function scanRepository() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  scanRepository()
+  scanRepository().catch((error) => {
+    process.stderr.write(`Public repository scan could not run: ${error.message}\n`)
+    process.exitCode = 1
+  })
 }

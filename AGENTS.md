@@ -2198,6 +2198,12 @@ npm test
 npm run build
 ```
 
+`npm run scan:public` reads `git log -p` line by line from a stream, so the
+history has no size limit. It was read into one 128 MB buffer until 30
+September 2026, and would have failed closed once history outgrew it (24.8
+MB then, Prax c4a09fbe). Every rule and deliberate fixture fits on one line,
+which is what makes the line-by-line scan equivalent.
+
 `npm test` also runs the platform dependency scan. `ParleyCore` is the part of
 Parley that could one day run somewhere other than macOS, and
 `scripts/platform-dependency-scan.mjs` records exactly which of its files may
