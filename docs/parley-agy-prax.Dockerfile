@@ -29,7 +29,9 @@ RUN printf '#!/bin/sh\nexec /usr/local/bin/node /opt/prax/cli/prax.js "$@"\n' > 
  && chmod 0755 /usr/local/bin/prax
 
 # Parley passes no variables of your own into a container pane, so the address
-# is part of the image. 49636 is the Prax app's own loopback port. Never put a
+# is part of the image. 49636 is the loopback port one Prax app chose on first
+# launch; replace it with yours, from
+# ~/Library/Application Support/com.moomora.prax/webview-port. Never put a
 # token here: anyone with the image can read its layers.
 ENV PRAX_API_URL=http://host.docker.internal:49636
 
