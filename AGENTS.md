@@ -466,6 +466,43 @@ favourite against every workspace attachment, and stat each favourite and
 recent folder, on every render. Actions such as toggling a favourite still
 decide from the disk (`isFavouriteFolder`).
 
+The sidebar is built for many workspaces (Mark's decision on 30 September
+2026, Prax 9dd56387). It used to be one flat list with every workspace's
+folders open, and the active workspace's panes came after all of them. Its
+sections, from `WorkspaceSidebarSections`, are:
+- **This Workspace:** the active workspace's panes.
+- **Needs Attention:** other workspaces whose `needsPerson` count is above
+  zero, most first, hidden when empty. The count is the menu bar's own
+  (`ExternalAttentionProjection`), so the two never disagree. An unread
+  result counts until it is read. A failed, interrupted or waiting handoff
+  counts until the person opens it in Status Center and for at most a day
+  (`acknowledgementWindow`, Mark's decision). Before, it counted until
+  retention dropped it, because only results could be marked read, so both
+  filled with old failures. `markHandoffRead` now also accepts a failure or
+  request (`canBeAcknowledged`), and `readAt` records when it was seen.
+  Selecting one in Status Center marks it (`awaitsAcknowledgement`). The
+  index is computed again once the soonest counted item passes its day
+  (`nextChangeAt`).
+- **Pinned:** workspaces with `WorkbenchWorkspace.pinned`, in the workspace
+  order. A drag there is mapped onto the whole order by `pinnedMove`.
+- **Recent:** up to five others by `lastSelectedAt`, shown only past eight
+  workspaces. Never the current workspace, a pinned one or one already in
+  Needs Attention.
+- **All Workspaces:** every workspace, open by default only at eight or
+  fewer, with attached folders collapsed.
+
+`lastSelectedAt` is set only by `activateWorkspaceLocked`, the one place that
+changes which workspace is active, and by `createWorkspaceLocked`, on both
+the workspace left and the one entered. It lives in the document, so a
+rolled-back change takes it with it; `selectWorkspace`, `selectPane` and
+`setWorkspacePinned` roll back a failed save. A workspace replaced by a saved
+layout is a new workspace, and it takes over the replaced one's pin. The badges and counts come from
+`WorkspaceActivityProjection`, one pass over the handoffs cached per
+attention input generation (which `workspaces` now advances). The four
+per-workspace helpers used to scan every handoff each, several times per row
+per render. Workspace groups, a switcher, the hidden-sidebar tabs and the
+Move to Workspace menu follow in later MRs.
+
 ## Relay and consultation contract
 
 The `parley` command uses an authenticated capability-named filesystem

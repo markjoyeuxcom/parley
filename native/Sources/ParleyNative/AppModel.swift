@@ -197,7 +197,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var panes: [WorkbenchPane] = [] {
         didSet { attentionInputGeneration &+= 1; statusInputGeneration &+= 1; voiceController?.reconcile(panes: panes) }
     }
-    @Published private(set) var workspaces: [WorkbenchWorkspace] = []
+    @Published private(set) var workspaces: [WorkbenchWorkspace] = [] {
+        // The workspace activity index maps each workspace's ids.
+        didSet { attentionInputGeneration &+= 1 }
+    }
     @Published private(set) var commandRuns: [ReviewedCommandRun] = []
     @Published private(set) var commandRunGrants: [ReviewedCommandGrant] = []
     @Published private(set) var commandRunError: String?
@@ -445,6 +448,7 @@ final class AppModel: ObservableObject {
     /// cache below is keyed on it so one sidebar pass shares one projection.
     private var attentionInputGeneration = 0
     private var attentionCache = PaneAttentionCache()
+    private var workspaceActivityCache = WorkspaceActivityCache()
     /// Bumped whenever any input of Status Center's snapshot changes; the
     /// snapshot cache below is keyed on it, so a render projects each scope
     /// once however many times the view reads it.
@@ -3219,38 +3223,46 @@ final class AppModel: ObservableObject {
         unreadHandoffs.count { $0.sourcePaneID == paneID }
     }
 
+    /// Every workspace's badges and needs-you count from one pass over the
+    /// handoffs, once per input generation. Each helper below used to scan
+    /// every handoff for its workspace, several times per sidebar row and on
+    /// every render, which grew with both at many workspaces.
+    private var workspaceActivityIndex: WorkspaceActivityIndex {
+        let now = Date()
+        return workspaceActivityCache.index(generation: attentionInputGeneration, now: now) {
+            var byID: [String: RelayHandoff] = [:]
+            for handoff in unreadHandoffs + statusHandoffs + handoffs {
+                byID[handoff.id] = handoff
+            }
+            return WorkspaceActivityProjection.index(workspaces: workspaces, panes: panes, handoffs: handoffs,
+                                                     unreadHandoffs: unreadHandoffs, attentionHandoffs: Array(byID.values), now: now)
+        }
+    }
+
+    func workspaceActivity(for workspaceID: String) -> WorkspaceActivity {
+        workspaceActivityIndex.activity(for: workspaceID)
+    }
+
+    /// The sidebar's sections, in the workspace order.
+    var workspaceSidebarSections: WorkspaceSidebarSections {
+        let index = workspaceActivityIndex
+        return WorkspaceSidebarSections.derive(workspaces: workspaces, needsPerson: { index.activity(for: $0).needsPerson })
+    }
+
     func unreadResultCount(forWorkspace workspaceID: String) -> Int {
-        let aliases = workspaceAliases(for: workspaceID)
-        return unreadHandoffs.count { aliases.contains($0.sourceWorkspaceID) }
+        workspaceActivity(for: workspaceID).unreadResults
     }
 
     func waitingCount(for workspaceID: String) -> Int {
-        let aliases = workspaceAliases(for: workspaceID)
-        let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
-        return handoffs.count {
-            activeStates.contains($0.state)
-                && (aliases.contains($0.sourceWorkspaceID)
-                    || aliases.contains($0.targetWorkspaceID))
-        }
+        workspaceActivity(for: workspaceID).waiting
     }
 
     func failureCount(for workspaceID: String) -> Int {
-        let aliases = workspaceAliases(for: workspaceID)
-        return handoffs.count {
-            (aliases.contains($0.sourceWorkspaceID)
-                || aliases.contains($0.targetWorkspaceID))
-                && ($0.state == .failed || $0.state == .interrupted)
-        }
+        workspaceActivity(for: workspaceID).failures
     }
 
     func requiresHumanAttention(_ workspaceID: String) -> Bool {
-        let aliases = workspaceAliases(for: workspaceID)
-        return handoffs.contains {
-            (aliases.contains($0.sourceWorkspaceID)
-                || aliases.contains($0.targetWorkspaceID))
-                && $0.state == .failed
-                && $0.attention != nil
-        }
+        workspaceActivity(for: workspaceID).requiresHumanAttention
     }
 
     func notificationsEnabled(for workspace: WorkbenchWorkspace) -> Bool {
@@ -4640,8 +4652,10 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Marks a result read, or a failure or request seen, so it stops
+    /// counting as needing the person (`awaitsAcknowledgement`).
     func markRead(_ handoff: RelayHandoff) {
-        guard handoff.hasUnreadResult, let relayClient else { return }
+        guard handoff.awaitsAcknowledgement, let relayClient else { return }
         do {
             let response = try relayClient.markHandoffRead(handoff.id)
             guard response.status == 200 else { return }
@@ -7543,6 +7557,24 @@ final class AppModel: ObservableObject {
         guard moved != workspaces else { return }
         workspaces = moved
         saveWorkspaceContinuity()
+    }
+
+    func setPinned(_ pinned: Bool, for workspace: WorkbenchWorkspace) {
+        perform {
+            guard let controller else { return }
+            try controller.setWorkspacePinned(workspace.workspaceID, pinned: pinned)
+            try refresh()
+        }
+    }
+
+    /// A drag within the sidebar's Pinned section, carried out on the whole
+    /// workspace order.
+    func movePinnedWorkspaces(fromOffsets offsets: IndexSet, toOffset destination: Int) {
+        let sections = workspaceSidebarSections
+        guard offsets.count == 1, let source = offsets.first,
+              let move = WorkspaceSidebarSections.pinnedMove(source: source, destination: destination,
+                                                             pinned: sections.pinned, all: sections.all) else { return }
+        moveWorkspaces(fromOffsets: IndexSet(integer: move.source), toOffset: move.destination)
     }
 
     func moveWorkspaces(fromOffsets offsets: IndexSet, toOffset destination: Int) {

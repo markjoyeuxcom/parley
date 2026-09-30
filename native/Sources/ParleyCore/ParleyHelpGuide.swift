@@ -147,6 +147,20 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "workspaces-sidebar-sections",
+                    title: "Finding workspaces in the sidebar",
+                    paragraphs: [
+                        "The sidebar starts with This Workspace, the panes of the workspace you are in. Below it, Needs Attention lists other workspaces with something waiting on you: a returned result, a permission or readiness problem, or a failed handoff, counted as the menu-bar indicator counts them. A result counts until you read it. A failure or request counts until you open it in Status Center, and for at most a day after it happened. The section disappears when nothing is waiting.",
+                        "Pinned lists the workspaces you pin, in your workspace order; drag within it to reorder them. Recent lists up to five other workspaces you used last, with the time, weekday or date you last used each, once you have more than eight. All Workspaces lists every workspace and opens by default only when there are eight or fewer.",
+                    ],
+                    items: [
+                        "Right-click a workspace and choose Pin to Sidebar or Unpin from Sidebar.",
+                        "A workspace can appear in Needs Attention, Pinned or Recent as well as in All Workspaces; those three are shortcuts.",
+                        "Attached folders are collapsed under each workspace in All Workspaces; use the arrow beside a workspace to show them.",
+                        "Typing in the filter shows only matching workspaces and this workspace's matching panes.",
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "workspaces-pane-focus-copy",
                     title: "Pane focus, selection and scrollback",
                     paragraphs: [

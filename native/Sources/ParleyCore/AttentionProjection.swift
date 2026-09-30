@@ -72,6 +72,9 @@ public struct ExternalAttentionSnapshot: Codable, Equatable, Sendable {
     public let workspaces: [ExternalAttentionWorkspace]
     public let panes: [ExternalAttentionPane]
     public let items: [ExternalAttentionItem]
+    /// When the counts next change with no new input: the soonest moment a
+    /// counted failure or request passes `acknowledgementWindow`.
+    public var nextChangeAt: Date? = nil
 
     public init(
         version: Int = currentVersion,
@@ -79,7 +82,8 @@ public struct ExternalAttentionSnapshot: Codable, Equatable, Sendable {
         attentionCount: Int,
         workspaces: [ExternalAttentionWorkspace],
         panes: [ExternalAttentionPane],
-        items: [ExternalAttentionItem]
+        items: [ExternalAttentionItem],
+        nextChangeAt: Date? = nil
     ) {
         self.version = version
         self.generatedAt = generatedAt
@@ -87,11 +91,19 @@ public struct ExternalAttentionSnapshot: Codable, Equatable, Sendable {
         self.workspaces = workspaces
         self.panes = panes
         self.items = items
+        self.nextChangeAt = nextChangeAt
     }
 
 }
 
 public enum ExternalAttentionProjection {
+    /// A failed, interrupted or waiting handoff needs the person until they
+    /// open it in Status Center, and for at most this long after it last
+    /// changed (Mark's decision, 30 September 2026). Before, it counted until
+    /// retention dropped it, since only results could be marked read, so the
+    /// menu bar and the sidebar's Needs Attention filled with old failures.
+    /// An unread result still counts until it is read.
+    public static let acknowledgementWindow: TimeInterval = 86_400
     public static let maximumWorkspaces = 256
     public static let maximumPanes = 512
     public static let maximumItems = 512
@@ -115,7 +127,7 @@ public enum ExternalAttentionProjection {
                 workspaceNames[pane.workspaceID] = name
             }
         }
-        let actionable = handoffs.compactMap(actionableItem).map { original in
+        let actionable = handoffs.compactMap { actionableItem($0, now: generatedAt) }.map { original in
             let canonicalID = canonicalWorkspaceByAlias[original.item.workspaceID]
                 ?? original.item.workspaceID
             let item = ExternalAttentionItem(
@@ -157,11 +169,16 @@ public enum ExternalAttentionProjection {
                             ?? $0.workspaceName ?? $0.workspaceID
                     )
                 },
-            items: items
+            items: items,
+            nextChangeAt: handoffs.lazy
+                .filter { !$0.hasUnreadResult && $0.awaitsAcknowledgement }
+                .map { $0.updatedAt.addingTimeInterval(acknowledgementWindow) }
+                .filter { $0 > generatedAt }
+                .min()
         )
     }
 
-    private static func actionableItem(_ handoff: RelayHandoff) -> (item: ExternalAttentionItem, updatedAt: Date)? {
+    private static func actionableItem(_ handoff: RelayHandoff, now: Date) -> (item: ExternalAttentionItem, updatedAt: Date)? {
         let reason: ExternalAttentionReason
         let workspaceID: String
         let workspaceName: String
@@ -175,6 +192,12 @@ public enum ExternalAttentionProjection {
             case .commandRun: "\(handoff.targetName) returned a captured command result"
             default: "\(handoff.targetName) returned an answer"
             }
+        } else if handoff.awaitsAcknowledgement,
+                  now.timeIntervalSince(handoff.updatedAt) >= acknowledgementWindow {
+            // Seen ones never reach here; one this old has stopped counting.
+            return nil
+        } else if !handoff.awaitsAcknowledgement {
+            return nil
         } else if let attention = handoff.attention {
             reason = .humanInputRequired
             workspaceID = handoff.targetWorkspaceID

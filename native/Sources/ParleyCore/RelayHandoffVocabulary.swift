@@ -201,4 +201,16 @@ public struct RelayHandoff: Identifiable, Codable, Equatable, Sendable {
     public var hasUnreadResult: Bool {
         hasReturnedResult && readAt == nil
     }
+
+    /// Something the person can acknowledge by opening it in Status Center: a
+    /// returned result, a failed or interrupted handoff, or one waiting on
+    /// them. `readAt` records when they did (30 September 2026; it used to
+    /// record only a result being read, so a failure could never be cleared).
+    public var canBeAcknowledged: Bool {
+        hasReturnedResult || state == .failed || state == .interrupted || attention != nil
+    }
+
+    public var awaitsAcknowledgement: Bool {
+        canBeAcknowledged && readAt == nil
+    }
 }

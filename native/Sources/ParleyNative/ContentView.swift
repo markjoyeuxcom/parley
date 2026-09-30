@@ -9,10 +9,13 @@ struct ContentView: View {
     @Environment(\.openSettings) private var openSettings
     @State private var sidebarVisible = true
     @State private var sidebarQuery = ""
-    @State private var workspacesExpanded = true
     @State private var participantsExpanded = true
+    /// Nil until the person opens or closes All Workspaces; the default
+    /// depends on how many there are.
+    @State private var allWorkspacesExpandedChoice: Bool?
     @State private var favouritesExpanded = true
-    @State private var collapsedWorkspaceFolderIDs: Set<String> = []
+    /// Attached folders are collapsed by default, so each workspace is one line.
+    @State private var expandedWorkspaceFolderIDs: Set<String> = []
 
     var body: some View {
         HSplitView {
@@ -138,69 +141,10 @@ struct ContentView: View {
                     .accessibilityLabel("Filter sidebar")
             }
             List {
-                Section {
-                    if workspacesExpanded {
-                        ForEach(filteredWorkspaces) { workspace in
-                            workspaceSidebarRow(workspace)
-                        }
-                        .onMove { offsets, destination in
-                            guard sidebarQuery.isEmpty else { return }
-                            model.moveWorkspaces(fromOffsets: offsets, toOffset: destination)
-                        }
-                    }
-                } header: {
-                    HStack(spacing: 6) {
-                        Button {
-                            workspacesExpanded.toggle()
-                        } label: {
-                            Label("WORKSPACES", systemImage: workspacesExpanded ? "chevron.down" : "chevron.right")
-                                .labelStyle(.titleAndIcon)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(workspacesExpanded ? "Collapse workspaces" : "Expand workspaces")
-                        Spacer()
-                        workspaceActionsMenu
-                    }
-                }
-
-                Section {
-                    if participantsExpanded {
-                        ForEach(filteredVisiblePanes) { pane in
-                            HStack(spacing: 6) {
-                                Button {
-                                    model.select(pane)
-                                } label: {
-                                    PaneRow(
-                                        pane: pane,
-                                        facts: model.sidebarFacts(for: pane),
-                                        managedWorktreeBranch: model.managedWorktree(forPane: pane.id)?.branch,
-                                        awaitingAnswerCount: model.awaitingAnswerCount(for: pane.id),
-                                        unreadResultCount: model.unreadResultCount(forPane: pane.id),
-                                        latestFailure: model.latestFailure(for: pane.id),
-                                        permissionProfileName: model.permissionProfileName(for: pane)
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("\(pane.displayName), \(pane.kind.label) pane")
-                                .accessibilityValue(paneAccessibilityValue(pane))
-                                .accessibilityHint("Focus this pane")
-                                paneRecoveryButton(pane)
-                            }
-                            .listRowBackground(pane.isActive ? Color.accentColor.opacity(0.14) : Color.clear)
-                            .listRowInsets(EdgeInsets(top: 1, leading: 5, bottom: 1, trailing: 5))
-                            .overlay {
-                                PaneContextMenu(items: paneMenuItems(pane))
-                            }
-                        }
-                    }
-                } header: {
-                    Button {
-                        participantsExpanded.toggle()
-                    } label: {
-                        Label("PARTICIPANTS", systemImage: participantsExpanded ? "chevron.down" : "chevron.right")
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(participantsExpanded ? "Collapse participants" : "Expand participants")
+                if sidebarQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    sectionedSidebar
+                } else {
+                    filteredSidebar
                 }
             }
             .listStyle(.sidebar)
@@ -334,12 +278,196 @@ struct ContentView: View {
         }
     }
 
-    private func workspaceSidebarRow(_ workspace: WorkbenchWorkspace) -> some View {
+    /// The sidebar at many workspaces (Mark's decision, 30 September 2026):
+    /// this workspace's panes first, then the workspaces that need the person,
+    /// the pinned ones and the recent ones, and every workspace last. The rules
+    /// are `WorkspaceSidebarSections`; this only draws them.
+    @ViewBuilder private var sectionedSidebar: some View {
+        let sections = model.workspaceSidebarSections
+        let byID = Dictionary(model.workspaces.map { ($0.workspaceID, $0) }, uniquingKeysWith: { first, _ in first })
+        Section {
+            if participantsExpanded { paneRows(model.layoutOrderedVisiblePanes) }
+        } header: {
+            sidebarSectionHeader("THIS WORKSPACE", expanded: $participantsExpanded, detail: model.activeWorkspace?.name)
+        }
+        if !sections.needsAttention.isEmpty {
+            Section {
+                ForEach(sections.needsAttention.compactMap { byID[$0] }) { workspace in
+                    let count = model.workspaceActivity(for: workspace.workspaceID).needsPerson
+                    workspaceShortcutRow(workspace, trailing: "\(count)", spokenTrailing: "\(count) waiting on you", emphasised: true)
+                }
+            } header: {
+                sidebarSectionHeader("NEEDS ATTENTION")
+            }
+        }
+        if !sections.pinned.isEmpty {
+            Section {
+                ForEach(sections.pinned.compactMap { byID[$0] }) { workspace in
+                    workspaceShortcutRow(workspace, trailing: nil)
+                }
+                .onMove { model.movePinnedWorkspaces(fromOffsets: $0, toOffset: $1) }
+            } header: {
+                sidebarSectionHeader("PINNED")
+            }
+        }
+        if !sections.recent.isEmpty {
+            Section {
+                ForEach(sections.recent.compactMap { byID[$0] }) { workspace in
+                    workspaceShortcutRow(workspace, trailing: workspace.lastSelectedAt.map { WorkspaceRecency.label(for: $0, now: Date()) },
+                                         spokenTrailing: workspace.lastSelectedAt.map { "last used \(WorkspaceRecency.label(for: $0, now: Date()))" })
+                }
+            } header: {
+                sidebarSectionHeader("RECENT")
+            }
+        }
+        let allExpanded = allWorkspacesExpandedChoice ?? sections.allExpandedByDefault
+        Section {
+            if allExpanded {
+                ForEach(model.workspaces) { workspace in
+                    workspaceSidebarRow(workspace)
+                }
+                .onMove { model.moveWorkspaces(fromOffsets: $0, toOffset: $1) }
+            }
+        } header: {
+            HStack(spacing: 6) {
+                Button {
+                    allWorkspacesExpandedChoice = !allExpanded
+                } label: {
+                    Label("ALL WORKSPACES (\(model.workspaces.count))", systemImage: allExpanded ? "chevron.down" : "chevron.right")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(allExpanded ? "Collapse all workspaces" : "Expand all workspaces")
+                Spacer()
+                workspaceActionsMenu
+            }
+        }
+    }
+
+    /// While filtering, matches only: the workspaces, then this workspace's panes.
+    @ViewBuilder private var filteredSidebar: some View {
+        Section {
+            ForEach(filteredWorkspaces) { workspace in
+                // Matched by a folder: show the folders, which are collapsed by default.
+                workspaceSidebarRow(workspace, showFolders: !workspace.name.localizedCaseInsensitiveContains(
+                    sidebarQuery.trimmingCharacters(in: .whitespacesAndNewlines)))
+            }
+        } header: {
+            HStack(spacing: 6) {
+                sidebarSectionHeader("WORKSPACES")
+                Spacer()
+                workspaceActionsMenu
+            }
+        }
+        Section {
+            paneRows(filteredVisiblePanes)
+        } header: {
+            sidebarSectionHeader("THIS WORKSPACE", detail: model.activeWorkspace?.name)
+        }
+    }
+
+    private func sidebarSectionHeader(_ title: String, expanded: Binding<Bool>? = nil, detail: String? = nil) -> some View {
+        HStack(spacing: 6) {
+            if let expanded {
+                Button {
+                    expanded.wrappedValue.toggle()
+                } label: {
+                    Label(title, systemImage: expanded.wrappedValue ? "chevron.down" : "chevron.right")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(expanded.wrappedValue ? "Collapse" : "Expand") \(title.lowercased())")
+            } else {
+                Text(title)
+            }
+            if let detail {
+                Text(detail)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+    }
+
+    @ViewBuilder private func paneRows(_ panes: [WorkbenchPane]) -> some View {
+        ForEach(panes) { pane in
+            HStack(spacing: 6) {
+                Button {
+                    model.select(pane)
+                } label: {
+                    PaneRow(
+                        pane: pane,
+                        facts: model.sidebarFacts(for: pane),
+                        managedWorktreeBranch: model.managedWorktree(forPane: pane.id)?.branch,
+                        awaitingAnswerCount: model.awaitingAnswerCount(for: pane.id),
+                        unreadResultCount: model.unreadResultCount(forPane: pane.id),
+                        latestFailure: model.latestFailure(for: pane.id),
+                        permissionProfileName: model.permissionProfileName(for: pane)
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(pane.displayName), \(pane.kind.label) pane")
+                .accessibilityValue(paneAccessibilityValue(pane))
+                .accessibilityHint("Focus this pane")
+                paneRecoveryButton(pane)
+            }
+            .listRowBackground(pane.isActive ? Color.accentColor.opacity(0.14) : Color.clear)
+            .listRowInsets(EdgeInsets(top: 1, leading: 5, bottom: 1, trailing: 5))
+            .overlay {
+                PaneContextMenu(items: paneMenuItems(pane))
+            }
+        }
+    }
+
+    /// A workspace in Needs Attention, Pinned or Recent: one line, no folders.
+    private func workspaceShortcutRow(_ workspace: WorkbenchWorkspace, trailing: String?, spokenTrailing: String? = nil,
+                                      emphasised: Bool = false) -> some View {
+        Button {
+            model.select(workspace)
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: workspace.isFolderless
+                    ? "square.stack.3d.up"
+                    : (workspace.isActive ? "folder.fill" : "folder"))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(workspace.isActive ? Color.accentColor : Color.secondary)
+                    .frame(width: 15)
+                Text(workspace.name)
+                    .font(.system(size: 11, weight: workspace.isActive ? .semibold : .regular))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if let trailing {
+                    Text(trailing)
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced).monospacedDigit())
+                        .foregroundStyle(emphasised ? Color.accentColor : Color.secondary)
+                }
+            }
+            .padding(.horizontal, 7)
+            .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(workspace.isActive ? Color.accentColor.opacity(0.14) : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+        .help(workspaceTabHelp(workspace))
+        .accessibilityLabel("Workspace \(workspace.name)")
+        // The label replaces the button's text, so the count or time is spoken here.
+        .accessibilityValue(([spokenTrailing].compactMap { $0 } + [workspaceTabAccessibilityValue(workspace)]).joined(separator: ", "))
+        .accessibilityHint("Open workspace")
+        .snapshotContextMenu(workspaceMenuItems(workspace))
+        .listRowInsets(EdgeInsets(top: 1, leading: 5, bottom: 1, trailing: 5))
+        .listRowBackground(Color.clear)
+    }
+
+    private func workspaceSidebarRow(_ workspace: WorkbenchWorkspace, showFolders: Bool = false) -> some View {
         let paneCount = model.panes.count { $0.workspaceID == workspace.workspaceID }
         let waiting = model.waitingCount(for: workspace.id)
         let failures = model.failureCount(for: workspace.id)
         let unread = model.unreadResultCount(forWorkspace: workspace.id)
-        let foldersExpanded = !collapsedWorkspaceFolderIDs.contains(workspace.workspaceID)
+        let foldersExpanded = showFolders || expandedWorkspaceFolderIDs.contains(workspace.workspaceID)
 
         return VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 2) {
@@ -350,9 +478,9 @@ struct ContentView: View {
                 } else {
                     Button {
                         if foldersExpanded {
-                            collapsedWorkspaceFolderIDs.insert(workspace.workspaceID)
+                            expandedWorkspaceFolderIDs.remove(workspace.workspaceID)
                         } else {
-                            collapsedWorkspaceFolderIDs.remove(workspace.workspaceID)
+                            expandedWorkspaceFolderIDs.insert(workspace.workspaceID)
                         }
                     } label: {
                         Image(systemName: foldersExpanded ? "chevron.down" : "chevron.right")
@@ -532,6 +660,7 @@ struct ContentView: View {
     private func workspaceMenuItems(_ workspace: WorkbenchWorkspace) -> [ToolbarMenuItem] {
         var items: [ToolbarMenuItem] = [
             .action("Rename…") { model.rename(workspace) },
+            .action(workspace.pinned ? "Unpin from Sidebar" : "Pin to Sidebar") { model.setPinned(!workspace.pinned, for: workspace) },
             .action("Save Layout…") { model.saveLayout(of: workspace) },
         ]
         if !model.savedLayouts.isEmpty {
@@ -1494,7 +1623,11 @@ struct ContentView: View {
         }
         if let result = item.resultText, !result.isEmpty, item.state == .completed || item.kind == .delegate {
             items += [.separator, .message(result)]
-            if item.hasUnreadResult { items.append(.action("Mark Result Read") { model.markRead(item) }) }
+            if item.hasUnreadResult {
+                items.append(.action("Mark Result Read") { model.markRead(item) })
+            } else if item.awaitsAcknowledgement {
+                items.append(.action("Mark Seen") { model.markRead(item) })
+            }
         }
         items += [
             .separator,
