@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Readable } from 'node:stream'
 
 import {
+  scanGitHistory,
   scanHistoricalPaths,
   scanHistoryStream,
   scanText,
@@ -73,4 +77,60 @@ test('the repository scan streams git log -p instead of buffering it', () => {
   const source = readFileSync(new URL('./public-repository-scan.mjs', import.meta.url), 'utf8')
   assert.doesNotMatch(source, /runGit\(\[\s*'log',\s*'-p'/)
   assert.match(source, /scanHistoryStream\(/)
+})
+
+// The real reader: git's own output, its failures, and no unhandled
+// rejection or leftover process on any of them (Agy's review of MR !130).
+function withTemporaryFolder(body) {
+  const folder = mkdtempSync(join(tmpdir(), 'parley-scan-'))
+  return Promise.resolve(body(folder)).finally(() => rmSync(folder, { recursive: true, force: true }))
+}
+
+async function withoutUnhandledRejections(body) {
+  const seen = []
+  const record = (reason) => seen.push(reason)
+  process.on('unhandledRejection', record)
+  try {
+    await body()
+    await new Promise((resolve) => setImmediate(resolve))
+  } finally {
+    process.off('unhandledRejection', record)
+  }
+  assert.deepEqual(seen, [], 'a rejection went unhandled')
+}
+
+test('history scan reads git and finds a secret only its history holds', async () => {
+  await withTemporaryFolder(async (folder) => {
+    const git = (...args) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: folder })
+    git('init', '-q')
+    writeFileSync(join(folder, 'a'), 'x\n'); git('add', 'a'); git('commit', '-qm', 'one')
+    writeFileSync(join(folder, 'a'), `token=${sampleKey}\n`); git('commit', '-qam', 'two')
+    writeFileSync(join(folder, 'a'), 'x\n'); git('commit', '-qam', 'three')
+    assert.deepEqual(await scanGitHistory({ cwd: folder }), [{ rule: 'aws-access-key', source: '<git-history>' }])
+  })
+})
+
+test('history scan fails with git\'s own message outside a repository', async () => {
+  await withTemporaryFolder(async (folder) => {
+    await withoutUnhandledRejections(async () => {
+      await assert.rejects(scanGitHistory({ cwd: folder }), /not a git repository/)
+    })
+  })
+})
+
+test('history scan fails cleanly when git cannot start', async () => {
+  await withoutUnhandledRejections(async () => {
+    await assert.rejects(scanGitHistory({ command: '/nonexistent/git' }), /ENOENT/)
+  })
+})
+
+test('history scan names the signal that ended git', async () => {
+  await withTemporaryFolder(async (folder) => {
+    const fake = join(folder, 'git')
+    writeFileSync(fake, '#!/bin/sh\nkill -TERM $$\n')
+    chmodSync(fake, 0o755)
+    await withoutUnhandledRejections(async () => {
+      await assert.rejects(scanGitHistory({ command: fake }), /SIGTERM/)
+    })
+  })
 })

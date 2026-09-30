@@ -75,10 +75,14 @@ export async function scanHistoryStream(input, source = '<git-history>') {
   return rules.filter(({ rule }) => found.has(rule)).map(({ rule }) => found.get(rule))
 }
 
-// `git log -p` as a stream, with its exit status checked once it has been read.
-async function scanGitHistory() {
-  const child = spawn('git', ['log', '-p', '--all', '--full-history', '--no-color', '--no-ext-diff'], {
-    cwd: repositoryRoot,
+// `git log -p` as a stream. The read and git's exit are awaited together, so
+// a git that cannot start rejects the call rather than an unwatched promise,
+// and git is stopped on the way out, so a read that throws part-way cannot
+// leave it blocked on a full pipe (Agy's review of MR !130). A git ended by a
+// signal says which.
+export async function scanGitHistory({ cwd = repositoryRoot, command = 'git' } = {}) {
+  const child = spawn(command, ['log', '-p', '--all', '--full-history', '--no-color', '--no-ext-diff'], {
+    cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   let stderr = ''
@@ -86,12 +90,17 @@ async function scanGitHistory() {
   child.stderr.on('data', (chunk) => { stderr += chunk })
   const exited = new Promise((resolveExit, rejectExit) => {
     child.on('error', rejectExit)
-    child.on('close', (status) => resolveExit(status))
+    child.on('close', (code, signal) => resolveExit({ code, signal }))
   })
-  const findings = await scanHistoryStream(child.stdout)
-  const status = await exited
-  if (status !== 0) throw new Error(stderr.trim() || 'git log -p failed')
-  return findings
+  try {
+    const [findings, { code, signal }] = await Promise.all([scanHistoryStream(child.stdout), exited])
+    if (code !== 0) {
+      throw new Error(stderr.trim() || (signal ? `git log -p was ended by ${signal}` : `git log -p exited with status ${code}`))
+    }
+    return findings
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill()
+  }
 }
 
 export function scanHistoricalPaths(paths) {
