@@ -1229,8 +1229,11 @@ public final class WorkbenchController: @unchecked Sendable {
             // A caller stopping this pane's container checks its workspace
             // after Docker cleanup; a move meanwhile would leave it refusing
             // with the container already gone.
-            guard !containerPreparations.contains(paneID), !moveHolds.contains(paneID) else {
+            guard !containerPreparations.contains(paneID) else {
                 throw ContainerPaneError.refused("This pane's container is being prepared or stopped. Move it when that ends.")
+            }
+            guard !moveHolds.contains(paneID) else {
+                throw ContainerPaneError.refused("This pane is being stopped or closed. Move it when that ends.")
             }
             let target = document.workspaces[try workspaceIndexLocked(targetWorkspaceID)]
             let assessment = PaneMobilityPolicy.assess(

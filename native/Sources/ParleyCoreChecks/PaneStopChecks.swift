@@ -93,5 +93,13 @@ private func stopBody(_ reader: SwiftSourceReader, _ signature: String) throws -
         try stopExpect(task.contains("controller.prepareContainerStop(pane, requiringWorkspace: true)"),
                        "the helper must require each pane's reviewed workspace before Docker")
         try stopExpect(!helper.contains("requiringWorkspace: false"), "the helper let a moved pane's container be stopped")
+        // What it holds is every reviewed pane, released once, and the
+        // operation it exists for still runs at the end of the Task.
+        try stopExpect(helper.contains("let held = reviewed.map(\\.id)"), "the helper does not hold every reviewed pane")
+        try stopExpect(helper.components(separatedBy: "releaseMoveHold").count == 2, "the helper releases its hold more than once")
+        guard let validation = task.range(of: "guard reviewed.allSatisfy("),
+              let run = task.range(of: "try operation()") else { throw stopFailure("the helper no longer runs its operation after validating the panes") }
+        try stopExpect(validation.upperBound <= run.lowerBound && task.components(separatedBy: "operation()").count == 2,
+                       "the helper must run its operation exactly once, after validating the panes")
     }),
 ]
