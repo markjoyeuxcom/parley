@@ -23,10 +23,13 @@ RUN apt-get update \
 
 COPY --chmod=0755 agy /usr/local/bin/agy
 
-# Parley replaces PATH in a container pane, so the shim names node exactly.
+# Prax's own installer writes its `prax` shim. It goes in /usr/local/bin, which
+# is on the PATH Parley gives a pane, and the shim names node exactly. The
+# installer also copies its skills into HOME; that is repeated inside the pane
+# (see docs/container-images.md), so the build's copy is thrown away.
 COPY prax /opt/prax
-RUN printf '#!/bin/sh\nexec /usr/local/bin/node /opt/prax/cli/prax.js "$@"\n' > /usr/local/bin/prax \
- && chmod 0755 /usr/local/bin/prax
+RUN HOME=/tmp/prax-build PRAX_BIN_DIR=/usr/local/bin sh /opt/prax/skills/install.sh --cli \
+ && rm -rf /tmp/prax-build
 
 # Parley passes no variables of your own into a container pane, so the address
 # is part of the image. 49636 is the loopback port one Prax app chose on first

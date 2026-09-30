@@ -242,8 +242,10 @@ the Mac's loopback. What it took:
 - **The CLI on Linux.** The Mac's `prax` command runs the app's macOS binary,
   which cannot run here, but the CLI itself is plain Node. The image is based
   on `node:22-slim`, which passes the probe unmodified, and carries a copy of
-  the app's `Contents/Resources/resources/app` folder behind a two-line shim.
-  The shim names `/usr/local/bin/node`, because Parley replaces `PATH`.
+  the app's `Contents/Resources/resources/app` folder. Prax's own installer
+  writes the `prax` shim at build time with `--cli`, into `/usr/local/bin`,
+  which is on the `PATH` Parley gives a pane; the shim names
+  `/usr/local/bin/node`, because Parley replaces `PATH`.
 - **The address.** `PRAX_API_URL=http://host.docker.internal:49636` is part
   of the image. 49636 is the port the app chose on first launch and saved in
   `~/Library/Application Support/com.moomora.prax/webview-port`; use yours.
@@ -252,10 +254,39 @@ the Mac's loopback. What it took:
   reopen Prax. `host.docker.internal` then gets through and any other name
   still gets 403. The setting lasts until you log out or restart. No token was
   needed, because the forwarded connection reaches the app from loopback.
+- **Instructions, skills and hooks.** On the Mac, Prax's installer
+  (`install.sh --instructions --cli --hooks`) writes all three under `HOME`.
+  In a pane that is the volume, which the image cannot fill, so run it inside
+  the pane once, after the pane has started; the volume keeps the result.
+  Find the pane's container by its label and run the installer there:
+
+  ```bash
+  docker ps --filter label=com.parley.pane \
+    --format '{{.Names}}  {{.Label "com.parley.pane"}}  {{.Image}}'
+  docker exec -e PRAX_BIN_DIR=/usr/local/bin <container name> \
+    sh /opt/prax/skills/install.sh --instructions --hooks
+  ```
+
+  `docker exec` runs as the pane's user with its `HOME`. Leave out `--cli`:
+  the build did it, and `/usr/local/bin` is not writable at run time.
+  `PRAX_BIN_DIR` points the installer at that shim, so the instructions teach
+  `prax …`. Without it the installer looks in `~/.local/bin`, which is not on
+  Parley's `PATH`, and teaches the skill scripts' full paths instead. Restart
+  the pane afterwards so the vendor reads its new instructions.
+  `--hooks` writes the harvest hook for Claude Code, Codex and Copilot, and
+  the instructions then teach `Remember:` proposals, which only those hooks
+  collect. The installer has no hook for Agy, so in this Agy-only image the
+  hook files wait for a vendor the image does not carry. Copilot reads
+  `~/.copilot/instructions` only when `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` names
+  it, and in a container that variable names only Parley's protocol folder.
 
 Checked by running the probe above, then `agy --version`, `prax doctor` and
 `prax task list --all-projects` as your uid with every capability dropped, no
-new privileges, Parley's `PATH` and an empty home.
+new privileges, Parley's `PATH` and an empty home. The installer step was
+checked on a volume chowned as Parley's initializer does it, in a container
+created with the pane's flags: the instructions taught `prax`, `prax recall`
+ran from inside, and a new container on the same volume found everything in
+place. Whether a signed-in Agy takes up those instructions was not checked.
 
 ## Known limits
 
