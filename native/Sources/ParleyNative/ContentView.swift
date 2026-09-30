@@ -70,6 +70,8 @@ struct ContentView: View {
                     sidebarVisible.toggle()
                 } label: {
                     Image(systemName: "sidebar.leading")
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .controlSize(.small)
@@ -484,6 +486,7 @@ struct ContentView: View {
                         latestFailure: model.latestFailure(for: pane.id),
                         permissionProfileName: model.permissionProfileName(for: pane)
                     )
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("\(pane.displayName), \(pane.kind.label) pane")
@@ -654,8 +657,12 @@ struct ContentView: View {
                 .font(.system(size: 9))
                 .foregroundStyle(.secondary)
             Spacer(minLength: 4)
-            Button("Attach…") {
+            Button {
                 model.attachFolder(to: workspace)
+            } label: {
+                Text("Attach…")
+                    .padding(.vertical, 4)
+                    .contentShape(Rectangle())
             }
             .font(.system(size: 9, weight: .medium))
             .buttonStyle(.plain)
@@ -1091,6 +1098,7 @@ struct ContentView: View {
                             .foregroundStyle(workspace.isActive ? .primary : .secondary)
                             .padding(.horizontal, 10)
                             .frame(height: 26)
+                            .contentShape(Rectangle())
                             .background(
                                 RoundedRectangle(cornerRadius: 5)
                                     .fill(workspace.isActive ? Color.accentColor.opacity(0.14) : Color.clear)
@@ -1126,6 +1134,7 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 8)
                         .frame(height: 26)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .fixedSize()
@@ -1551,7 +1560,11 @@ struct ContentView: View {
                 activityHistoryMenu
                     .fixedSize()
             }
-            Button("⌘K Actions", action: model.showCommandPalette)
+            Button(action: model.showCommandPalette) {
+                Text("⌘K Actions")
+                    .frame(maxHeight: .infinity)
+                    .contentShape(Rectangle())
+            }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .help("Open the Command Palette")
@@ -1857,6 +1870,7 @@ struct ContentView: View {
             .foregroundStyle(pane.isActive ? .primary : .secondary)
             .padding(.horizontal, 8)
             .frame(height: 24)
+            .contentShape(Rectangle())
             .background(pane.isActive ? Color.accentColor.opacity(0.08) : Color.clear)
             .overlay(alignment: .bottom) {
                 Rectangle()

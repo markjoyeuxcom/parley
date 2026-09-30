@@ -294,24 +294,90 @@ func checkWorkspaceSidebarWiring() throws {
                       "Mark Seen is offered only inside the result block, which a failure never reaches")
 }
 
-/// A plain-style button answers clicks only on its drawn pixels unless its
-/// label has a hit shape, so a 9-point chevron took several attempts to hit
-/// (Mark's report on v0.1.63, 30 September 2026). Every disclosure chevron in
-/// the sidebar gives its label a hit shape before the plain style is applied.
-func checkSidebarDisclosureHitTargets() throws {
+/// A plain-style button answers clicks only on the pixels its label draws
+/// unless the label has a hit shape, so a 9-point chevron took several
+/// attempts to hit (Mark's report on v0.1.63, 30 September 2026). Every
+/// plain button in the main window's view therefore gives its own label a
+/// hit shape. The source is read with comments removed, and each button is
+/// taken with its own label and its own modifier chain: a first version
+/// scanned ahead to the next plain style anywhere in the file, so a button
+/// could borrow a later button's shape (Agy's review of MR !128).
+func checkPlainButtonHitTargets() throws {
     let sources = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-    let view = try String(contentsOf: sources.appendingPathComponent("ParleyNative/ContentView.swift"), encoding: .utf8)
-    var searchFrom = view.startIndex
-    var chevrons = 0
-    while let chevron = view.range(of: "\"chevron.", range: searchFrom..<view.endIndex) {
-        guard let style = view.range(of: ".buttonStyle(.plain)", range: chevron.upperBound..<view.endIndex) else { break }
-        let label = view[chevron.lowerBound..<style.lowerBound]
-        let line = view[..<chevron.lowerBound].components(separatedBy: "\n").count
-        try sidebarExpect(label.contains(".contentShape("), "the chevron button at ContentView.swift:\(line) has no hit shape")
-        chevrons += 1
-        searchFrom = style.upperBound
+    let reader = SwiftSourceReader(try String(contentsOf: sources.appendingPathComponent("ParleyNative/ContentView.swift"), encoding: .utf8))
+    let text = reader.text
+    func skipSpace(_ index: inout String.Index) {
+        while index < text.endIndex, text[index].isWhitespace { index = text.index(after: index) }
     }
-    try sidebarExpect(chevrons >= 5, "found only \(chevrons) sidebar chevrons; the scan no longer matches the view")
+    func after(_ block: Substring) -> String.Index { text.index(after: block.endIndex) }
+    var problems: [String] = []
+    var plainButtons = 0, chevrons = 0
+    var search = text.startIndex
+    while let found = text.range(of: "Button", range: search..<text.endIndex) {
+        search = found.upperBound
+        // The SwiftUI initialiser only, not a longer identifier such as ToolbarButton.
+        if found.lowerBound > text.startIndex {
+            let previous = text[text.index(before: found.lowerBound)]
+            if previous.isLetter || previous.isNumber || previous == "_" || previous == "." { continue }
+        }
+        var index = found.upperBound
+        var arguments: Substring?
+        if index < text.endIndex, text[index] == "(" {
+            guard let parsed = reader.balanced(at: index) else { continue }
+            arguments = parsed
+            index = after(parsed)
+        }
+        let followsWithClosure: Bool = {
+            var probe = index
+            skipSpace(&probe)
+            return probe < text.endIndex && text[probe] == "{"
+        }()
+        guard arguments != nil || followsWithClosure else { continue }
+        var label: Substring?
+        skipSpace(&index)
+        if index < text.endIndex, text[index] == "{", let first = reader.balanced(at: index) {
+            index = after(first)
+            var probe = index
+            skipSpace(&probe)
+            if text[probe...].hasPrefix("label:") {
+                probe = text.index(probe, offsetBy: "label:".count)
+                skipSpace(&probe)
+                if probe < text.endIndex, text[probe] == "{", let labelBlock = reader.balanced(at: probe) {
+                    label = labelBlock
+                    index = after(labelBlock)
+                }
+            } else if arguments?.contains("action:") == true {
+                label = first // Button(action: …) { label }
+            }
+        }
+        // The button's own modifier chain: `.name`, then any balanced
+        // arguments or trailing closure, for as long as the next token is a dot.
+        var chain = ""
+        while true {
+            var probe = index
+            skipSpace(&probe)
+            guard probe < text.endIndex, text[probe] == "." else { break }
+            var end = text.index(after: probe)
+            while end < text.endIndex, text[end].isLetter || text[end].isNumber || text[end] == "_" { end = text.index(after: end) }
+            guard end > text.index(after: probe) else { break }
+            if end < text.endIndex, text[end] == "(", let parsed = reader.balanced(at: end) { end = after(parsed) }
+            var closure = end
+            while closure < text.endIndex, text[closure] == " " { closure = text.index(after: closure) }
+            if closure < text.endIndex, text[closure] == "{", let parsed = reader.balanced(at: closure) { end = after(parsed) }
+            chain += text[probe..<end]
+            index = end
+        }
+        guard chain.contains(".buttonStyle(.plain)") else { continue }
+        plainButtons += 1
+        if label?.contains("\"chevron.") == true { chevrons += 1 }
+        if !(label?.contains(".contentShape(") ?? false) {
+            let snippet = text[found.lowerBound...].prefix(60).replacingOccurrences(of: "\n", with: " ")
+            problems.append(label == nil ? "a titled plain button has no label to shape: \(snippet)" : "no hit shape in the label of: \(snippet)")
+        }
+    }
+    try sidebarExpect(problems.isEmpty, "plain buttons without a hit shape:\n" + problems.joined(separator: "\n"))
+    try sidebarExpect(chevrons >= 5 && plainButtons >= 10,
+                      "found \(plainButtons) plain buttons and \(chevrons) chevrons; the parser no longer matches the view")
 }
 
 @MainActor let workspaceSidebarChecks: [(String, () throws -> Void)] = [
@@ -320,5 +386,5 @@ func checkSidebarDisclosureHitTargets() throws {
     ("workspace pins and recency persist and roll back", checkWorkspacePinsAndRecencyPersist),
     ("workspace sidebar draws the derived sections", checkWorkspaceSidebarWiring),
     ("needs attention clears when a failure is seen or a day old", checkNeedsAttentionClearsWhenSeenOrOld),
-    ("sidebar disclosure chevrons have a full hit target", checkSidebarDisclosureHitTargets),
+    ("plain buttons in the main view have a full hit target", checkPlainButtonHitTargets),
 ]
