@@ -4,6 +4,13 @@ This records the tested local setup and the remaining compatibility work. It
 does not establish compatibility with other images. The native macOS core and
 Ghostty remain on the host.
 
+This is a dated record, kept as it was written. Some of it has since changed:
+container panes now cover all four vendors, a reviewed container-only bypass
+exists, and one image can carry every vendor. Current guidance (building and
+using images, signing in, known limits) is in
+[container-images.md](container-images.md), and the acceptance steps are in
+[test-scenarios.md, P1.3](test-scenarios.md#p13-container-pane-acceptance).
+
 ## Environment
 
 - Local Unix-socket OrbStack daemon; Docker server reported `29.4.0`, Linux

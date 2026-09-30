@@ -58,23 +58,31 @@ handoffs work. Agy reports hook state as Unknown by design.
 1. Start one container pane per vendor: Claude, Codex, Agy and Copilot
    (Runs › In a container in each review; `parley-agents:local` carries all
    four, see `docs/container-images.md`).
-2. Sign each in. Claude: paste-code flow. Codex: either device code (no
-   port) or, with **Published port** set to 1455 in the container review,
-   browser sign-in — the callback must complete on the Mac. Agy: choose
-   Google OAuth, open the printed address on the Mac and paste the code
-   back. Copilot: confirm folder trust first, then its device-code flow.
+2. Sign each in, by the vendor's flow in `docs/container-images.md`
+   ([Signing in](container-images.md#signing-in)). For Codex, try both device
+   code and browser sign-in with **Published port** set to 1455; the
+   callback must complete on the Mac.
    **Fail:** the vendor cannot write its home (Agy: "mkdir
    /home/parley/.gemini: permission denied"; Copilot: "EACCES … .cache"),
    which every image with a `/home/parley` directory did before 14
    September 2026 until the home volume was mounted with nocopy.
 3. Confirm protocol uptake (`parley whoami`, protocol 33) fresh and resumed.
-4. Send an Ask and a Delegate between a container pane and a host pane.
+4. Send an Ask and a Delegate between a container pane and a host pane,
+   including a `done --file` result and a reviewed context pack.
 5. Check normal permission prompts appear (unless you chose bypass — then the
-   pane badge and review must say so).
+   pane badge and review must say so). Try one allowed and one refused
+   operation and record what the vendor actually did; hook signals are not
+   proof.
 6. Close and restart the pane. **Login must persist.**
 7. Quit Parley entirely, relaunch, start the pane again. Login still persists.
 8. Status Center → Health → Containers: confirm the records make sense.
-9. In a new agent review, choose Runs › In a container, press **Check Image
+9. Stop a pane while it is working, then quit the Docker runtime during a
+   cleanup. An uncertain removal must stay visible. **Delete Saved Vendor
+   State** must refuse while a container still uses the volume, then remove
+   only the selected unused one.
+10. Compare total idle resource use, the Docker VM included; Parley's process
+    list shows only the host Docker client.
+11. In a new agent review, choose Runs › In a container, press **Check Image
    and Daemon** and, while it reads "Checking…", change the Vendor row.
    **Fail:** the first vendor's result ("Ready for your review", its image
    ID) appears under the new vendor. Before 28 September 2026 it did.

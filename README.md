@@ -677,17 +677,21 @@ before starting. Parley does not build or download images. The image must
 provide the pane's vendor at `/usr/local/bin/claude`, `/usr/local/bin/codex`,
 `/usr/local/bin/agy` or `/usr/local/bin/copilot`, plus POSIX sh, GNU
 stat/coreutils and `/bin/chown`.
+[docs/container-images.md](docs/container-images.md) is the guide: the exact
+image contract, a recipe for one image carrying all four vendors, how a pane
+uses and changes its image, each vendor's sign-in, reaching a service on your
+Mac, and the known limits.
 
 The working folder, the pane's own relay endpoint and read-only protocol
 files are mounted from the host. A linked worktree additionally mounts its shared
 Git directory only after you review its exact path; its primary checkout stays
 unmounted. Objects, refs, hooks and configuration remain shared.
 Changes to shared hooks or executable Git configuration can cause commands to run on your Mac, outside the container, during later host Git operations. Parley does not review those changes again. The Docker socket and host vendor login are
-not mounted. Sign in inside the container; its private named volume keeps
-vendor login, configuration and saved conversations. For Codex, choose
-**Sign in with Device Code** and open the supplied link in your Mac browser;
-no browser-login callback port is published. Codex's separately selected legacy
-Landlock mode is a temporary test option for compatible images when the default
+not mounted. Sign in inside the container
+([Signing in](docs/container-images.md#signing-in)); the pane's private named
+volume keeps vendor login, configuration and saved conversations across pane
+restarts and a change of image (a Parley relaunch is not yet checked). Codex's separately selected legacy Landlock
+mode is a temporary test option for compatible images when the default
 Bubblewrap sandbox is unavailable. Codex has deprecated it and plans to remove
 it; vendor permission prompts remain active. Submodules and arbitrary additional
 folders are refused. The image check also validates the required Linux utilities.
@@ -712,11 +716,11 @@ vendor-owned state. Process lists show the host Docker client, not processes
 inside the container. A reviewed command run requested from a container still
 runs on the host in a new human Shell.
 
-The tested setup is recorded in the [container spike](docs/container-pane-spike.md).
-Mark verified Codex device login, an interactive reply, bidirectional messaging
-and pane restart on OrbStack. Broader image/daemon compatibility, Claude's live
-permission flow, resumed instruction uptake and login persistence across an app
-relaunch remain follow-up checks. Team approval can choose host or container execution per vendor, with the image,
+What has been checked on OrbStack, and what has not, is in the guide's
+[Signing in](docs/container-images.md#signing-in) and
+[Known limits](docs/container-images.md#known-limits); the first spike is
+recorded in [docs/container-pane-spike.md](docs/container-pane-spike.md).
+Team approval can choose host or container execution per vendor, with the image,
 daemon and any shared Git mount shown before approval. Each container member gets
 a private vendor-state volume. Creation counts during preparation; Stop can revoke
 startup, and a failed preparation is reported explicitly.

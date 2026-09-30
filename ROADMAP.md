@@ -70,39 +70,35 @@ substitution, not compromise of the Mac account or injection into app memory.
 
 ## Container agent panes
 
-The implementation includes the portable Linux shim, pinned local image/daemon
-launch projection, recorded container ownership and native launch/cleanup UI.
-The container owns vendor execution; the native core remains on macOS.
-`AgentProtocol.version` is 29, including content-free execution-boundary
-identity and the host semantics of request-run from a container.
+Shipped as experimental. Any agent pane (Claude Code, Codex, Agy or Copilot)
+can run in a person-reviewed local Linux container: a portable Linux shim, a
+pinned local image and daemon, recorded container ownership, native launch and
+cleanup, reviewed shared-Git mounts for a linked worktree (never the primary
+checkout), per-vendor container settings in team approvals with asynchronous
+member startup, an optional loopback-only published port for browser sign-in,
+and an opt-in container-only vendor permission bypass. Mark authorized that
+bypass on 9 September: Docker remains the execution boundary, the review and
+pane badge disclose it, host launches keep their permission controls, and
+there is no automatic sandbox fallback. The container owns vendor execution;
+the native core stays on macOS.
 
-The [OrbStack spike record](docs/container-pane-spike.md) covers the real file transport with disposable pane
-identities. The default Bubblewrap namespace path is unavailable in the tested
-unprivileged container; Codex's explicitly selected legacy Landlock path ran
-an allowed command and refused a disallowed write. This is not a blanket
-compatibility statement for other images or daemons.
-
-The real Ghostty/Docker checks have exercised resize, Control-C, hidden-window
-input and confirmed container removal; the existing regression suite also ran.
-Mark reported successful Codex device sign-in, an interactive reply,
-bidirectional Parley messaging and container pane restart. Codex also warns
-that legacy Landlock is deprecated. Compatibility follow-ups include a working
-default sandbox, Claude sign-in, normal permissions, fresh/resumed instruction
-uptake, persistent login and total host-plus-VM idle cost. Image checks are
-quota-free and do not establish those outcomes.
+Current guidance (the image contract, one image for every vendor, using and
+changing an image, signing in, reaching a service on the Mac, known limits) is
+in [docs/container-images.md](docs/container-images.md); the first OrbStack
+spike is recorded in [docs/container-pane-spike.md](docs/container-pane-spike.md),
+and the acceptance steps are in [docs/test-scenarios.md, P1.3](docs/test-scenarios.md#p13-container-pane-acceptance).
 
 Mark's release decision on 9 September: this is a greenfield project; ship the
 reviewed implementation with its tested configuration and known limitations.
 The remaining compatibility work does not hold the feature out of main or the
-next release. Build, regression, packaging and release verification still apply.
-The container follow-up adds reviewed shared-Git mounts (without the primary
-checkout), per-vendor container team approvals and asynchronous member startup,
-Linux utility preflight, cleanup continuation and responsive ownership reads.
-Default Codex Bubblewrap still fails namespace creation in the current OrbStack
-image. Mark explicitly authorized an opt-in container-only vendor permission
-bypass on 9 September: Docker remains the execution boundary, the review and pane
-badge disclose the mode, and host launches retain their permission controls.
-There is no automatic sandbox fallback. Image building, remote daemons, Compose and Docker-in-Docker remain outside this version.
+next release.
+
+Still open: a working default Codex sandbox (Bubblewrap cannot create
+namespaces in the unprivileged container, and the legacy Landlock option is
+deprecated), Claude and Copilot sign-in from a container, the ordinary
+permission flow in a signed-in container session, login persistence across a
+Parley relaunch, and total host-plus-VM idle cost. Image building, remote
+daemons, Compose and Docker-in-Docker remain outside this version.
 
 ## Product boundary
 

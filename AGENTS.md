@@ -1643,9 +1643,12 @@ GNU stat/coreutils and `/bin/chown`; `docs/container-images.md` states the exact
 utility contract, the run-time shape an image must tolerate, worked Dockerfiles
 and the command to check an image against the same probe. It also says how a
 pane reaches a service on the Mac (`host.docker.internal`, baked configuration,
-a service's Host check) and what that opens, with the Agy and Prax recipe in
-`docs/parley-agy-prax.Dockerfile` (30 September 2026). Parley adds no
-environment or mount for this; the allowlist below still holds.
+a service's Host check) and what that opens. `docs/parley-agents.Dockerfile`
+is one image for all four vendors with the Prax CLI, whose inputs
+`docs/parley-agents-fetch.sh` fetches and checks against each publisher's
+checksum (30 September 2026); each pane still gets its own container and
+volume. Parley adds no environment or mount for this; the allowlist below
+still holds.
 `ContainerPaneService.preview` pins a
 local Unix-socket endpoint, daemon ID and image ID and probes the vendor
 without a project mount, pane capability, network or signed-in session. The fixed
