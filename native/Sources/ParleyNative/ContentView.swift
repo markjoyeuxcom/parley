@@ -862,9 +862,21 @@ struct ContentView: View {
         let destinations = model.mobilityDestinations(for: pane)
         if !destinations.isEmpty {
             items.append(.separator)
-            items.append(.submenu("Move to Workspace", items: destinations.map { workspace in
-                .action(workspace.name) { model.movePane(pane, to: workspace) }
-            }))
+            // Pinned and recent first, then a submenu per group, then
+            // Ungrouped; the plain list for a few workspaces and no groups.
+            let byID = Dictionary(destinations.map { ($0.workspaceID, $0) }, uniquingKeysWith: { first, _ in first })
+            let layout = WorkspaceDestinationMenu.layout(destinations: destinations.map(\.workspaceID), sections: model.workspaceSidebarSections)
+            func moves(_ ids: [String]) -> [ToolbarMenuItem] {
+                ids.compactMap { byID[$0] }.map { workspace in .action(workspace.name) { model.movePane(pane, to: workspace) } }
+            }
+            var destinationItems = moves(layout.shortcuts)
+            let rest = layout.groups.map { ToolbarMenuItem.submenu($0.name, items: moves($0.workspaces)) }
+                + (layout.remainingIsUngrouped
+                    ? (layout.remaining.isEmpty ? [] : [.submenu("Ungrouped", items: moves(layout.remaining))])
+                    : moves(layout.remaining))
+            if !destinationItems.isEmpty, !rest.isEmpty { destinationItems.append(.separator) }
+            destinationItems += rest
+            items.append(.submenu("Move to Workspace", items: destinationItems))
         }
         items.append(.separator)
         items.append(.action("Terminal Appearance…") { model.showTerminalFontSettings() })
@@ -939,7 +951,7 @@ struct ContentView: View {
             ? ["No folders attached"]
             : ["Attached: \(workspace.attachedFolders.joined(separator: ", "))"]
         folders.append(workspace.newPaneFolder.map { "New panes: \($0)" } ?? "New panes: follows active pane")
-        return (folders + workspaceTabStatusDetails(workspace) + ["Control-Tab switches workspaces"])
+        return (folders + workspaceTabStatusDetails(workspace) + ["Control-Tab switches workspaces; Command-Shift-O goes to any workspace"])
             .joined(separator: "\n")
     }
 
@@ -1013,11 +1025,17 @@ struct ContentView: View {
         }
     }
 
+    /// With the sidebar hidden. Past eight workspaces the tabs are the pinned
+    /// ones, the current one and those needing the person (`sections.tabs`),
+    /// and More opens Go to Workspace for the rest.
     private var workspaceTabs: some View {
-        HStack(spacing: 6) {
+        let sections = model.workspaceSidebarSections
+        let byID = Dictionary(model.workspaces.map { ($0.workspaceID, $0) }, uniquingKeysWith: { first, _ in first })
+        return HStack(spacing: 6) {
+            ScrollViewReader { reader in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 3) {
-                    ForEach(model.workspaces) { workspace in
+                    ForEach(sections.tabs.compactMap { byID[$0] }) { workspace in
                         Button {
                             model.select(workspace)
                         } label: {
@@ -1081,6 +1099,33 @@ struct ContentView: View {
                         .snapshotContextMenu(workspaceMenuItems(workspace))
                     }
                 }
+            }
+            // A workspace reached another way (Go to Workspace, Control-Tab)
+            // may sit beyond the scrolled tabs; bring its tab into view.
+            .onChange(of: model.activeWorkspace?.id) { _, id in
+                guard let id else { return }
+                withAnimation(.easeOut(duration: 0.15)) { reader.scrollTo(id, anchor: .center) }
+            }
+            }
+
+            // Outside the scrolling tabs, so it cannot scroll out of view.
+            if sections.tabsOverflow {
+                let hidden = model.workspaces.count - sections.tabs.count
+                Button {
+                    model.showWorkspaceSwitcher()
+                } label: {
+                    Text("More (\(hidden))")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8)
+                        .frame(height: 26)
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+                .help("Go to Workspace (Command-Shift-O)")
+                .accessibilityLabel("More workspaces")
+                .accessibilityValue("\(hidden) not shown as tabs")
+                .accessibilityHint("Open Go to Workspace")
             }
 
             Menu {

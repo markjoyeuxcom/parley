@@ -538,8 +538,32 @@ Workspace groups (MR 2 of the same task) organise All Workspaces:
 - **Downgrade:** an older Parley ignores the new keys and drops the groups,
   memberships and pins at its next save. The upgrade direction is safe.
 
-A switcher, the hidden-sidebar tabs and the Move to Workspace menu follow in
-MR 3.
+MR 3 makes any of many workspaces reachable without scrolling:
+- **Go to Workspace (Command-Shift-O, Navigate menu):** the command
+  palette's workspace-only scope (`CommandPaletteScope.workspaces`), listing
+  every workspace. `WorkspaceSwitcherOrder` puts those needing the person
+  first, then the most recently used, then the never-used by name, and the
+  current one last, so Return goes where the person most likely means. The
+  chord is in `WorkbenchKeyboardShortcut` so it reaches Parley while a
+  terminal has focus.
+- **Hidden-sidebar tabs:** every workspace up to eight. Past that,
+  `sections.tabs` is the pinned ones, the current one and those needing the
+  person, in the person's own workspace order, so a tab appears or
+  disappears but never changes place. Recent is left out for the same
+  reason, and a first version that put the current one after the pinned
+  ones moved a tab when it was selected. More, beside the + and outside the
+  scrolling tabs, opens Go to Workspace. The Navigate item is never
+  disabled, because the key monitor takes the chord before the menu.
+- **A pane's Move to Workspace menu (`WorkspaceDestinationMenu`):** pinned
+  and recent destinations first, then a submenu per group holding one, then
+  Ungrouped. With no groups, the other destinations follow instead, without
+  repeating the shortcuts (Agy's review of MR !126); a group's submenu is its
+  whole list. The switcher's ties keep the workspace order explicitly, and
+  the tab strip scrolls to the current tab when a workspace is reached
+  another way. With few
+  workspaces and no groups it stays the plain list. The palette builds its
+  list once per render: its list used to be a computed property read about
+  six times per render.
 
 ## Relay and consultation contract
 

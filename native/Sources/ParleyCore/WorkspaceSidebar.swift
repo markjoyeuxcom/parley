@@ -199,6 +199,13 @@ public struct WorkspaceSidebarSections: Equatable, Sendable {
     public var groups: [Group] = []
     /// Workspaces in no group, or in one that no longer exists.
     public var ungrouped: [String] = []
+    /// The workspace tabs shown while the sidebar is hidden: every workspace
+    /// up to `compactLimit`; past it, the pinned ones, the current one and
+    /// those needing the person, in the person's own workspace order, so a
+    /// tab appears or disappears but never changes place when they switch.
+    /// `tabsOverflow` then offers More, which opens Go to Workspace.
+    public var tabs: [String] = []
+    public var tabsOverflow = false
 
     public static func derive(workspaces: [WorkbenchWorkspace], groups workspaceGroups: [WorkspaceGroup] = [],
                               needsPerson: (String) -> Int) -> WorkspaceSidebarSections {
@@ -220,6 +227,11 @@ public struct WorkspaceSidebarSections: Equatable, Sendable {
                 .prefix(recentLimit)
                 .map(\.workspaceID)
         }
+        var tabs = workspaces.map(\.workspaceID)
+        if !compact {
+            let needing = Set(attention)
+            tabs = workspaces.filter { $0.pinned || $0.isActive || needing.contains($0.workspaceID) }.map(\.workspaceID)
+        }
         let known = Set(workspaceGroups.map(\.id))
         let members = Dictionary(grouping: workspaces.filter { $0.groupID.map(known.contains) ?? false }, by: { $0.groupID! })
         return WorkspaceSidebarSections(
@@ -232,7 +244,9 @@ public struct WorkspaceSidebarSections: Equatable, Sendable {
             groups: workspaceGroups.map {
                 Group(id: $0.id, name: $0.name, isCollapsed: $0.isCollapsed, workspaces: (members[$0.id] ?? []).map(\.workspaceID))
             },
-            ungrouped: workspaces.filter { !($0.groupID.map(known.contains) ?? false) }.map(\.workspaceID)
+            ungrouped: workspaces.filter { !($0.groupID.map(known.contains) ?? false) }.map(\.workspaceID),
+            tabs: tabs,
+            tabsOverflow: tabs.count < workspaces.count
         )
     }
 
@@ -282,5 +296,97 @@ public enum WorkspaceRecency {
         let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date), to: calendar.startOfDay(for: now)).day ?? 0
         formatter.setLocalizedDateFormatFromTemplate(days < 7 ? "EEE" : "d MMM")
         return formatter.string(from: date)
+    }
+}
+
+/// The order of Go to Workspace (the palette's workspace mode): so that
+/// Return goes where the person most likely means, workspaces needing them
+/// come first (most first), then the most recently used, then those never
+/// used by name, and the current workspace last. Typing ranks matches, and
+/// ties keep this order.
+public enum WorkspaceSwitcherOrder {
+    public static func ordered(workspaces: [WorkbenchWorkspace], needsPerson: (String) -> Int) -> [String] {
+        let current = workspaces.filter(\.isActive).map(\.workspaceID)
+        let others = workspaces.filter { !$0.isActive }
+        let order = Dictionary(workspaces.enumerated().map { ($1.workspaceID, $0) }, uniquingKeysWith: { first, _ in first })
+        let needing = others
+            .map { (id: $0.workspaceID, count: needsPerson($0.workspaceID)) }
+            .filter { $0.count > 0 }
+            .sorted { $0.count != $1.count ? $0.count > $1.count : order[$0.id, default: 0] < order[$1.id, default: 0] }
+            .map(\.id)
+        let placed = Set(needing)
+        // Ties (the same moment, the same name) keep the person's order,
+        // stated rather than left to the sort's stability.
+        func earlier(_ left: WorkbenchWorkspace, _ right: WorkbenchWorkspace) -> Bool {
+            order[left.workspaceID, default: 0] < order[right.workspaceID, default: 0]
+        }
+        let used = others
+            .filter { !placed.contains($0.workspaceID) && $0.lastSelectedAt != nil }
+            .sorted { $0.lastSelectedAt! != $1.lastSelectedAt! ? $0.lastSelectedAt! > $1.lastSelectedAt! : earlier($0, $1) }
+            .map(\.workspaceID)
+        let unused = others
+            .filter { !placed.contains($0.workspaceID) && $0.lastSelectedAt == nil }
+            .sorted {
+                let names = $0.name.localizedCaseInsensitiveCompare($1.name)
+                return names != .orderedSame ? names == .orderedAscending : earlier($0, $1)
+            }
+            .map(\.workspaceID)
+        return needing + used + unused + current
+    }
+}
+
+/// A pane's Move to Workspace menu at many workspaces: the pinned and recent
+/// destinations first, then a submenu per group holding a destination, then
+/// Ungrouped. With few workspaces and no groups it stays the plain list.
+public enum WorkspaceDestinationMenu {
+    public struct Group: Equatable, Sendable {
+        public var id: String
+        public var name: String
+        public var workspaces: [String]
+
+        public init(id: String, name: String, workspaces: [String]) {
+            self.id = id
+            self.name = name
+            self.workspaces = workspaces
+        }
+    }
+
+    public struct Layout: Equatable, Sendable {
+        /// Pinned, then recent, destinations: shown at the top of the menu.
+        public var shortcuts: [String]
+        public var groups: [Group]
+        /// The rest: Ungrouped when there are groups, else every destination
+        /// not already among the shortcuts.
+        public var remaining: [String]
+        public var remainingIsUngrouped: Bool
+
+        public init(shortcuts: [String], groups: [Group], remaining: [String], remainingIsUngrouped: Bool) {
+            self.shortcuts = shortcuts
+            self.groups = groups
+            self.remaining = remaining
+            self.remainingIsUngrouped = remainingIsUngrouped
+        }
+    }
+
+    public static func layout(destinations: [String], sections: WorkspaceSidebarSections) -> Layout {
+        let allowed = Set(destinations)
+        if sections.groups.isEmpty, destinations.count <= WorkspaceSidebarSections.compactLimit {
+            return Layout(shortcuts: [], groups: [], remaining: destinations, remainingIsUngrouped: false)
+        }
+        var seen = Set<String>()
+        let shortcuts = (sections.pinned + sections.recent).filter { allowed.contains($0) && seen.insert($0).inserted }
+        guard !sections.groups.isEmpty else {
+            // The rest at the same level, without repeating the shortcuts
+            // (Agy's review of MR !126); a group's submenu is its whole list.
+            return Layout(shortcuts: shortcuts, groups: [], remaining: destinations.filter { !seen.contains($0) }, remainingIsUngrouped: false)
+        }
+        return Layout(
+            shortcuts: shortcuts,
+            groups: sections.groups
+                .map { Group(id: $0.id, name: $0.name, workspaces: $0.workspaces.filter(allowed.contains)) }
+                .filter { !$0.workspaces.isEmpty },
+            remaining: sections.ungrouped.filter(allowed.contains),
+            remainingIsUngrouped: true
+        )
     }
 }

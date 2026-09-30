@@ -157,6 +157,8 @@ public enum ParleyHelpGuide {
                         "Right-click a workspace and choose Pin to Sidebar or Unpin from Sidebar.",
                         "Group workspaces your own way: New Group… in the + beside All Workspaces, or Move to Group › New Group… on a workspace. All Workspaces then lists your groups in order, then Ungrouped. Click a group to show or hide its workspaces; right-click it to rename, move or delete it. Deleting a group moves its workspaces to Ungrouped and closes nothing.",
                         "Drag a workspace to reorder it within its group; use Move to Group to move it to another.",
+                        "With the sidebar hidden and more than eight workspaces, the tabs show your pinned workspaces, the current one and those waiting on you, in your workspace order, so a tab appears or disappears but never changes place; More opens Go to Workspace for the rest.",
+                        "With more than eight workspaces, or any groups, a pane's Move to Workspace menu lists pinned and recent workspaces first, then a submenu for each group and Ungrouped, or the other workspaces when you have no groups.",
                         "A workspace can appear in Needs Attention, Pinned or Recent as well as in All Workspaces; those three are shortcuts.",
                         "Attached folders are collapsed under each workspace in All Workspaces; use the arrow beside a workspace to show them.",
                         "Typing in the filter shows only matching workspaces and this workspace's matching panes.",
@@ -1052,6 +1054,7 @@ public enum ParleyHelpGuide {
                     title: "Navigation",
                     items: [
                         "Command-K — open the command palette.",
+                        "Command-Shift-O — Go to Workspace: type part of a name and press Return. Workspaces waiting on you come first, then the ones you used most recently, and the current one last. It works while a terminal has focus.",
                         "Control-Tab / Control-Shift-Tab — next / previous workspace.",
                         "Control-Option-Right / Control-Option-Left — next / previous pane.",
                         "Command-Shift-J — cycle authoritative permission, result and interruption attention.",
