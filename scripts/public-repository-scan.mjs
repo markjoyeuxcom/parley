@@ -1,6 +1,7 @@
-import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { readFileSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
+import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -58,6 +59,64 @@ export function scanText(text, source) {
     .map(({ rule }) => ({ rule, source }))
 }
 
+// Every rule matches within one line, so history is scanned line by line from
+// a stream with no size limit. It used to be read into one 128 MB buffer, and
+// the scan failed closed once `git log -p` outgrew it (24.8 MB on 30 September
+// 2026, growing about 3 MB a month). The deliberate fixtures are single lines
+// too, so removing them per line is the same as removing them from the whole.
+export async function scanHistoryStream(input, source = '<git-history>') {
+  const found = new Map()
+  const allFixtures = [...deliberateFixtures.values()].flat()
+  for await (const line of createInterface({ input, crlfDelay: Infinity })) {
+    let inspected = line
+    for (const fixture of allFixtures) inspected = inspected.replaceAll(fixture, '')
+    for (const finding of scanText(inspected, source)) found.set(finding.rule, finding)
+  }
+  return rules.filter(({ rule }) => found.has(rule)).map(({ rule }) => found.get(rule))
+}
+
+// `git log -p` as a stream. The read and git's exit are awaited together, so
+// a git that cannot start rejects the call rather than an unwatched promise,
+// and git is stopped on the way out, so a read that throws part-way cannot
+// leave it blocked on a full pipe (Agy's review of MR !130). A git ended by a
+// signal says which.
+export async function scanGitHistory({ cwd = repositoryRoot, command = 'git' } = {}) {
+  const child = spawn(command, ['log', '-p', '--all', '--full-history', '--no-color', '--no-ext-diff'], {
+    cwd,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let stderr = ''
+  child.stderr.setEncoding('utf8')
+  child.stderr.on('data', (chunk) => { stderr += chunk })
+  const exited = new Promise((resolveExit, rejectExit) => {
+    child.on('error', rejectExit)
+    child.on('close', (code, signal) => resolveExit({ code, signal }))
+  })
+  try {
+    const [findings, { code, signal }] = await Promise.all([scanHistoryStream(child.stdout), exited])
+    if (code !== 0) {
+      throw new Error(stderr.trim() || (signal ? `git log -p was ended by ${signal}` : `git log -p exited with status ${code}`))
+    }
+    return findings
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill()
+  }
+}
+
+// `git ls-files --others` lists a nested repository or worktree (Parley's own
+// go in .worktrees/) as a directory entry, which is not a publishable file of
+// this repository; reading it crashed the scan with EISDIR. Only regular files
+// are read, following a symbolic link to one; a path that has gone is skipped.
+export function publishableFiles(paths, root = repositoryRoot) {
+  return paths.filter((path) => {
+    try {
+      return statSync(resolve(root, path)).isFile()
+    } catch {
+      return false
+    }
+  })
+}
+
 export function scanHistoricalPaths(paths) {
   return paths.filter((path) => sensitiveHistoricalPath.test(path))
 }
@@ -74,11 +133,11 @@ function runGit(arguments_) {
   return result.stdout
 }
 
-function scanRepository() {
+async function scanRepository() {
   const findings = []
-  const trackedPaths = runGit([
+  const trackedPaths = publishableFiles(runGit([
     'ls-files', '--cached', '--others', '--exclude-standard', '-z',
-  ]).split('\0').filter(Boolean).filter((path) => existsSync(resolve(repositoryRoot, path)))
+  ]).split('\0').filter(Boolean))
   for (const path of trackedPaths) {
     const data = readFileSync(resolve(repositoryRoot, path))
     if (data.includes(0)) continue
@@ -93,11 +152,7 @@ function scanRepository() {
     findings.push({ rule: 'sensitive-historical-path', source: path })
   }
 
-  let history = runGit(['log', '-p', '--all', '--full-history', '--no-color', '--no-ext-diff'])
-  for (const fixtures of deliberateFixtures.values()) {
-    for (const fixture of fixtures) history = history.replaceAll(fixture, '')
-  }
-  findings.push(...scanText(history, '<git-history>'))
+  findings.push(...await scanGitHistory())
 
   const unique = [...new Map(findings.map((finding) => [
     `${finding.rule}\0${finding.source}`,
@@ -119,5 +174,8 @@ function scanRepository() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  scanRepository()
+  scanRepository().catch((error) => {
+    process.stderr.write(`Public repository scan could not run: ${error.message}\n`)
+    process.exitCode = 1
+  })
 }
