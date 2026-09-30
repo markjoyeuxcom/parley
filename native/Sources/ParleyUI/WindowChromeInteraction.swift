@@ -63,7 +63,18 @@ public enum WindowTitlebarDoubleClick {
         }
         var hit = window.contentView?.superview?.hitTest(point)
         while let view = hit {
-            if view is NSControl || view is NSTextView { return false }
+            if view is NSTextView { return false }
+            // The window's own title is a label in the title bar, and a
+            // double-click on it is one on the title bar, as in any macOS
+            // window. macOS 27 keeps an empty title's label, 10 points wide,
+            // in the middle of the bar; counted as a control it left that
+            // spot to AppKit (Prax 1f609d36). A field that edits or selects
+            // text still keeps its clicks.
+            if let field = view as? NSTextField, !field.isEditable, !field.isSelectable {
+                hit = view.superview
+                continue
+            }
+            if view is NSControl { return false }
             hit = view.superview
         }
         return WindowTitlebarAction.perform(in: window, preference: preference)
