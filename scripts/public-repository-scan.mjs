@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -103,6 +103,20 @@ export async function scanGitHistory({ cwd = repositoryRoot, command = 'git' } =
   }
 }
 
+// `git ls-files --others` lists a nested repository or worktree (Parley's own
+// go in .worktrees/) as a directory entry, which is not a publishable file of
+// this repository; reading it crashed the scan with EISDIR. Only regular files
+// are read, following a symbolic link to one; a path that has gone is skipped.
+export function publishableFiles(paths, root = repositoryRoot) {
+  return paths.filter((path) => {
+    try {
+      return statSync(resolve(root, path)).isFile()
+    } catch {
+      return false
+    }
+  })
+}
+
 export function scanHistoricalPaths(paths) {
   return paths.filter((path) => sensitiveHistoricalPath.test(path))
 }
@@ -121,9 +135,9 @@ function runGit(arguments_) {
 
 async function scanRepository() {
   const findings = []
-  const trackedPaths = runGit([
+  const trackedPaths = publishableFiles(runGit([
     'ls-files', '--cached', '--others', '--exclude-standard', '-z',
-  ]).split('\0').filter(Boolean).filter((path) => existsSync(resolve(repositoryRoot, path)))
+  ]).split('\0').filter(Boolean))
   for (const path of trackedPaths) {
     const data = readFileSync(resolve(repositoryRoot, path))
     if (data.includes(0)) continue

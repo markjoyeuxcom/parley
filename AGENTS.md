@@ -2202,7 +2202,11 @@ npm run build
 history has no size limit. It was read into one 128 MB buffer until 30
 September 2026, and would have failed closed once history outgrew it (24.8
 MB then, Prax c4a09fbe). Every rule and deliberate fixture fits on one line,
-which is what makes the line-by-line scan equivalent.
+which is what makes the line-by-line scan equivalent. The read and git's exit
+are awaited together, and git is stopped on the way out. Of the working-tree
+paths it reads only regular files: `git ls-files --others` lists a nested
+worktree under `.worktrees/` as a directory, which crashed the scan with
+EISDIR.
 
 `npm test` also runs the platform dependency scan. `ParleyCore` is the part of
 Parley that could one day run somewhere other than macOS, and

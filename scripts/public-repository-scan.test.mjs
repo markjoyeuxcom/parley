@@ -2,12 +2,13 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 
 import {
+  publishableFiles,
   scanGitHistory,
   scanHistoricalPaths,
   scanHistoryStream,
@@ -132,5 +133,18 @@ test('history scan names the signal that ended git', async () => {
     await withoutUnhandledRejections(async () => {
       await assert.rejects(scanGitHistory({ command: fake }), /SIGTERM/)
     })
+  })
+})
+
+// `git ls-files --others` lists a nested repository or worktree (Parley's
+// own go in .worktrees/) as a directory, and the scan read it as a file and
+// crashed with EISDIR (30 September 2026). Only regular files are read; a
+// symbolic link to one is still followed.
+test('the scan reads only regular files from the path list', async () => {
+  await withTemporaryFolder((folder) => {
+    writeFileSync(join(folder, 'file.txt'), 'x')
+    mkdirSync(join(folder, 'nested'))
+    symlinkSync('file.txt', join(folder, 'link.txt'))
+    assert.deepEqual(publishableFiles(['file.txt', 'nested/', 'link.txt', 'gone.txt'], folder), ['file.txt', 'link.txt'])
   })
 })
