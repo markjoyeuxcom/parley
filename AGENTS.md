@@ -484,7 +484,7 @@ sections, from `WorkspaceSidebarSections`, are:
   index is computed again once the soonest counted item passes its day
   (`nextChangeAt`).
 - **Pinned:** workspaces with `WorkbenchWorkspace.pinned`, in the workspace
-  order. A drag there is mapped onto the whole order by `pinnedMove`.
+  order. A drag there is mapped onto the whole order by `subsetMove`.
 - **Recent:** up to five others by `lastSelectedAt`, shown only past eight
   workspaces. Never the current workspace, a pinned one or one already in
   Needs Attention.
@@ -500,8 +500,46 @@ layout is a new workspace, and it takes over the replaced one's pin. The badges 
 `WorkspaceActivityProjection`, one pass over the handoffs cached per
 attention input generation (which `workspaces` now advances). The four
 per-workspace helpers used to scan every handoff each, several times per row
-per render. Workspace groups, a switcher, the hidden-sidebar tabs and the
-Move to Workspace menu follow in later MRs.
+per render.
+
+Workspace groups (MR 2 of the same task) organise All Workspaces:
+- **Storage:** a `WorkspaceGroup` (id, name, `isCollapsed`) lives in the
+  document's optional `workspaceGroups`, in the person's order, and
+  `WorkbenchWorkspace.groupID` names a workspace's group. State written
+  before groups decodes with none.
+- **Ungrouped:** a workspace with no group, or with a group that no longer
+  exists, is Ungrouped. Deleting a group therefore only clears its members'
+  `groupID`; it closes nothing.
+- **Names:** trimmed, one line, at most 64 characters, and unique ignoring
+  case (`WorkspaceGroup.validatedName`). "Ungrouped" is reserved for the
+  sidebar's own row. Only true control characters are refused; format
+  characters such as an emoji joiner or a direction mark are text. The
+  prompt checks the name itself, so a refused name asks again with the text
+  kept. A group record without `isCollapsed` decodes as expanded, because
+  the document decodes whole and one strict field would stop the workbench
+  loading.
+- **Controller operations:** create, rename, delete, move a workspace to a
+  group, reorder and collapse. Each saves through `commitLocked` or rolls
+  back whole, and reads its indices before writing. An optional-chained write
+  (`document.workspaceGroups?[…]`) begins its access to `document` before
+  its arguments are evaluated, so reading `document` for the index there
+  stopped the first version with "Fatal access conflict detected". Group
+  actions and pinning refresh without the relay, which they never change.
+- **Display:** the sections list the groups, empty ones included so they
+  can be deleted, then Ungrouped. With no groups, All is the plain list it
+  was.
+- **Reordering:** a drag within a group is mapped onto the whole workspace
+  order by `subsetMove`, as a drag within Pinned is. Move to Group moves a
+  workspace between groups.
+- **Layout replacement:** a workspace replaced by a saved layout keeps its
+  group as well as its pin.
+- **Agents:** groups are native presentation metadata and never reach an
+  agent.
+- **Downgrade:** an older Parley ignores the new keys and drops the groups,
+  memberships and pins at its next save. The upgrade direction is safe.
+
+A switcher, the hidden-sidebar tabs and the Move to Workspace menu follow in
+MR 3.
 
 ## Relay and consultation contract
 

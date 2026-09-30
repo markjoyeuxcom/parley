@@ -67,6 +67,9 @@ public final class WorkbenchController: @unchecked Sendable {
         var activity: [String: Date]
         var ownerPID: Int32
         var ownerSessionID: String?
+        /// The person's workspace groups, in order. Optional so state written
+        /// before groups existed (30 September 2026) still decodes.
+        var workspaceGroups: [WorkspaceGroup]?
     }
     private var approvedShellLaunches: [String: (generation: Int, argv: [String])] = [:]
     /// Greater than zero while a surface is being terminated. Ghostty reports
@@ -449,6 +452,100 @@ public final class WorkbenchController: @unchecked Sendable {
                 )
             }
         }
+    }
+
+    // Workspace groups: native presentation metadata, each change saved or
+    // rolled back whole. A workspace naming a group that is gone reads as
+    // Ungrouped, so deleting a group only has to clear its members.
+
+    public func listWorkspaceGroups() throws -> [WorkspaceGroup] {
+        lock.withLock { document.workspaceGroups ?? [] }
+    }
+
+    /// Adds a group last, and moves `workspaceID` into it when given.
+    public func createWorkspaceGroup(name: String, moving workspaceID: String?) throws -> WorkspaceGroup {
+        try lock.withLock {
+            try commitLocked {
+                let group = WorkspaceGroup(id: "group-" + UUID().uuidString.lowercased(), name: try validatedGroupNameLocked(name))
+                document.workspaceGroups = (document.workspaceGroups ?? []) + [group]
+                if let workspaceID {
+                    // Indices are read before each write: an optional-chained
+                    // write (`document.workspaceGroups?[…]`) begins its access
+                    // before its arguments are read, and a read of `document`
+                    // there stopped the check with "Fatal access conflict detected".
+                    let index = try workspaceIndexLocked(workspaceID)
+                    document.workspaces[index].groupID = group.id
+                }
+                return group
+            }
+        }
+    }
+
+    public func renameWorkspaceGroup(_ groupID: String, name: String) throws {
+        try lock.withLock {
+            try commitLocked {
+                let index = try groupIndexLocked(groupID)
+                let validated = try validatedGroupNameLocked(name, excluding: groupID)
+                document.workspaceGroups?[index].name = validated
+            }
+        }
+    }
+
+    /// Removes the group; its workspaces move to Ungrouped. Nothing closes.
+    public func deleteWorkspaceGroup(_ groupID: String) throws {
+        try lock.withLock {
+            try commitLocked {
+                let index = try groupIndexLocked(groupID)
+                document.workspaceGroups?.remove(at: index)
+                for index in document.workspaces.indices where document.workspaces[index].groupID == groupID {
+                    document.workspaces[index].groupID = nil
+                }
+            }
+        }
+    }
+
+    /// Moves a workspace into a group, or to Ungrouped with nil.
+    public func setWorkspaceGroup(_ workspaceID: String, groupID: String?) throws {
+        try lock.withLock {
+            try commitLocked {
+                let index = try workspaceIndexLocked(workspaceID)
+                if let groupID { _ = try groupIndexLocked(groupID) }
+                document.workspaces[index].groupID = groupID
+            }
+        }
+    }
+
+    public func moveWorkspaceGroup(_ groupID: String, by offset: Int) throws {
+        try lock.withLock {
+            try commitLocked {
+                let index = try groupIndexLocked(groupID)
+                guard var groups = document.workspaceGroups, groups.indices.contains(index + offset) else {
+                    throw ParleyWorkbenchError.commandFailed("That group cannot move any further.")
+                }
+                groups.insert(groups.remove(at: index), at: index + offset)
+                document.workspaceGroups = groups
+            }
+        }
+    }
+
+    public func setWorkspaceGroupCollapsed(_ groupID: String, collapsed: Bool) throws {
+        try lock.withLock {
+            try commitLocked {
+                let index = try groupIndexLocked(groupID)
+                document.workspaceGroups?[index].isCollapsed = collapsed
+            }
+        }
+    }
+
+    private func groupIndexLocked(_ groupID: String) throws -> Int {
+        guard let index = document.workspaceGroups?.firstIndex(where: { $0.id == groupID }) else {
+            throw ParleyWorkbenchError.commandFailed("That workspace group no longer exists.")
+        }
+        return index
+    }
+
+    private func validatedGroupNameLocked(_ proposed: String, excluding groupID: String? = nil) throws -> String {
+        try WorkspaceGroup.validatedName(proposed, among: document.workspaceGroups ?? [], excluding: groupID).get()
     }
 
     /// Pins or unpins a workspace in the sidebar. Native metadata only.
@@ -1235,9 +1332,10 @@ public final class WorkbenchController: @unchecked Sendable {
                     document.activity[pane.id] = Date()
                 }
                 if let replacement {
-                    // The replacement is a new workspace; a pinned one stays pinned.
+                    // The replacement is a new workspace; it keeps the pin and the group.
                     if let index = document.workspaces.firstIndex(where: { $0.workspaceID == workspace.workspaceID }) {
                         document.workspaces[index].pinned = replacement.pinned
+                        document.workspaces[index].groupID = replacement.groupID
                     }
                     document.panes.removeAll(where: { $0.workspaceID == replacement.workspaceID })
                     document.workspaces.removeAll(where: { $0.workspaceID == replacement.workspaceID })

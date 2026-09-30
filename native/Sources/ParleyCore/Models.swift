@@ -81,6 +81,9 @@ public struct WorkbenchWorkspace: Identifiable, Equatable, Codable, Sendable {
     /// When this workspace was last the active one: stamped as it is entered
     /// and as it is left. The sidebar's Recent section is ordered by it.
     public var lastSelectedAt: Date?
+    /// The person's group this workspace sits in within All Workspaces; nil,
+    /// or a group that no longer exists, is Ungrouped.
+    public var groupID: String?
 
     public init(
         id: String,
@@ -137,6 +140,7 @@ public struct WorkbenchWorkspace: Identifiable, Equatable, Codable, Sendable {
         case workspaceID
         case pinned
         case lastSelectedAt
+        case groupID
         // Legacy schema fields. Decode only; new records never write them.
         case homeFolder
         case defaultFolder
@@ -173,6 +177,7 @@ public struct WorkbenchWorkspace: Identifiable, Equatable, Codable, Sendable {
         // Absent in state written before the sidebar sections (30 Sep 2026).
         pinned = try values.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         lastSelectedAt = try values.decodeIfPresent(Date.self, forKey: .lastSelectedAt)
+        groupID = try values.decodeIfPresent(String.self, forKey: .groupID)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -186,6 +191,7 @@ public struct WorkbenchWorkspace: Identifiable, Equatable, Codable, Sendable {
         try values.encode(workspaceID, forKey: .workspaceID)
         try values.encode(pinned, forKey: .pinned)
         try values.encodeIfPresent(lastSelectedAt, forKey: .lastSelectedAt)
+        try values.encodeIfPresent(groupID, forKey: .groupID)
     }
 
     private static func normalizedFolders(_ folders: [String]) -> [String] {
