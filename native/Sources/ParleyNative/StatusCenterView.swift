@@ -1371,7 +1371,7 @@ struct StatusCenterView: View {
                                     .font(.system(size: 9, weight: .semibold, design: .monospaced))
                             }
                             .accessibilityRepresentation {
-                                Text("Result viewed at \(readAt.formatted(date: .omitted, time: .standard))")
+                                Text("\(handoff.hasReturnedResult ? "Result viewed" : "Viewed") at \(readAt.formatted(date: .omitted, time: .standard))")
                             }
                         }
                     }
@@ -2227,7 +2227,7 @@ struct StatusCenterView: View {
         }
         if let selectedHandoffID,
            let selected = snapshot.handoffs.first(where: { $0.id == selectedHandoffID }) {
-            if selected.hasUnreadResult { model.markRead(selected) }
+            if selected.awaitsAcknowledgement { model.markRead(selected) }
             return
         }
         if let firstDraft = scopedBusyDrafts.first {
@@ -2270,7 +2270,7 @@ struct StatusCenterView: View {
     private func select(_ handoff: RelayHandoff) {
         selectedBusyDraftID = nil
         selectedHandoffID = handoff.id
-        if handoff.hasUnreadResult { model.markRead(handoff) }
+        if handoff.awaitsAcknowledgement { model.markRead(handoff) }
     }
 
 

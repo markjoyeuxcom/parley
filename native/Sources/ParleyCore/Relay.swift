@@ -3597,19 +3597,21 @@ public final class RelayBroker: @unchecked Sendable {
         return RelayTextResponse(status: 200, text: hasReview ? "Human review saved." : "Human review cleared.")
     }
 
-    /// Records that a person viewed a returned Ask or Delegate result. This is
-    /// exposed only through the UI control-token route; pane credentials cannot
-    /// clear another pane's badge. Repeated acknowledgement is intentionally
-    /// idempotent and does not reorder the handoff's operational timeline.
+    /// Records that a person viewed a returned result, or saw a failed,
+    /// interrupted or waiting handoff (`canBeAcknowledged`), so it stops
+    /// counting as needing them. This is exposed only through the UI
+    /// control-token route; pane credentials cannot clear another pane's
+    /// badge. Repeated acknowledgement is intentionally idempotent and does
+    /// not reorder the handoff's operational timeline.
     public func markHandoffRead(_ handoffID: String) -> RelayTextResponse {
         consultationCondition.lock()
         guard var handoff = handoffRecords[handoffID] else {
             consultationCondition.unlock()
             return RelayTextResponse(status: 404, text: "unknown handoff")
         }
-        guard handoff.hasReturnedResult else {
+        guard handoff.canBeAcknowledged else {
             consultationCondition.unlock()
-            return RelayTextResponse(status: 409, text: "this handoff has no returned result")
+            return RelayTextResponse(status: 409, text: "this handoff has no result, failure or request to acknowledge")
         }
         if handoff.readAt == nil {
             handoff.readAt = Date()
@@ -3618,7 +3620,7 @@ public final class RelayBroker: @unchecked Sendable {
             noteChangeLocked()
         }
         consultationCondition.unlock()
-        return RelayTextResponse(status: 200, text: "Result marked read.")
+        return RelayTextResponse(status: 200, text: handoff.hasReturnedResult ? "Result marked read." : "Marked seen.")
     }
 
     /// Explicit native control action; an empty workspace identifier never

@@ -55,6 +55,12 @@ func checkLayoutRestoreKeepsPolicyAndRollsBack() throws {
     try restoreExpect(terminated.ids.isEmpty, "a failed replacing restore ended panes of the workspace it would replace: \(terminated.ids)")
     try restoreExpect(try controller.listWorkspaces().first { $0.workspaceID == restored.workspaceID }?.isActive == true,
                       "a failed restore changed which workspace is active")
+
+    // A replacement is a new workspace; a pinned one keeps its place in the sidebar.
+    try controller.setWorkspacePinned(restored.workspaceID, pinned: true)
+    let replacement = try controller.restoreWorkspaceLayout(quiet, replacing: restored.workspaceID)
+    try restoreExpect(try controller.listWorkspaces().first { $0.workspaceID == replacement.workspaceID }?.pinned == true,
+                      "a pinned workspace replaced by a saved layout lost its pin")
 }
 
 /// Closing a workspace ends its panes only after every one of them may end:

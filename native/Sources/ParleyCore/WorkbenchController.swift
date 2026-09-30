@@ -451,18 +451,27 @@ public final class WorkbenchController: @unchecked Sendable {
         }
     }
 
+    /// Pins or unpins a workspace in the sidebar. Native metadata only.
+    public func setWorkspacePinned(_ workspaceID: String, pinned: Bool) throws {
+        try lock.withLock {
+            try commitLocked {
+                let index = try workspaceIndexLocked(workspaceID)
+                document.workspaces[index].pinned = pinned
+            }
+        }
+    }
+
     public func selectWorkspace(_ workspaceID: String) throws {
         try lock.withLock {
-            let index = try workspaceIndexLocked(workspaceID)
-            for position in document.workspaces.indices {
-                document.workspaces[position].isActive = position == index
+            try commitLocked {
+                let index = try workspaceIndexLocked(workspaceID)
+                let durableID = document.workspaces[index].workspaceID
+                activateWorkspaceLocked(workspaceID: durableID)
+                if !document.panes.contains(where: { $0.workspaceID == durableID && $0.isActive }),
+                   let paneIndex = document.panes.firstIndex(where: { $0.workspaceID == durableID }) {
+                    for position in document.panes.indices { document.panes[position].isActive = position == paneIndex }
+                }
             }
-            let durableID = document.workspaces[index].workspaceID
-            if !document.panes.contains(where: { $0.workspaceID == durableID && $0.isActive }),
-               let paneIndex = document.panes.firstIndex(where: { $0.workspaceID == durableID }) {
-                for position in document.panes.indices { document.panes[position].isActive = position == paneIndex }
-            }
-            try persistLocked()
         }
     }
 
@@ -694,9 +703,7 @@ public final class WorkbenchController: @unchecked Sendable {
             pane.customName = provision.name
             pane.role = provision.role
             let previous = document
-            for index in document.workspaces.indices {
-                document.workspaces[index].isActive = document.workspaces[index].workspaceID == workspace.workspaceID
-            }
+            activateWorkspaceLocked(workspaceID: workspace.workspaceID)
             for index in document.panes.indices { document.panes[index].isActive = false }
             document.panes.append(pane)
             document.activity[pane.id] = Date()
@@ -752,7 +759,7 @@ public final class WorkbenchController: @unchecked Sendable {
             var pane = try makePane(kind: .shell, cwd: run.command.folder, workspace: workspace, started: true, permissionProfile: nil)
             pane.id = run.shellPaneID
             pane.customName = "Command run"
-            for index in document.workspaces.indices { document.workspaces[index].isActive = document.workspaces[index].workspaceID == workspace.workspaceID }
+            activateWorkspaceLocked(workspaceID: workspace.workspaceID)
             for index in document.panes.indices { document.panes[index].isActive = false }
             document.panes.append(pane)
             document.activity[pane.id] = Date()
@@ -772,13 +779,11 @@ public final class WorkbenchController: @unchecked Sendable {
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
             }
-            let workspaceID = document.panes[index].workspaceID
-            for position in document.workspaces.indices {
-                document.workspaces[position].isActive = document.workspaces[position].workspaceID == workspaceID
+            try commitLocked {
+                activateWorkspaceLocked(workspaceID: document.panes[index].workspaceID)
+                for position in document.panes.indices { document.panes[position].isActive = position == index }
+                document.activity[paneID] = Date()
             }
-            for position in document.panes.indices { document.panes[position].isActive = position == index }
-            document.activity[paneID] = Date()
-            try persistLocked()
         }
     }
 
@@ -1230,6 +1235,10 @@ public final class WorkbenchController: @unchecked Sendable {
                     document.activity[pane.id] = Date()
                 }
                 if let replacement {
+                    // The replacement is a new workspace; a pinned one stays pinned.
+                    if let index = document.workspaces.firstIndex(where: { $0.workspaceID == workspace.workspaceID }) {
+                        document.workspaces[index].pinned = replacement.pinned
+                    }
                     document.panes.removeAll(where: { $0.workspaceID == replacement.workspaceID })
                     document.workspaces.removeAll(where: { $0.workspaceID == replacement.workspaceID })
                 }
@@ -1770,9 +1779,13 @@ public final class WorkbenchController: @unchecked Sendable {
         let proposed = baseName?.isEmpty == false ? baseName! : (attachedName ?? "Workspace")
         let resolvedName = availableWorkspaceNameLocked(proposed.isEmpty ? "Workspace" : proposed)
         let id = Self.workspaceID()
+        // The workspace left and the new one are both last used now, as
+        // activateWorkspaceLocked stamps a switch.
+        let now = Date()
+        if let left = document.workspaces.firstIndex(where: \.isActive) { document.workspaces[left].lastSelectedAt = now }
         for index in document.workspaces.indices { document.workspaces[index].isActive = false }
         for index in document.panes.indices { document.panes[index].isActive = false }
-        let workspace = WorkbenchWorkspace(
+        var workspace = WorkbenchWorkspace(
             id: id,
             name: resolvedName,
             attachedFolders: attachedFolders,
@@ -1781,6 +1794,7 @@ public final class WorkbenchController: @unchecked Sendable {
             automationPolicy: automationPolicy,
             workspaceID: id
         )
+        workspace.lastSelectedAt = now
         document.workspaces.append(workspace)
         if initialShell {
             let pane = try makePane(
@@ -1887,18 +1901,33 @@ public final class WorkbenchController: @unchecked Sendable {
         return index
     }
 
+    /// Makes one workspace the active one. When that changes which workspace
+    /// is active, both sides are stamped: the one left and the one entered
+    /// were both last used now, and the sidebar's Recent section is ordered
+    /// by it. The stamps live in the document, so a change that is rolled
+    /// back takes them with it. A workspace id that is not there leaves none
+    /// active, as the loops this replaces did.
+    private func activateWorkspaceLocked(workspaceID: String, now: Date = Date()) {
+        let left = document.workspaces.firstIndex(where: \.isActive)
+        let entered = document.workspaces.firstIndex(where: { $0.workspaceID == workspaceID })
+        for position in document.workspaces.indices { document.workspaces[position].isActive = position == entered }
+        guard let entered, left != entered else { return }
+        if let left { document.workspaces[left].lastSelectedAt = now }
+        document.workspaces[entered].lastSelectedAt = now
+    }
+
     private func selectWorkspaceLocked(_ workspaceID: String) throws {
         let index = try workspaceIndexLocked(workspaceID)
         let durableID = document.workspaces[index].workspaceID
-        for position in document.workspaces.indices { document.workspaces[position].isActive = position == index }
+        activateWorkspaceLocked(workspaceID: durableID)
         if let paneIndex = document.panes.firstIndex(where: { $0.workspaceID == durableID }) {
             for position in document.panes.indices { document.panes[position].isActive = position == paneIndex }
         }
     }
 
     private func normalizeSelectionLocked() {
-        if !document.workspaces.contains(where: \.isActive), !document.workspaces.isEmpty {
-            document.workspaces[0].isActive = true
+        if !document.workspaces.contains(where: \.isActive), let first = document.workspaces.first {
+            activateWorkspaceLocked(workspaceID: first.workspaceID)
         }
         guard let workspace = document.workspaces.first(where: \.isActive) else { return }
         if !document.panes.contains(where: { $0.workspaceID == workspace.workspaceID && $0.isActive }),

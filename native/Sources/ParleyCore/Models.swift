@@ -76,6 +76,11 @@ public struct WorkbenchWorkspace: Identifiable, Equatable, Codable, Sendable {
     public var automationPolicy: WorkspaceAutomationPolicy
     /// Durable workspace identity, intentionally independent of a process id.
     public var workspaceID: String
+    /// Shown in the sidebar's Pinned section, in the workspace order.
+    public var pinned = false
+    /// When this workspace was last the active one: stamped as it is entered
+    /// and as it is left. The sidebar's Recent section is ordered by it.
+    public var lastSelectedAt: Date?
 
     public init(
         id: String,
@@ -130,6 +135,8 @@ public struct WorkbenchWorkspace: Identifiable, Equatable, Codable, Sendable {
         case isActive
         case automationPolicy
         case workspaceID
+        case pinned
+        case lastSelectedAt
         // Legacy schema fields. Decode only; new records never write them.
         case homeFolder
         case defaultFolder
@@ -163,6 +170,9 @@ public struct WorkbenchWorkspace: Identifiable, Equatable, Codable, Sendable {
             forKey: .automationPolicy
         ) ?? .askAndDelegate
         workspaceID = try values.decodeIfPresent(String.self, forKey: .workspaceID) ?? id
+        // Absent in state written before the sidebar sections (30 Sep 2026).
+        pinned = try values.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
+        lastSelectedAt = try values.decodeIfPresent(Date.self, forKey: .lastSelectedAt)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -174,6 +184,8 @@ public struct WorkbenchWorkspace: Identifiable, Equatable, Codable, Sendable {
         try values.encode(isActive, forKey: .isActive)
         try values.encode(automationPolicy, forKey: .automationPolicy)
         try values.encode(workspaceID, forKey: .workspaceID)
+        try values.encode(pinned, forKey: .pinned)
+        try values.encodeIfPresent(lastSelectedAt, forKey: .lastSelectedAt)
     }
 
     private static func normalizedFolders(_ folders: [String]) -> [String] {
