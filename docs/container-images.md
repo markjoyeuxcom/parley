@@ -268,17 +268,25 @@ the Mac's loopback. What it took:
   ```
 
   `docker exec` runs as the pane's user with its `HOME`. Leave out `--cli`:
-  the build did it, and `/usr/local/bin` is not writable at run time.
-  `PRAX_BIN_DIR` points the installer at that shim, so the instructions teach
-  `prax …`. Without it the installer looks in `~/.local/bin`, which is not on
-  Parley's `PATH`, and teaches the skill scripts' full paths instead. Restart
-  the pane afterwards so the vendor reads its new instructions.
+  the build did it, and `/usr/local/bin` is not writable at run time, so
+  passing it stops the installer part-way. `PRAX_BIN_DIR` points the
+  installer at the build's shim, so the instructions teach `prax …`. Without
+  it the installer looks in `~/.local/bin`, which is not on Parley's `PATH`,
+  and teaches the skill scripts' full paths instead. It recognises only a
+  shim it wrote itself, so an image built from an earlier version of this
+  file, whose shim was written by hand, gets the full paths too: rebuild it
+  first. Restart the pane afterwards so the vendor reads its new
+  instructions. Agy takes `~/.gemini/GEMINI.md` as its global rules: on the
+  Mac, Agy reported the Prax section from that file as its global user rule
+  (30 September 2026).
   `--hooks` writes the harvest hook for Claude Code, Codex and Copilot, and
   the instructions then teach `Remember:` proposals, which only those hooks
-  collect. The installer has no hook for Agy, so in this Agy-only image the
-  hook files wait for a vendor the image does not carry. Copilot reads
-  `~/.copilot/instructions` only when `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` names
-  it, and in a container that variable names only Parley's protocol folder.
+  collect. The installer has no hook for Agy, on the Mac or here, so no hook
+  collects the `Remember:` lines Agy writes in either place, and in this
+  Agy-only image the hook files wait for a vendor the image does not carry.
+  Copilot reads `~/.copilot/instructions` only when
+  `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` names it, and in a container that
+  variable names only Parley's protocol folder.
 
 Checked by running the probe above, then `agy --version`, `prax doctor` and
 `prax task list --all-projects` as your uid with every capability dropped, no
@@ -286,7 +294,8 @@ new privileges, Parley's `PATH` and an empty home. The installer step was
 checked on a volume chowned as Parley's initializer does it, in a container
 created with the pane's flags: the instructions taught `prax`, `prax recall`
 ran from inside, and a new container on the same volume found everything in
-place. Whether a signed-in Agy takes up those instructions was not checked.
+place. Whether a signed-in Agy in a container takes up those instructions
+was not checked.
 
 ## Known limits
 
