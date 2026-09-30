@@ -255,11 +255,38 @@ be refused if the vendor binary itself will not start.
   (such as the [Prax step](#example-the-prax-cli)) survive restarts and a
   change of image. A new pane starts with an empty one. Delete a volume in
   **Status Center › Health › Containers**.
-- **The first run of a pane,** in order: sign in (each vendor's flow is in
-  `docs/test-scenarios.md`, P1.3), run anything that writes into its home,
-  then restart it with Resume so the vendor reads what was written.
+- **The first run of a pane,** in order: sign in (below), run anything that
+  writes into its home, then restart it with Resume so the vendor reads what
+  was written.
 - **Old images.** Remove one with `docker image rm <name>` once no pane uses
   it. Docker refuses while a container still uses it.
+
+## Signing in
+
+Sign in inside the pane, with the vendor's own flow. Parley never mounts your
+Mac's vendor login and never substitutes an API key. The login is kept in the
+pane's home volume, so a restart or a new image keeps it and a new pane asks
+again. Command-click opens a printed address in your Mac's browser.
+
+- **Codex:** choose **Sign in with Device Code**, which needs no port: open
+  the link on the Mac and enter the code. OpenAI recommends it when the
+  browser callback cannot arrive
+  ([authentication guide](https://learn.chatgpt.com/docs/auth#login-on-headless-devices)).
+  For browser sign-in instead, enter 1455 as **Published port** in the
+  review: Codex's callback returns to `localhost:1455`, and Parley forwards
+  that port from the Mac to the container, on 127.0.0.1 only. Reported working
+  by device code on 9 September 2026.
+- **Claude Code:** its paste-the-code flow, which needs no port. No container
+  sign-in has been recorded yet.
+- **Agy:** choose Google sign-in, open the printed address on the Mac and paste
+  the code back. Signed in from a container on 25 September 2026 (the method
+  was not recorded); the login survived the container's removal and a fresh
+  start, and a resumed session took up the protocol.
+- **Copilot:** confirm its folder trust first, then its device-code flow,
+  which needs no port. Not yet signed in from a container.
+
+Whether login survives quitting and relaunching Parley is still a human check
+(`docs/test-scenarios.md`, P1.3).
 
 ## Reaching a service on your Mac
 
@@ -370,16 +397,11 @@ whether a harvest hook there reaches Prax, was not checked.
   sandbox to work inside the container, which the container pane spike found
   unavailable in the tested OrbStack configuration. The separately selected
   legacy Landlock option remains available for compatible images and is
-  deprecated. See `docs/container-pane-spike.md`.
-- Image sign-in, instruction uptake in a fresh or resumed vendor session, and
-  login persistence across relaunch are human compatibility checks. Passing the
-  probe does not establish any of them. Copilot documents a device-code
-  sign-in for containers, which needs no published port; Agy documents a
-  copy-the-address, paste-the-code flow for hosts without a browser. Agy was
-  signed in from a Parley container on 25 September 2026: its login survived
-  the container's removal and a fresh start, and a resumed session took up the
-  protocol. How it signed in was not recorded. Copilot had not been signed in
-  from one when this was written.
+  deprecated. See `docs/container-pane-spike.md`, the record of that spike.
+- Sign-in, instruction uptake in a fresh or resumed vendor session, and login
+  persistence across a Parley relaunch are human checks; passing the probe
+  establishes none of them. What has been observed is under
+  [Signing in](#signing-in).
 - Agy's own `--sandbox` inside an unprivileged container is untested, as
   Codex's default sandbox was; if it cannot start, the launch fails visibly
   and Bypass vendor permissions is the container-only alternative.

@@ -67,6 +67,20 @@ cause commands to run on the Mac during later host Git operations. Native
 requested-host-command approvals remain separate. Neither a vendor bypass nor a
 container is a claim that untrusted project code is harmless.
 
+## Container network reach
+
+A container pane runs on Docker's bridge network and can reach the Mac as
+`host.docker.internal`. OrbStack forwards that name to services the Mac binds
+only to `127.0.0.1` (observed 30 September 2026: the connection reached the
+Prax app, whose own Host check then refused every name but the one allowed;
+other Docker runtimes were not checked).
+A local service is therefore protected from containers only by its own checks,
+such as a DNS-rebinding guard, and allowing the name there opens it to every
+container on the runtime, and to a bypassed vendor without prompts. Parley
+adds no environment or mount for this and cannot constrain what such a service
+does when a container asks. `docs/container-images.md` ("Reaching a service on
+your Mac") describes it for the person.
+
 ## Current controls
 
 - Production and Development have separate Application Support, preferences,
