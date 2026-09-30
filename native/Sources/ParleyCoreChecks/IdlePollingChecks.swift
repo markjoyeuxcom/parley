@@ -11,7 +11,7 @@ private func pollExpect(_ condition: @autoclosure () throws -> Bool, _ message: 
 private func waitUntilIdle(_ transport: RelayFileTransport, timeout: TimeInterval = 8) throws {
     let deadline = Date().addingTimeInterval(timeout)
     while transport.currentPollInterval != TransportPollSchedule.idleInterval {
-        try pollExpect(Date() < deadline, "the transport did not back off within \(timeout) s (interval \(transport.currentPollInterval), ticks \(transport.tickCount))")
+        try pollExpect(Date() < deadline, "the transport did not back off within \(timeout) s (interval \(transport.currentPollInterval), ticks \(transport.tickCount): active \(transport.activeTickCount), pending \(transport.pendingTickCount), watcher wakes \(transport.watcherWakeCount))")
         Thread.sleep(forTimeInterval: 0.05)
     }
 }
@@ -161,6 +161,8 @@ let idlePollingChecks: [(String, () throws -> Void)] = [
             idle.append(try directRequest())
         }
         try pollExpect(transport.watcherWakeCount >= wakesBefore + 5, "the inbox watcher did not wake the transport for each idle request (\(transport.watcherWakeCount - wakesBefore) wakes)")
+        // The diagnostic counters are wired: each claimed request made a tick active.
+        try pollExpect(transport.activeTickCount >= 5, "the transport counted \(transport.activeTickCount) active ticks for five claimed requests")
         var active: [Double] = []
         for _ in 0..<5 { active.append(try directRequest()) }
         let idleMedian = idle.sorted()[2], activeMedian = active.sorted()[2]
