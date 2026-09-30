@@ -1799,9 +1799,15 @@ and a pane moved after its review is refused before any Docker command; Team
 Stop, restart, the team's failed-start cleanup, shutdown and lost-client
 reconciliation follow the pane wherever it is and pass false. `movePane`
 refuses while the pane's container is being prepared or stopped
-(`containerPreparations`): a move during that cleanup used to leave the
-caller refusing after the container was already gone (the team review of the
-pane Stop, 1 October 2026; `checkContainerStopAndMoveExclude`).
+(`containerPreparations`), and while a person's action holds it
+(`holdAgainstMove`): `performAfterContainerStops` holds every pane it
+reviewed, synchronously after the confirmation, and releases them in a
+`defer` once its last step has run. The cleanup reservation alone ends when
+Docker returns, before that last step, and in a batch one pane's cleanup ends
+while another's still runs, so a move could land between a removed container
+and the step that ends its pane (the team review of the pane Stop and its
+verification, 1 October 2026; `checkContainerStopAndMoveExclude`,
+`checkStopHoldsPanesAgainstMove`, and PaneStopChecks for the wiring).
 Stop/close/restart/quit must stop the owned container before terminating its
 host surface; a failed stop refuses the lifecycle operation. Old records are
 shown in Status Center and never adopted as surviving sessions. No daemon

@@ -71,14 +71,27 @@ private func stopBody(_ reader: SwiftSourceReader, _ signature: String) throws -
         try stopExpect(helpers.count == 1, "stop(_:) must run its work in one performAfterContainerStops([pane]) closure")
         let work = helpers[0]
         try stopExpect(cancel.upperBound <= work.startIndex, "stop(_:) acts before the person confirms")
-        guard let process = work.range(of: "stopPaneProcess(pane.id, expectedGeneration: pane.launchGeneration)"),
-              let refresh = work.range(of: "refresh()") else {
-            throw stopFailure("the container-stop closure must stop the reviewed generation and refresh")
-        }
-        try stopExpect(process.upperBound <= refresh.lowerBound, "stop(_:) refreshes before stopping")
-        // Nothing outside the closure stops a process: that would not wait for the container.
+        // The closure is exactly these two steps: no condition that skips a
+        // pane, no early return, nothing after it that stops a process.
+        let steps = work.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty && $0 != "[self] in" }
+        try stopExpect(steps == ["try controller?.stopPaneProcess(pane.id, expectedGeneration: pane.launchGeneration)", "try refresh()"],
+                       "the container-stop closure must be exactly: stop the reviewed generation, then refresh (found \(steps))")
+        try stopExpect(stop.components(separatedBy: "return").count == 2, "stop(_:) may return only when the person cancels")
         let outside = String(stop[..<work.startIndex]) + String(stop[work.endIndex...])
         try stopExpect(!outside.contains("stopPaneProcess"), "stop(_:) stops a process outside the container-stop closure")
-        try stopExpect(!stop.contains("expectedGeneration: nil"), "stop(_:) must never stop whatever generation runs now")
+    }),
+    ("the container-stop helper holds its panes against a move and requires their reviewed workspace", {
+        let model = try stopSource("ParleyNative", "AppModel.swift")
+        let helper = try stopBody(model, "private func performAfterContainerStops(")
+        guard let hold = helper.range(of: "try controller.holdAgainstMove(held)"),
+              let task = stopBlocks(model, "Task {", in: helper).first else {
+            throw stopFailure("performAfterContainerStops must hold its panes before its Task")
+        }
+        try stopExpect(hold.upperBound <= task.startIndex, "the panes are held only after the cleanup began")
+        let first = task.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty }
+        try stopExpect(first == "defer { controller.releaseMoveHold(held) }", "the hold is not released on every path of the Task")
+        try stopExpect(task.contains("controller.prepareContainerStop(pane, requiringWorkspace: true)"),
+                       "the helper must require each pane's reviewed workspace before Docker")
+        try stopExpect(!helper.contains("requiringWorkspace: false"), "the helper let a moved pane's container be stopped")
     }),
 ]

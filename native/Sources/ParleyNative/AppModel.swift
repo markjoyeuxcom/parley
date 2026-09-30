@@ -5014,12 +5014,25 @@ final class AppModel: ObservableObject {
 
     /// Docker may be unavailable for seconds. Keep the main actor and the
     /// relay's workbench reads free, then revalidate before touching Ghostty.
+    /// Stops the reviewed panes' containers, then runs `operation` if every
+    /// pane is still as reviewed. The panes are held against a move for the
+    /// whole of it, taken before the first cleanup and released after the
+    /// last step on every path: the cleanup's own reservation ends when
+    /// Docker returns, and in a batch one pane's cleanup ends while another's
+    /// still runs, so a move could otherwise land between a removed container
+    /// and the step that ends its pane.
     private func performAfterContainerStops(_ reviewed: [WorkbenchPane], operation: @escaping @MainActor () throws -> Void) {
         guard reviewed.contains(where: { $0.containerConfiguration != nil }), let controller else {
             perform(operation)
             return
         }
+        let held = reviewed.map(\.id)
+        do { try controller.holdAgainstMove(held) } catch {
+            NSAlert(error: error).runModal()
+            return
+        }
         Task {
+            defer { controller.releaseMoveHold(held) }
             do {
                 var failures: [String] = []
                 for pane in reviewed where pane.containerConfiguration != nil {

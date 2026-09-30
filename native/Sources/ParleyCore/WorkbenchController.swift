@@ -1229,7 +1229,7 @@ public final class WorkbenchController: @unchecked Sendable {
             // A caller stopping this pane's container checks its workspace
             // after Docker cleanup; a move meanwhile would leave it refusing
             // with the container already gone.
-            guard !containerPreparations.contains(paneID) else {
+            guard !containerPreparations.contains(paneID), !moveHolds.contains(paneID) else {
                 throw ContainerPaneError.refused("This pane's container is being prepared or stopped. Move it when that ends.")
             }
             let target = document.workspaces[try workspaceIndexLocked(targetWorkspaceID)]
@@ -1437,6 +1437,26 @@ public final class WorkbenchController: @unchecked Sendable {
 
     /// Background cleanup is bound to the pane revision the native action saw.
     /// A subsequent start invalidates this receipt without another Docker read.
+    /// Panes a person's lifecycle action is stopping or closing. `movePane`
+    /// refuses them from before the action's first container cleanup until
+    /// after its last step: the cleanup reservation ends when Docker returns,
+    /// and in a batch one pane's cleanup ends while another's still runs.
+    private var moveHolds: Set<String> = []
+
+    /// Holds every pane or none; a pane another action holds is refused.
+    public func holdAgainstMove(_ paneIDs: [String]) throws {
+        try lock.withLock {
+            guard moveHolds.isDisjoint(with: paneIDs) else {
+                throw ContainerPaneError.refused("Another action is already stopping or closing this pane.")
+            }
+            moveHolds.formUnion(paneIDs)
+        }
+    }
+
+    public func releaseMoveHold(_ paneIDs: [String]) {
+        lock.withLock { moveHolds.subtract(paneIDs) }
+    }
+
     /// `requiringWorkspace` is for a caller that checks the pane's workspace
     /// again after cleanup (`performAfterContainerStops`): a pane moved after
     /// its review is refused here, before Docker, not after its container is

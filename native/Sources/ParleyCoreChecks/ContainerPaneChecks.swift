@@ -34,6 +34,7 @@ var containerPaneChecks: [(String, () throws -> Void)] { [
     ("container recorded removal recovers a failed preparation", checkContainerPreparedRemovalRecovery),
     ("container old receipt removal preserves a replacement at the same generation", checkContainerOldReceiptRemoval),
     ("container stop and move exclude each other: no move during cleanup, no cleanup for a moved review", checkContainerStopAndMoveExclude),
+    ("a person's stop holds its panes against a move until its last step", checkStopHoldsPanesAgainstMove),
     ("container controller refuses folders inside relay transport before mutation", checkContainerTransportFolderRefusal),
     ("container projection refuses both directions of control-path overlap", checkContainerControlPathOverlap),
     ("container controller keeps Docker outside its lock and binds restart receipts", checkContainerControllerLifecycle),
@@ -688,6 +689,34 @@ func checkContainerStopAndMoveExclude() throws {
     try fixture.controller.stopPaneProcess(pane.id, expectedGeneration: moved.launchGeneration)
     let stopped = try fixture.controller.listPanes().first { $0.id == pane.id }!
     try containerExpect(!stopped.isStarted && stopped.workspaceID == other.workspaceID, "the stopped pane is not where the cleanup found it")
+}
+
+/// The cleanup reservation ends when Docker returns, before the caller's
+/// last step on the main actor, and in a batch one pane's cleanup ends while
+/// another's is still running (the team reviewer's verification, 1 October
+/// 2026). A person's lifecycle action therefore holds every pane it reviewed
+/// against a move from before its first cleanup until after its last step.
+func checkStopHoldsPanesAgainstMove() throws {
+    let fixture = try ContainerReviewFixture()
+    let first = try fixture.stoppedPane(folder: fixture.project.path)
+    let second = try fixture.stoppedPane(folder: fixture.project.path)
+    let other = try fixture.controller.createWorkspace(folder: fixture.project.path, name: "Elsewhere")
+    try fixture.controller.holdAgainstMove([first.id, second.id])
+    for pane in [first, second] {
+        do {
+            _ = try fixture.controller.movePane(pane.id, toWorkspaceID: other.workspaceID, activeHandoffCount: 0)
+            throw NSError(domain: "a held pane moved", code: 1)
+        } catch is ContainerPaneError {}
+    }
+    do {
+        try fixture.controller.holdAgainstMove([second.id])
+        throw NSError(domain: "a pane was held twice", code: 1)
+    } catch is ContainerPaneError {}
+    fixture.controller.releaseMoveHold([first.id, second.id])
+    for pane in [first, second] {
+        let moved = try fixture.controller.movePane(pane.id, toWorkspaceID: other.workspaceID, activeHandoffCount: 0)
+        try containerExpect(moved.workspaceID == other.workspaceID, "a released pane did not move")
+    }
 }
 
 func checkContainerTransportFolderRefusal() throws {
