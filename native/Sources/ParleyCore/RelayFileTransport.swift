@@ -126,13 +126,16 @@ public final class RelayFileTransport: @unchecked Sendable {
     /// How many times an inbox watcher woke the transport (diagnostics and checks).
     public var watcherWakeCount: Int { lock.withLock { wakes } }
     private var wakes = 0
-    /// Ticks that claimed or held back work, and ticks kept on the fast
+    /// Ticks that claimed or held back work, the part of those held back
+    /// because every request thread was busy, and ticks kept on the fast
     /// cadence by a request still being written (diagnostics and checks).
     /// With the watcher wakes they say what kept a transport from backing off:
     /// once in CI it made 28 ticks in 8 s without reaching idle (Prax 24e184f8).
     public var activeTickCount: Int { lock.withLock { activeTicks } }
+    public var saturatedTickCount: Int { lock.withLock { saturatedTicks } }
     public var pendingTickCount: Int { lock.withLock { pendingTicks } }
     private var activeTicks = 0
+    private var saturatedTicks = 0
     private var pendingTicks = 0
 
     public init(
@@ -341,6 +344,7 @@ public final class RelayFileTransport: @unchecked Sendable {
         lock.withLock {
             pendingSince = pendingSince.filter { seenWithoutReady.contains($0.key) }
             if activity { activeTicks += 1 }
+            if saturated { saturatedTicks += 1 }
             if pending { pendingTicks += 1 }
             let before = schedule.interval
             schedule.observe(activity: activity || pending)
