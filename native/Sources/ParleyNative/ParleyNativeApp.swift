@@ -305,6 +305,7 @@ struct ParleyNativeApp: App {
                             if model.focusNextAttention() {
                                 openWindow(id: "status-center")
                             }
+                        case .workspaceSwitcher: model.showWorkspaceSwitcher()
                         }
                     }
                     appDelegate.bindExternalRequestHandler { request in
@@ -341,6 +342,10 @@ struct ParleyNativeApp: App {
             CommandMenu("Navigate") {
                 Button("Command Palette…") { model.showCommandPalette() }
                     .keyboardShortcut("k", modifiers: [.command])
+                // Not disabled with one workspace: the key monitor takes the
+                // chord before the menu, so the item would only disagree with it.
+                Button("Go to Workspace…") { model.showWorkspaceSwitcher() }
+                    .keyboardShortcut("o", modifiers: [.command, .shift])
                 Divider()
                 Button("Next Workspace") { model.selectAdjacentWorkspace(by: 1) }
                     .keyboardShortcut(.tab, modifiers: [.control])

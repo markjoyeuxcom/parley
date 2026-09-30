@@ -340,6 +340,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var paneListeningPortSnapshot = PaneListeningPortSnapshot.empty
     @Published private(set) var preparingToUninstall = false
     @Published var commandPalettePresented = false
+    /// Everything, or only workspaces (Go to Workspace).
+    @Published private(set) var commandPaletteScope: CommandPaletteScope = .everything
     @Published var setupPresented = false
     @Published var panePermissionRequest: PanePermissionRequest?
     @Published var askManyComparisonPresented = false
@@ -2731,6 +2733,7 @@ final class AppModel: ObservableObject {
     }
 
     var paletteCommands: [PaletteCommand] {
+        if commandPaletteScope == .workspaces { return workspaceSwitcherCommands }
         var commands = [
             PaletteCommand(
                 item: CommandPaletteItem(
@@ -2845,7 +2848,46 @@ final class AppModel: ObservableObject {
     }
 
     func showCommandPalette() {
+        commandPaletteScope = .everything
         commandPalettePresented = true
+    }
+
+    /// The palette with workspaces only, in `WorkspaceSwitcherOrder`.
+    func showWorkspaceSwitcher() {
+        commandPaletteScope = .workspaces
+        commandPalettePresented = true
+    }
+
+    private var workspaceSwitcherCommands: [PaletteCommand] {
+        let index = workspaceActivityIndex
+        let byID = Dictionary(workspaces.map { ($0.workspaceID, $0) }, uniquingKeysWith: { first, _ in first })
+        let groupNames = Dictionary(workspaceGroups.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+        let now = Date()
+        return WorkspaceSwitcherOrder.ordered(workspaces: workspaces, needsPerson: { index.activity(for: $0).needsPerson })
+            .compactMap { id -> PaletteCommand? in
+                guard let workspace = byID[id] else { return nil }
+                let group = workspace.groupID.flatMap { groupNames[$0] }
+                let needs = index.activity(for: id).needsPerson
+                var detail = [group].compactMap { $0 }
+                if workspace.isActive {
+                    detail.append("Current")
+                } else if needs > 0 {
+                    detail.append("\(needs) waiting on you")
+                } else if let used = workspace.lastSelectedAt {
+                    detail.append("Last used \(WorkspaceRecency.label(for: used, now: now))")
+                }
+                detail.append(workspace.newPaneFolder ?? workspace.primaryAttachedFolder ?? "No folders attached")
+                return PaletteCommand(
+                    item: CommandPaletteItem(
+                        id: "workspace:\(workspace.id)",
+                        category: .workspace,
+                        title: workspace.name,
+                        detail: detail.joined(separator: " · "),
+                        keywords: [group ?? "", workspace.isActive ? "current selected" : "open"] + workspace.attachedFolders
+                    ),
+                    action: .selectWorkspace(workspace)
+                )
+            }
     }
 
     func performPaletteCommand(_ command: PaletteCommand) {
@@ -8682,4 +8724,11 @@ private final class RelayEditorAccessory: NSView {
             NSAlert(error: error).runModal()
         }
     }
+}
+
+/// What the command palette lists: everything, or only workspaces for Go to
+/// Workspace (Shift-Command-O).
+enum CommandPaletteScope: Equatable {
+    case everything
+    case workspaces
 }

@@ -8,27 +8,36 @@ struct CommandPaletteView: View {
     @State private var query = ""
     @State private var selectedID: String?
 
-    private var commands: [PaletteCommand] {
+    /// Built once per render and passed down: reading a computed list about
+    /// six times per render rebuilt every row each time, at many workspaces
+    /// a formatter per workspace per read. Handlers that run later build it
+    /// fresh, so none acts on the list from before the query changed.
+    private func currentCommands() -> [PaletteCommand] {
         let all = model.paletteCommands
         let byID = Dictionary(uniqueKeysWithValues: all.map { ($0.id, $0) })
-        return CommandPaletteSearch.results(query: query, items: all.map(\.item))
+        // Go to Workspace lists every workspace, however many there are.
+        let limit = model.commandPaletteScope == .workspaces ? max(60, all.count) : 60
+        return CommandPaletteSearch.results(query: query, items: all.map(\.item), limit: limit)
             .compactMap { byID[$0.id] }
     }
 
+    private var workspacesOnly: Bool { model.commandPaletteScope == .workspaces }
+
     var body: some View {
-        VStack(spacing: 0) {
+        let commands = currentCommands()
+        return VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
-                TextField("Search workspaces, panes, Ask targets and activity", text: $query)
+                TextField(workspacesOnly ? "Go to workspace" : "Search workspaces, panes, Ask targets and activity", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 15))
                     .focused($searchFocused)
                     .onSubmit(runSelected)
-                    .accessibilityLabel("Command search")
-                    .accessibilityHint("Type to filter workspaces, panes, Ask targets, activity, and actions")
-                Text("⌘K")
+                    .accessibilityLabel(workspacesOnly ? "Workspace search" : "Command search")
+                    .accessibilityHint(workspacesOnly ? "Type part of a workspace name" : "Type to filter workspaces, panes, Ask targets, activity, and actions")
+                Text(workspacesOnly ? "⇧⌘O" : "⌘K")
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundStyle(.tertiary)
                     .accessibilityHidden(true)
@@ -40,9 +49,11 @@ struct CommandPaletteView: View {
 
             if commands.isEmpty {
                 ContentUnavailableView(
-                    "No matching command",
+                    workspacesOnly ? "No matching workspace" : "No matching command",
                     systemImage: "magnifyingglass",
-                    description: Text("Try a workspace, pane, vendor, folder, handoff state or message term.")
+                    description: Text(workspacesOnly
+                        ? "Try part of a workspace's name, its group or one of its folders."
+                        : "Try a workspace, pane, vendor, folder, handoff state or message term.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -83,11 +94,15 @@ struct CommandPaletteView: View {
         }
         .frame(width: 680, height: 500)
         .onAppear {
-            selectedID = commands.first?.id
+            selectedID = currentCommands().first?.id
             searchFocused = true
         }
         .onChange(of: query) { _, _ in
-            selectedID = commands.first?.id
+            selectedID = currentCommands().first?.id
+        }
+        // Command-Shift-O inside the palette changes what it lists.
+        .onChange(of: model.commandPaletteScope) { _, _ in
+            selectedID = currentCommands().first?.id
         }
         .onExitCommand(perform: close)
         .onKeyPress(.downArrow) {
@@ -146,6 +161,7 @@ struct CommandPaletteView: View {
     }
 
     private func moveSelection(by offset: Int) {
+        let commands = currentCommands()
         guard !commands.isEmpty else { return }
         let current = selectedID.flatMap { selection in
             commands.firstIndex(where: { $0.id == selection })
@@ -155,6 +171,7 @@ struct CommandPaletteView: View {
     }
 
     private func runSelected() {
+        let commands = currentCommands()
         guard let command = commands.first(where: { $0.id == selectedID }) ?? commands.first else { return }
         run(command)
     }

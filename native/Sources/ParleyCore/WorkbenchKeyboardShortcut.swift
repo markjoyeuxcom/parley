@@ -15,6 +15,7 @@ public enum WorkbenchKeyboardShortcut: Equatable, Sendable {
     case quickRelaySelection
 
     case nextAttention
+    case workspaceSwitcher
     public static func resolve(
         key: String,
         command: Bool,
@@ -42,6 +43,9 @@ public enum WorkbenchKeyboardShortcut: Equatable, Sendable {
             if key == "d" { return .toggleCollaborationDock }
             if key == "a" { return .quickRelaySelection }
             if key == "j" { return .nextAttention }
+            // Go to Workspace (Xcode's Open Quickly chord), which Ghostty
+            // would otherwise receive while a terminal has focus.
+            if key == "o" { return .workspaceSwitcher }
         }
         if command, option, !shift, !control, key == "t" {
             return .focusActiveTerminal
