@@ -315,13 +315,21 @@ public enum WorkspaceSwitcherOrder {
             .sorted { $0.count != $1.count ? $0.count > $1.count : order[$0.id, default: 0] < order[$1.id, default: 0] }
             .map(\.id)
         let placed = Set(needing)
+        // Ties (the same moment, the same name) keep the person's order,
+        // stated rather than left to the sort's stability.
+        func earlier(_ left: WorkbenchWorkspace, _ right: WorkbenchWorkspace) -> Bool {
+            order[left.workspaceID, default: 0] < order[right.workspaceID, default: 0]
+        }
         let used = others
             .filter { !placed.contains($0.workspaceID) && $0.lastSelectedAt != nil }
-            .sorted { $0.lastSelectedAt! > $1.lastSelectedAt! }
+            .sorted { $0.lastSelectedAt! != $1.lastSelectedAt! ? $0.lastSelectedAt! > $1.lastSelectedAt! : earlier($0, $1) }
             .map(\.workspaceID)
         let unused = others
             .filter { !placed.contains($0.workspaceID) && $0.lastSelectedAt == nil }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .sorted {
+                let names = $0.name.localizedCaseInsensitiveCompare($1.name)
+                return names != .orderedSame ? names == .orderedAscending : earlier($0, $1)
+            }
             .map(\.workspaceID)
         return needing + used + unused + current
     }
@@ -347,7 +355,8 @@ public enum WorkspaceDestinationMenu {
         /// Pinned, then recent, destinations: shown at the top of the menu.
         public var shortcuts: [String]
         public var groups: [Group]
-        /// The rest: Ungrouped when there are groups, else every destination.
+        /// The rest: Ungrouped when there are groups, else every destination
+        /// not already among the shortcuts.
         public var remaining: [String]
         public var remainingIsUngrouped: Bool
 
@@ -367,7 +376,9 @@ public enum WorkspaceDestinationMenu {
         var seen = Set<String>()
         let shortcuts = (sections.pinned + sections.recent).filter { allowed.contains($0) && seen.insert($0).inserted }
         guard !sections.groups.isEmpty else {
-            return Layout(shortcuts: shortcuts, groups: [], remaining: destinations, remainingIsUngrouped: false)
+            // The rest at the same level, without repeating the shortcuts
+            // (Agy's review of MR !126); a group's submenu is its whole list.
+            return Layout(shortcuts: shortcuts, groups: [], remaining: destinations.filter { !seen.contains($0) }, remainingIsUngrouped: false)
         }
         return Layout(
             shortcuts: shortcuts,

@@ -57,6 +57,20 @@ func checkWorkspaceSwitcherOrder() throws {
     // Needing the person first (most first), then most recently used, then
     // never used by name ignoring case, and the current workspace last.
     try switcherExpect(order == ["b", "f", "d", "e", "a", "c"], "switcher order: \(order)")
+    // Ties (the same moment, the same name) keep the person's order.
+    var ties = (0..<4).map { WorkbenchWorkspace(id: "t\($0)", name: $0 < 2 ? "Scratch" : "Same", isActive: false, workspaceID: "t\($0)") }
+    ties[2].lastSelectedAt = now
+    ties[3].lastSelectedAt = now
+    for _ in 0..<5 {
+        let tied = WorkspaceSwitcherOrder.ordered(workspaces: ties, needsPerson: { _ in 0 })
+        try switcherExpect(tied == ["t2", "t3", "t0", "t1"], "ties did not keep the workspace order: \(tied)")
+        ties.swapAt(0, 1)
+        ties.swapAt(2, 3)
+        let swapped = WorkspaceSwitcherOrder.ordered(workspaces: ties, needsPerson: { _ in 0 })
+        try switcherExpect(swapped == ["t3", "t2", "t1", "t0"], "ties did not follow a reordered workspace list: \(swapped)")
+        ties.swapAt(0, 1)
+        ties.swapAt(2, 3)
+    }
 }
 
 func checkWorkspaceDestinationMenu() throws {
@@ -67,6 +81,17 @@ func checkWorkspaceDestinationMenu() throws {
     let plain = WorkspaceDestinationMenu.layout(destinations: ["w01", "w02", "w03", "w04"], sections: fewSections)
     try switcherExpect(plain == WorkspaceDestinationMenu.Layout(shortcuts: [], groups: [], remaining: ["w01", "w02", "w03", "w04"], remainingIsUngrouped: false),
                        "a short list is not the plain list: \(plain)")
+
+    // Many, no groups: pinned and recent first, then the rest without repeating them.
+    var ungrouped = switcherWorkspaces(12)
+    ungrouped[0].isActive = true
+    ungrouped[4].pinned = true
+    ungrouped[8].lastSelectedAt = Date()
+    let flat = WorkspaceDestinationMenu.layout(destinations: ungrouped.map(\.workspaceID).filter { $0 != "w00" },
+                                               sections: WorkspaceSidebarSections.derive(workspaces: ungrouped, needsPerson: { _ in 0 }))
+    try switcherExpect(flat.shortcuts == ["w04", "w08"] && !flat.remainingIsUngrouped
+                       && flat.remaining == ungrouped.map(\.workspaceID).filter { !["w00", "w04", "w08"].contains($0) },
+                       "with no groups the shortcuts are repeated in the list below: \(flat)")
 
     // Many, grouped: pinned and recent first, then a submenu per group with a
     // destination in it, then Ungrouped. The pane's own workspace is no destination.

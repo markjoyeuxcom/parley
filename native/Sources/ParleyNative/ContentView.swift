@@ -1032,6 +1032,7 @@ struct ContentView: View {
         let sections = model.workspaceSidebarSections
         let byID = Dictionary(model.workspaces.map { ($0.workspaceID, $0) }, uniquingKeysWith: { first, _ in first })
         return HStack(spacing: 6) {
+            ScrollViewReader { reader in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 3) {
                     ForEach(sections.tabs.compactMap { byID[$0] }) { workspace in
@@ -1098,6 +1099,13 @@ struct ContentView: View {
                         .snapshotContextMenu(workspaceMenuItems(workspace))
                     }
                 }
+            }
+            // A workspace reached another way (Go to Workspace, Control-Tab)
+            // may sit beyond the scrolled tabs; bring its tab into view.
+            .onChange(of: model.activeWorkspace?.id) { _, id in
+                guard let id else { return }
+                withAnimation(.easeOut(duration: 0.15)) { reader.scrollTo(id, anchor: .center) }
+            }
             }
 
             // Outside the scrolling tabs, so it cannot scroll out of view.

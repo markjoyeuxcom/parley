@@ -556,7 +556,11 @@ MR 3 makes any of many workspaces reachable without scrolling:
   disabled, because the key monitor takes the chord before the menu.
 - **A pane's Move to Workspace menu (`WorkspaceDestinationMenu`):** pinned
   and recent destinations first, then a submenu per group holding one, then
-  Ungrouped, or the whole list when there are no groups. With few
+  Ungrouped. With no groups, the other destinations follow instead, without
+  repeating the shortcuts (Agy's review of MR !126); a group's submenu is its
+  whole list. The switcher's ties keep the workspace order explicitly, and
+  the tab strip scrolls to the current tab when a workspace is reached
+  another way. With few
   workspaces and no groups it stays the plain list. The palette builds its
   list once per render: its list used to be a computed property read about
   six times per render.
