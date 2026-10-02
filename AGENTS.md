@@ -1979,6 +1979,74 @@ in its draft and says they may have been edited) while the resolved review
 is retained. Approval forms return
 known part ids and edited text, never source metadata or captured originals.
 
+An agent-staged file may be a PNG or JPEG image of at most 10 MB (protocol
+34, 2 October 2026), so a Codex pane using its own computer use can hand over
+a screenshot. Parley does not capture screens. Codex's review of MR !138
+shaped most of what follows.
+- **Checking:** `ContextImageInspector` decides from the bytes alone: the
+  signature, one image in a PNG or JPEG container, and at most 16,384 pixels
+  a side and 64 million in all. It never decodes the pixels. ImageIO yields
+  an image for a PNG whose compressed data is corrupt or cut short, so a
+  decode would prove nothing and cost up to 256 MB a request. A damaged image
+  is staged; its preview says when ImageIO cannot draw it, which is not the
+  same as Parley no longer keeping it.
+- **The part:** it keeps kind `agentFileDraft` and gains an `image`
+  (`ContextPackImage`: format, size, byte count, SHA-256). Its text is
+  Parley's description, never the bytes, and `replacingText` leaves it
+  alone. Its editor is a preview (`ContextImagePreview`), read off the main
+  actor as a thumbnail of at most 1,600 pixels once per digest for each
+  preview on screen; there is no shared cache.
+- **Downgrade:** an older Parley decodes the record but drops `image` when it
+  next saves the review store. The copy is then collected, and the part reads
+  as its description alone.
+- **The copy:** it lives in `context-images/<sha256>.<ext>`
+  (`ContextImageStore`). It is written through `OwnerOnlyFile`, read with
+  no-follow opens and hashed again on every read, so a changed file is
+  refused, never served. The store holds at most 500 MB
+  (`defaultMaximumTotalBytes`): sixteen parts in each of a hundred reviews
+  could otherwise leave 16 GB nobody sees. A full store first collects, then
+  answers 507 naming Delete Saved Context.
+- **Collection:** a copy goes as soon as no saved review holds it and no
+  staging pins it. It runs when reviews are pruned or deleted, at start, and
+  when the store is full. Staging pins the digest before the copy is written
+  and releases it once the review is in the broker's map, or staging failed
+  (`pinImage`, `unpinImage`). The pin lock is held across a collection's
+  listing, so a copy whose review is still being saved is never taken. A
+  ten-minute age did this before review, and a long sleep or a forward clock
+  step defeated it.
+- **Fetching:** agents run `parley image <sha256> --to <file>`, a pull
+  written by the agent's own command with its own permissions. Parley never
+  writes into an agent's folder, and an endpoint path, which carries the
+  pane's capability, never appears in any text. The shim makes a scratch
+  folder beside the destination with `mkdir`, which fails on anything already
+  there, links included. It copies the reply over the destination only once
+  the whole image arrived (a container has `cat` but no `mv`). A refusal, or
+  a reply `post` could not write out in full, leaves an existing file as it
+  was. `post` now fails with 74 whenever it cannot copy a reply, for every
+  command, since `set -e` does not reach it.
+- **Who may fetch:** the broker (`handleImageFetch`) serves an image only to
+  the pane that staged it, or to the pane a person approved sending a pack
+  holding it to. That pane is the review's `requestedTargetPaneID`, with the
+  review approved or completed and the image in its sent pack. Naming a
+  digest in a message grants nothing. Until review, any handoff whose text or
+  result held the digest granted it. A returned file named by its digest
+  therefore reached the lead through Parley's own receipt before the person
+  had seen it, and a digest learned that way could be passed on.
+- **Transport:** `context draft`, `context add` and `done --file` carry the
+  bytes in the request body. It is read through `RelayRequestFields.readData`
+  up to the image bound, and anything without an image signature must then
+  meet the 200,000-byte text bound and be UTF-8. A file over 10 MB is
+  refused from its size before it is read
+  (`RelayFileTransportError.fieldTooLarge`). A larger non-image file is read,
+  then refused; both refusals name both bounds. At most four staging bodies
+  are held at once (`stagingSlots`). A slot is given back when its request is
+  dropped, and a fifth waits up to 30 seconds, then is refused with nothing
+  staged.
+- **Checks:** `ImageEvidenceChecks` covers the inspector, the store, the
+  part, staging through all three commands, fetch authorization (relayed and
+  digest-named cases included), deletion, the pins, room-making, and the
+  shim end to end with a reply cut short by a file-size limit.
+
 Native **Delete Saved Context** (`/ui/context-reviews/delete`) permanently
 removes selected records, including `returnedPart`, from both the store and
 broker. Every selected revision is checked before any removal; waiting and

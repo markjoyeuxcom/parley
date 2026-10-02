@@ -377,6 +377,9 @@ final class AppModel: ObservableObject {
     )
     private let fallbackFolder: String
     private let applicationDirectory: URL
+    /// The core's image copies, read here only to preview a staged image.
+    /// Parley's copies of staged images, read by previews off the main actor.
+    var contextImageStore: ContextImageStore { ContextImageStore(directory: ContextImageStore.directory(applicationDirectory: applicationDirectory)) }
     private let preferences: UserDefaults
     private let runtimeLease: RuntimeUILease?
     private let layoutStore: SavedWorkspaceLayoutStore

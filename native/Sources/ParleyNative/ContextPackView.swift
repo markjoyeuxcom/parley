@@ -237,11 +237,21 @@ struct ContextPackView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                 }
-                // One editor per part: its undo history belongs to that part's text.
-                PlainTextEditor(text: partTextBinding(part.id), accessibilityLabel: "Part text")
-                    .id(part.id)
-                    .frame(minHeight: 120)
-                    .border(Color.secondary.opacity(0.25))
+                if let image = part.image {
+                    // An image is shown, not edited: its text is Parley's own
+                    // description of how the receiver fetches it.
+                    ContextImagePreview(image: image, store: model.contextImageStore)
+                    Text(part.text)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                } else {
+                    // One editor per part: its undo history belongs to that part's text.
+                    PlainTextEditor(text: partTextBinding(part.id), accessibilityLabel: "Part text")
+                        .id(part.id)
+                        .frame(minHeight: 120)
+                        .border(Color.secondary.opacity(0.25))
+                }
                 HStack {
                     if part.isEdited {
                         Button("Restore Capture") {
@@ -594,5 +604,62 @@ private struct ContextCommandCaptureView: View {
             actions: { Button("OK") { errorMessage = nil } },
             message: { Text(errorMessage ?? "Unknown error") }
         )
+    }
+}
+
+/// A staged image as the person reviews it: the picture, scaled to fit, and
+/// exactly what Parley checked about it.
+/// Reads Parley's copy once per digest, off the main actor, and shows a
+/// bounded thumbnail: a render never touches the disk, hashes the copy or
+/// draws a full-size frame.
+struct ContextImagePreview: View {
+    let image: ContextPackImage
+    let store: ContextImageStore
+    @State private var loaded: (digest: String, outcome: Outcome)?
+
+    /// Kept but not drawable is not missing: the inspector does not decode
+    /// pixels, so an image ImageIO cannot draw is still Parley's copy and an
+    /// agent can still fetch it (Codex's review of MR !138, L2).
+    private enum Outcome: Sendable {
+        case shown(CGImage)
+        case notDrawable
+        case missing
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            switch loaded?.digest == image.sha256 ? loaded?.outcome : nil {
+            case let .shown(picture):
+                Image(nsImage: NSImage(cgImage: picture, size: .zero))
+                    .resizable()
+                    .interpolation(.medium)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: 360)
+                    .border(Color.secondary.opacity(0.25))
+                    .accessibilityLabel("Image, \(image.width) by \(image.height) pixels")
+            case .notDrawable:
+                Text("Parley keeps this image, but cannot draw a preview of it. A pane it is sent to can still fetch it.")
+                    .foregroundStyle(.orange)
+            case .missing:
+                Text("Parley no longer keeps this image, or its copy no longer matches its digest.")
+                    .foregroundStyle(.orange)
+            case nil:
+                ProgressView().controlSize(.small)
+            }
+            Text("\(image.format.label) · \(image.width) × \(image.height) pixels · \(image.byteCount.formatted()) bytes")
+            Text("SHA-256: \(image.sha256)")
+                .textSelection(.enabled)
+        }
+        .font(.caption.monospaced())
+        .foregroundStyle(.secondary)
+        .task(id: image.sha256) {
+            let image = image, store = store
+            let outcome = await Task.detached(priority: .userInitiated) { () -> Outcome in
+                guard let data = try? store.data(for: image) else { return .missing }
+                return ContextImageInspector.thumbnail(data, maximumPixelSize: 1_600).map(Outcome.shown) ?? .notDrawable
+            }.value
+            guard !Task.isCancelled else { return }
+            loaded = (image.sha256, outcome)
+        }
     }
 }

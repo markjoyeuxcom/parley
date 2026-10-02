@@ -106,30 +106,272 @@ public struct ContextPackPart: Identifiable, Codable, Equatable, Sendable {
     public let source: ContextPackSource
     public let capturedText: String
     public let text: String
+    /// An image the part carries, kept by Parley (`ContextImageStore`). Its
+    /// text is then a fixed description saying how to fetch it. The kind
+    /// stays `.agentFileDraft`, so an older Parley reads the part as the text
+    /// it carries instead of failing to decode the whole store.
+    public let image: ContextPackImage?
 
     public init(
         id: String = UUID().uuidString.lowercased(),
         source: ContextPackSource,
         capturedText: String,
-        text: String? = nil
+        text: String? = nil,
+        image: ContextPackImage? = nil
     ) {
         self.id = id
         self.source = source
         self.capturedText = ContextPackText.normalize(capturedText)
         self.text = ContextPackText.normalize(text ?? capturedText)
+        self.image = image
     }
 
     public var capturedByteCount: Int { capturedText.utf8.count }
     public var byteCount: Int { text.utf8.count }
     public var isEdited: Bool { text != capturedText }
 
+    /// What the part is, as the pack and the review show it.
+    public var typeLabel: String { image == nil ? source.kind.label : "Agent-provided image" }
+
+    /// An image part's text is the description Parley wrote, never the
+    /// person's or the agent's: it says how to fetch the image.
     public func replacingText(_ replacement: String) -> ContextPackPart {
-        ContextPackPart(
+        guard image == nil else { return self }
+        return ContextPackPart(
             id: id,
             source: source,
             capturedText: capturedText,
             text: replacement
         )
+    }
+
+    /// An agent-staged image, described for the receiving vendor.
+    public static func agentImage(_ image: ContextPackImage, label: String, detail: String, referenceID: String? = nil) -> ContextPackPart {
+        ContextPackPart(
+            source: ContextPackSource(kind: .agentFileDraft, label: label, detail: detail, referenceID: referenceID),
+            capturedText: """
+            This part is an image (\(image.format.label), \(image.width) × \(image.height) pixels), not text. Parley keeps a copy.
+            Fetch it into a file of your choosing with:
+            parley image \(image.sha256) --to <file>.\(image.format.fileExtension)
+            then open that file with your own image tool. Say so if you cannot read it.
+            """,
+            image: image
+        )
+    }
+}
+
+/// An image Parley has checked and keeps, named by the SHA-256 of its bytes.
+public struct ContextPackImage: Codable, Equatable, Hashable, Sendable {
+    public enum Format: String, Codable, Sendable {
+        case png
+        case jpeg
+
+        public var label: String { self == .png ? "PNG" : "JPEG" }
+        public var fileExtension: String { self == .png ? "png" : "jpg" }
+    }
+
+    public let format: Format
+    public let width: Int
+    public let height: Int
+    public let byteCount: Int
+    public let sha256: String
+
+    public init(format: Format, width: Int, height: Int, byteCount: Int, sha256: String) {
+        self.format = format
+        self.width = width
+        self.height = height
+        self.byteCount = byteCount
+        self.sha256 = sha256
+    }
+
+    /// 64 lowercase hex characters: the only shape a fetch may name.
+    public static func isDigest(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { (0x30...0x39).contains($0) || (0x61...0x66).contains($0) }
+    }
+}
+
+public enum ContextImageError: Error, LocalizedError, Equatable {
+    case empty
+    case tooLarge(byteCount: Int, maximum: Int)
+    case notAnImage
+    case unsupported
+    case unreadable
+    case badDimensions(width: Int, height: Int)
+    case changedOnDisk
+    case missing
+    case storeFull(keptBytes: Int, maximum: Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case .empty: "The image is empty."
+        case let .tooLarge(byteCount, maximum): "The image is \(byteCount) bytes; Parley accepts at most \(maximum)."
+        case .notAnImage: "The file is not a PNG or JPEG image."
+        case .unsupported: "Parley accepts a single PNG or JPEG image."
+        case .unreadable: "The image could not be read."
+        case let .badDimensions(width, height):
+            "The image is \(width) × \(height) pixels; Parley accepts at most \(ContextImageInspector.maximumDimension) on a side and \(ContextImageInspector.maximumPixels) pixels."
+        case .changedOnDisk: "Parley's copy of the image no longer matches its digest."
+        case .missing: "Parley no longer keeps that image."
+        case let .storeFull(keptBytes, maximum):
+            "Parley already keeps \(keptBytes) bytes of staged images, and this one would pass its limit of \(maximum); nothing was staged. Deleting saved context that holds images (Delete Saved Context… or Clear history in Status Center) makes room."
+        }
+    }
+}
+
+/// Decides whether bytes are an image Parley stages, without decoding pixels.
+public enum ContextImageInspector {
+    public static let maximumBytes = 10_000_000
+    public static let maximumDimension = 16_384
+    public static let maximumPixels = 64_000_000
+
+    /// Whether the bytes begin like a PNG or a JPEG. Anything else is staged
+    /// as text, or refused, exactly as before images existed.
+    public static func looksLikeImage(_ data: Data) -> Bool {
+        data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) || data.starts(with: [0xFF, 0xD8, 0xFF])
+    }
+
+    public static func inspect(_ data: Data, maximumBytes: Int = maximumBytes) throws -> ContextPackImage {
+        guard !data.isEmpty else { throw ContextImageError.empty }
+        guard data.count <= maximumBytes else { throw ContextImageError.tooLarge(byteCount: data.count, maximum: maximumBytes) }
+        let format: ContextPackImage.Format
+        if data.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) { format = .png }
+        else if data.starts(with: [0xFF, 0xD8, 0xFF]) { format = .jpeg }
+        else { throw ContextImageError.notAnImage }
+        let options = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, options),
+              CGImageSourceGetStatus(source) == .statusComplete else { throw ContextImageError.unreadable }
+        let expected = format == .png ? "public.png" : "public.jpeg"
+        guard (CGImageSourceGetType(source) as String?) == expected, CGImageSourceGetCount(source) == 1 else {
+            throw ContextImageError.unsupported
+        }
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, options) as? [CFString: Any],
+              let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue,
+              let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue else {
+            throw ContextImageError.unreadable
+        }
+        guard (1...maximumDimension).contains(width), (1...maximumDimension).contains(height), width * height <= maximumPixels else {
+            throw ContextImageError.badDimensions(width: width, height: height)
+        }
+        // The pixel data is not decoded: ImageIO yields an image, and reports
+        // the source complete, for a PNG whose compressed data is corrupt or
+        // cut short (checked on macOS 27), so a decode would prove nothing and
+        // cost up to four bytes a pixel per request.
+        return ContextPackImage(format: format, width: width, height: height, byteCount: data.count,
+                                sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
+    }
+
+    /// A copy no larger than `maximumPixelSize` on its longer side, for a
+    /// preview: a full-size frame can take 256 MB to draw.
+    public static func thumbnail(_ data: Data, maximumPixelSize: Int) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary) else {
+            return nil
+        }
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maximumPixelSize,
+            kCGImageSourceShouldCacheImmediately: true,
+        ] as CFDictionary)
+    }
+}
+
+/// Parley's own copies of staged images, one owner-only file per digest in
+/// an owner-only folder. A copy is read without following a link and served
+/// only while its bytes still hash to its name.
+public final class ContextImageStore: @unchecked Sendable {
+    /// Room for fifty images at the per-image limit: an agent may stage up to
+    /// sixteen parts in each of a hundred saved reviews, which unbounded
+    /// could hold 16 GB of copies nobody sees in Application Support.
+    public static let defaultMaximumTotalBytes = 500_000_000
+    private let directory: URL
+    private let maximumTotalBytes: Int
+    private let lock = NSLock()
+
+    public init(directory: URL, maximumTotalBytes: Int = defaultMaximumTotalBytes) {
+        self.directory = directory
+        self.maximumTotalBytes = maximumTotalBytes
+    }
+
+    /// Where the running app keeps them, beside the context reviews.
+    public static func directory(applicationDirectory: URL) -> URL {
+        applicationDirectory.appendingPathComponent("context-images", isDirectory: true)
+    }
+
+    public func url(for image: ContextPackImage) -> URL {
+        directory.appendingPathComponent("\(image.sha256).\(image.format.fileExtension)")
+    }
+
+    /// Checks the bytes are an image and keeps one copy of them.
+    public func store(_ data: Data) throws -> ContextPackImage {
+        let image = try ContextImageInspector.inspect(data)
+        try lock.withLock {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            let file = url(for: image)
+            if (try? readLocked(image)) == data { return }
+            let kept = keptBytesLocked()
+            guard kept + data.count <= maximumTotalBytes else {
+                throw ContextImageError.storeFull(keptBytes: kept, maximum: maximumTotalBytes)
+            }
+            try OwnerOnlyFile.write(data, to: file)
+        }
+        return image
+    }
+
+    public func data(for image: ContextPackImage) throws -> Data {
+        try lock.withLock { try readLocked(image) }
+    }
+
+    /// Removes every copy whose digest is not kept; returns how many went.
+    /// The broker keeps every digest a saved review holds or a staging pins.
+    @discardableResult
+    public func removeAll(except kept: Set<String>) -> Int {
+        lock.withLock {
+            guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return 0 }
+            var removed = 0
+            for name in names {
+                let digest = String(name.split(separator: ".", maxSplits: 1).first ?? "")
+                guard ContextPackImage.isDigest(digest), !kept.contains(digest) else { continue }
+                if unlink(directory.appendingPathComponent(name).path) == 0 { removed += 1 }
+            }
+            return removed
+        }
+    }
+
+    /// The bytes of every copy here, by `lstat`, so a link counts as itself.
+    private func keptBytesLocked() -> Int {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return 0 }
+        return names.reduce(0) { total, name in
+            var metadata = stat()
+            guard lstat(directory.appendingPathComponent(name).path, &metadata) == 0 else { return total }
+            return total + Int(metadata.st_size)
+        }
+    }
+
+    private func readLocked(_ image: ContextPackImage) throws -> Data {
+        let descriptor = open(url(for: image).path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else { throw errno == ENOENT ? ContextImageError.missing : ContextImageError.unreadable }
+        defer { close(descriptor) }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG, metadata.st_uid == getuid(),
+              metadata.st_mode & 0o077 == 0, metadata.st_size == off_t(image.byteCount) else {
+            throw ContextImageError.changedOnDisk
+        }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 65_536)
+        while data.count <= image.byteCount {
+            let count = Darwin.read(descriptor, &buffer, buffer.count)
+            if count < 0, errno == EINTR { continue }
+            guard count >= 0 else { throw ContextImageError.unreadable }
+            if count == 0 { break }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+        guard data.count == image.byteCount,
+              SHA256.hash(data: data).map({ String(format: "%02x", $0) }).joined() == image.sha256 else {
+            throw ContextImageError.changedOnDisk
+        }
+        return data
     }
 }
 
@@ -846,12 +1088,16 @@ public final class ContextPackBuilder: @unchecked Sendable {
         for (index, part) in pack.parts.enumerated() {
             var metadata = [
                 "Context part \(index + 1) of \(pack.parts.count)",
-                "Type: \(part.source.kind.label)",
+                "Type: \(part.typeLabel)",
                 "Source: \(line(part.source.detail))",
                 "Captured UTF-8 bytes: \(part.capturedByteCount)",
                 "Current UTF-8 bytes: \(part.byteCount)",
                 "Edited after capture: \(part.isEdited ? "yes" : "no")",
             ]
+            if let image = part.image {
+                metadata.append("Image: \(image.format.label), \(image.width) × \(image.height) pixels, \(image.byteCount) bytes")
+                metadata.append("Image SHA-256: \(image.sha256)")
+            }
             if let evidence = part.source.vendorEvidence {
                 metadata.append(contentsOf: [
                     "Evidence vendor: \(evidence.vendor.label)",

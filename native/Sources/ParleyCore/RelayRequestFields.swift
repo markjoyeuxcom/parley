@@ -31,6 +31,16 @@ public final class RelayRequestFields {
     deinit { close(directory) }
 
     public func read(_ name: String, maximumBytes: Int, optional: Bool = false) throws -> String? {
+        guard let data = try readData(name, maximumBytes: maximumBytes, optional: optional) else { return nil }
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw RelayFileTransportError.runtime("request field \(name) is not UTF-8")
+        }
+        return text
+    }
+
+    /// The field's bytes, with the same pinned, no-follow, owner-only and
+    /// bounded read as `read`; for a body that may be an image.
+    public func readData(_ name: String, maximumBytes: Int, optional: Bool = false) throws -> Data? {
         guard !name.isEmpty, !name.contains("/"), !name.contains("\0"), name != ".", name != "..", maximumBytes >= 0 else {
             throw RelayFileTransportError.runtime("invalid request field name or bound")
         }
@@ -41,9 +51,10 @@ public final class RelayRequestFields {
         var metadata = stat()
         guard fstat(descriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG,
               metadata.st_uid == getuid(), metadata.st_mode & 0o077 == 0, metadata.st_nlink == 1,
-              metadata.st_size >= 0, metadata.st_size <= maximumBytes else {
-            throw RelayFileTransportError.runtime("invalid or oversized request field \(name)")
+              metadata.st_size >= 0 else {
+            throw RelayFileTransportError.runtime("invalid request field \(name)")
         }
+        guard metadata.st_size <= maximumBytes else { throw RelayFileTransportError.fieldTooLarge(name) }
         var data = Data()
         var bytes = [UInt8](repeating: 0, count: min(8_192, maximumBytes + 1))
         while true {
@@ -53,12 +64,9 @@ public final class RelayRequestFields {
             guard count >= 0 else { throw RelayFileTransportError.runtime("could not read request field \(name)") }
             if count == 0 { break }
             data.append(contentsOf: bytes.prefix(count))
-            guard data.count <= maximumBytes else { throw RelayFileTransportError.runtime("request field \(name) is too large") }
+            guard data.count <= maximumBytes else { throw RelayFileTransportError.fieldTooLarge(name) }
         }
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw RelayFileTransportError.runtime("request field \(name) is not UTF-8")
-        }
-        return text
+        return data
     }
 
     private static func validateDirectory(_ descriptor: Int32) throws {

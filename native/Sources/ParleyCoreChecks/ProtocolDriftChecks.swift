@@ -9,7 +9,7 @@ import ParleyCore
 /// a pane that learned different words under the same number.
 func checkProtocolTextMatchesItsVersion() throws {
     let digest = SHA256.hash(data: Data(AgentProtocol.text.utf8)).map { String(format: "%02x", $0) }.joined()
-    let pinned = (version: "33", digest: "c35ddc1d5597a69113dad46a03f45ae67d2d30b90b5dafcc23c4147c37c68bda")
+    let pinned = (version: "34", digest: "7f984ec6768f22c305bf84080353d52f0f7a7df0ef368205f0ac54d139a307f7")
     guard AgentProtocol.version == pinned.version, digest == pinned.digest else {
         throw NSError(domain: "ProtocolDrift", code: 1, userInfo: [NSLocalizedDescriptionKey:
             "AgentProtocol.text or AgentProtocol.version changed (version \(AgentProtocol.version), text digest \(digest)). "
