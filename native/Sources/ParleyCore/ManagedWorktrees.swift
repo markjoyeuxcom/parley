@@ -322,15 +322,20 @@ public struct WorktreeCleanupFacts: Equatable, Sendable {
     /// same, so each one refuses removal under its own name.
     public var nestedRepositoryPaths: [String]
     /// Ignored directories carrying a valid CACHEDIR.TAG, which by that
-    /// standard hold only data their tool can regenerate. They are not
-    /// searched for repositories, and the preview says so.
+    /// standard declare that their tool can regenerate them. A declaration,
+    /// not something Parley checked: they are not searched for repositories,
+    /// and the preview says they were not inspected and that everything in
+    /// them goes with the tree.
     public var cacheDirectories: [String]
-    /// The branch names an upstream whose remote-tracking branch no longer
-    /// exists (Git's `[gone]`), as after a merge request whose source branch
-    /// was deleted and a fetch that pruned it.
+    /// The branch names an upstream that no longer exists here (Git's
+    /// `[gone]`), usually because the remote branch was deleted after a merge
+    /// and a fetch pruned it. That cause is the usual one, not one observed.
     public var upstreamGone: Bool
     /// The branch's upstream could not be read at all.
     public var upstreamUnknown: Bool
+
+    /// The cache folders as the confirmation and inspector show them.
+    public var displayedCacheDirectories: [String] { cacheDirectories.map(DelegationGitFacts.displayPath) }
 
     public init(parleyCreated: Bool, creationTokenVerified: Bool, registered: Bool, registryReadable: Bool, pathInspectable: Bool, pathExists: Bool, pathIsDirectory: Bool,
                 recordInventoryReadable: Bool, recordPresentInInventory: Bool, recordUnchangedInInventory: Bool, locked: Bool, prunable: Bool,
@@ -451,7 +456,7 @@ public enum WorktreeCleanupPolicy {
             }
         } else if !facts.mergedIntoPrimary {
             if facts.upstreamGone {
-                reasons.append("its upstream branch no longer exists (deleted on the remote, as after a merged merge request) and its HEAD is not in the primary checkout, so its commits may exist only here")
+                reasons.append("its upstream branch no longer exists here (Git reports it gone, usually deleted on the remote after a merge) and its HEAD is not in the primary checkout, so its commits may exist only here")
             } else if facts.upstreamUnknown {
                 reasons.append("the branch's upstream could not be read and its HEAD is not in the primary checkout")
             } else {
@@ -483,17 +488,20 @@ public struct WorktreeCleanupPreview: Equatable, Sendable {
         if facts.hasUpstream, !facts.upstreamGone, !facts.upstreamUnknown {
             parts.append("the branch has an upstream and local remote-tracking state shows no commits ahead of it (Parley did not contact the remote; a newer push or a rewritten remote branch is not known here)")
         } else if facts.upstreamGone {
-            parts.append("the branch's upstream no longer exists here (deleted on the remote and pruned) and its HEAD is already contained in the primary worktree's HEAD")
+            parts.append("Git reports the branch's upstream gone (missing here, usually deleted on the remote after a merge and then pruned) and its HEAD is already contained in the primary worktree's HEAD")
         } else if facts.upstreamUnknown {
             parts.append("the branch's upstream could not be read, and its HEAD is already contained in the primary worktree's HEAD")
         } else {
             parts.append("the branch has no upstream and its HEAD is already contained in the primary worktree's HEAD")
         }
         parts.append("no pane folder of this runtime or the other Parley runtime is inside the tree")
-        parts.append("the tree is not locked and contains no other registered worktree or independent repository")
-        if !facts.cacheDirectories.isEmpty {
-            parts.append("ignored folders marked as caches by a CACHEDIR.TAG were not searched for repositories, because their tool can regenerate them: "
-                + facts.cacheDirectories.joined(separator: ", "))
+        if facts.cacheDirectories.isEmpty {
+            parts.append("the tree is not locked and contains no other registered worktree or independent repository")
+        } else {
+            // What the tag declares is not what Parley checked: say both.
+            parts.append("the tree is not locked and contains no other registered worktree, and no independent repository was found outside the folders below")
+            parts.append("these ignored folders declare themselves caches with a CACHEDIR.TAG, so they were not inspected, and everything in them is deleted with the tree, including any repository or local change: "
+                + facts.displayedCacheDirectories.joined(separator: ", "))
         }
         return parts.joined(separator: "; ")
     }

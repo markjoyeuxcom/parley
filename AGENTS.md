@@ -1448,16 +1448,24 @@ directory entry meaning its whole contents.
 Removing a merged team worktree used to need two manual steps (the first
 team trial, 2 October 2026, Prax f559be94). An upstream that is configured
 but whose remote-tracking branch is gone (Git's `%(upstream:track)` reads
-`[gone]`), as GitLab's "remove source branch" plus a pruning fetch leave it,
-is `upstreamGone`, and one that cannot be read is `upstreamUnknown`. Neither
+`[gone]`), usually GitLab's "remove source branch" plus a pruning fetch but
+only ever observed as a local absence, is `upstreamGone`, and one that cannot
+be read is `upstreamUnknown`. Neither
 counts as a status failure any more, and the primary checkout's HEAD settles
 both: a tree it already contains is removable. Otherwise each refuses under its
-own name, and the board reads "upstream deleted". Independent repositories in
+own name, and the board reads "upstream gone". This is the one exception to
+"an unanswerable Git question refuses" above. Independent repositories in
 ignored folders are `nestedRepositoryPaths`, refused as such rather than as
 registered worktrees. A folder whose regular `CACHEDIR.TAG` begins with the
 Cache Directory Tagging signature (read with `O_NOFOLLOW` and checked with
 `fstat`) is not searched for repositories, because SwiftPM keeps its package
-clones in `.build` beside one. The preview lists it in `cacheDirectories`.
+clones in `.build` beside one. That is the one exception to the search of
+ignored directories above. The tag is a declaration, not something checked:
+the preview lists each such folder (escaped, `displayedCacheDirectories`),
+says it was not inspected and that everything in it goes with the tree. It
+never claims the tree holds no independent repository. A tag added after the
+preview is not compared at removal, because the person has already
+acknowledged that ignored folder's whole contents (Codex's review of MR !136).
 `worktreeRemovalAfterMergeChecks` runs both cases with real Git. Ignored directories are also
 inspected for independent repositories, including bare repositories, before
 cleanup can proceed; an unreadable or over-budget traversal refuses removal

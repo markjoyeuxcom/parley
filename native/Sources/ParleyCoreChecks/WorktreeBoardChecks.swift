@@ -64,7 +64,7 @@ func worktreeBoardDerivationChecks() throws {
     try boardExpect(pushed(true, nil) == "push state unknown" && pushed(false, nil) == "no upstream" && pushed(nil, nil) == "", "upstream states were mislabelled")
     try boardExpect(derive(ManagedWorktreeFacts(recordID: "record", currentBranch: "feat/x", head: "1111111111111111", changedPathCount: 0,
         upstreamAheadCount: nil, hasUpstream: true, registered: true, primaryHead: "2222222222222222", aheadOfPrimary: 0, behindPrimary: 1,
-        containedInPrimary: true, upstreamGone: true), [], nil).pushLabel == "upstream deleted", "a deleted upstream read as an unknown push state")
+        containedInPrimary: true, upstreamGone: true), [], nil).pushLabel == "upstream gone", "a gone upstream read as an unknown push state")
     try boardExpect(derive(ManagedWorktreeFacts(recordID: "record", currentBranch: "feat/x", head: "1111111111111111", changedPathCount: 0,
         upstreamAheadCount: 0, hasUpstream: true, registered: true, primaryHead: "2222222222222222", aheadOfPrimary: 1, behindPrimary: 0, containedInPrimary: false), [], nil)
         .factsLine.contains("pushed"), "the facts line did not carry the push label")

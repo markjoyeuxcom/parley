@@ -128,12 +128,12 @@ struct WorktreeLifecycleView: View {
                 if facts.hasUpstream, !facts.upstreamGone, !facts.upstreamUnknown {
                     Text("\(facts.upstreamAheadCount) commits ahead of local upstream tracking state. Remote not contacted.")
                 } else {
-                    if facts.upstreamGone { Text("The branch's upstream was deleted on the remote and pruned here.") }
+                    if facts.upstreamGone { Text("Git reports the branch's upstream gone: it no longer exists here, usually because it was deleted on the remote after a merge.") }
                     else if facts.upstreamUnknown { Text("The branch's upstream could not be read.").foregroundStyle(.orange) }
                     Text(facts.mergedIntoPrimary ? "HEAD is contained in the primary checkout's HEAD." : "No upstream preservation evidence; inspect and preserve your commits before removal.")
                 }
                 if !facts.cacheDirectories.isEmpty {
-                    Text("Not searched for repositories, because a CACHEDIR.TAG marks them as caches their tool can regenerate: \(facts.cacheDirectories.joined(separator: ", "))")
+                    Text("Not inspected, because a CACHEDIR.TAG declares them caches; everything in them is deleted with the tree, including any repository or local change: \(facts.displayedCacheDirectories.joined(separator: ", "))")
                 }
                 DisclosureGroup("Changed paths") {
                     ForEach(Array((facts.modifiedPaths + facts.untrackedPaths).prefix(200).enumerated()), id: \.offset) { _, path in

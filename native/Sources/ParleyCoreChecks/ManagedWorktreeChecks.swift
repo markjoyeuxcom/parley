@@ -433,7 +433,8 @@ func worktreeRemovalAfterMergeChecks() throws {
     let mergedPreview = try f.service.cleanupPreview(merged, livePaneFolders: [], otherRuntimeStateFiles: [])
     try wtExpect(mergedPreview.facts.upstreamGone && !mergedPreview.facts.statusUncertain, "a deleted upstream was not read as gone: \(mergedPreview.facts)")
     try wtExpect(mergedPreview.decision == .removeTree, "a merged tree whose upstream was deleted was refused: \(mergedPreview.refusals)")
-    try wtExpect(mergedPreview.preservationSummary.contains("no longer exists"), "the preview did not say what the removal relies on: \(mergedPreview.preservationSummary)")
+    try wtExpect(mergedPreview.preservationSummary.contains("upstream gone") && mergedPreview.preservationSummary.contains("contained in the primary worktree's HEAD"),
+                 "the preview did not say what the removal relies on: \(mergedPreview.preservationSummary)")
     try wtExpect(f.service.facts(for: merged).upstreamGone == true, "the board's facts did not read the upstream as gone")
     let lost = try pushedTree("feat/lost", merge: false)
     let lostRefusals = try f.service.cleanupPreview(lost, livePaneFolders: [], otherRuntimeStateFiles: []).refusals
@@ -463,8 +464,30 @@ func worktreeRemovalAfterMergeChecks() throws {
     try "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag.\n".write(to: tag, atomically: true, encoding: .utf8)
     let tagged = try preview()
     try wtExpect(tagged.decision == .removeTree && tagged.facts.cacheDirectories == [".build/"], "a tagged build cache still refused removal: \(tagged.refusals) \(tagged.facts.cacheDirectories)")
-    try wtExpect(tagged.preservationSummary.contains("CACHEDIR.TAG") && tagged.ignoredPaths.contains(".build/"),
-                 "the preview did not disclose the unsearched cache: \(tagged.preservationSummary)")
+    // The confirmation says what was done, not what the tag claims: the
+    // cache was not inspected, and everything in it goes, a clone included
+    // (Codex's review of MR !136).
+    let summary = tagged.preservationSummary
+    try wtExpect(summary.contains("CACHEDIR.TAG") && summary.contains("not inspected") && summary.contains("including any repository or local change")
+                 && !summary.contains("contains no other registered worktree or independent repository") && tagged.ignoredPaths.contains(".build/"),
+                 "the preview overstated what it checked in the unsearched cache: \(summary)")
+    // Tags that are not a regular file starting with the signature are not trusted.
+    try FileManager.default.removeItem(at: tag)
+    for shape in ["directory", "short", "fifo"] {
+        switch shape {
+        case "directory": try FileManager.default.createDirectory(at: tag, withIntermediateDirectories: false)
+        case "short": try String("Signature: 8a477f597d28d172789f06886806bc5".utf8.map { Character(UnicodeScalar($0)) }).write(to: tag, atomically: true, encoding: .utf8)
+        default: try wtExpect(mkfifo(tag.path, 0o600) == 0, "the FIFO fixture could not be made")
+        }
+        try wtExpect(try preview().decision != .removeTree, "a \(shape) CACHEDIR.TAG was trusted")
+        try FileManager.default.removeItem(at: tag)
+    }
+    try "Signature: 8a477f597d28d172789f06886806bc55\n".write(to: tag, atomically: true, encoding: .utf8)
+    // A cache folder's name reaches the confirmation escaped, like every other path.
+    var odd = tagged.facts
+    odd.cacheDirectories = [".build\nnot a cache/"]
+    try wtExpect(odd.displayedCacheDirectories == [DelegationGitFacts.displayPath(".build\nnot a cache/")] && !odd.displayedCacheDirectories[0].contains("\n"),
+                 "a cache folder's name was shown unescaped: \(odd.displayedCacheDirectories)")
     let outcome = try f.service.remove(built, confirmed: .removeTree, acknowledgedIgnoredPaths: tagged.ignoredPaths, livePaneFolders: [], otherRuntimeStateFiles: [])
     try wtExpect(outcome.state == .removed && !FileManager.default.fileExists(atPath: built.path), "the tagged tree was not removed: \(outcome)")
 }

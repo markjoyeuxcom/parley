@@ -162,7 +162,7 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
             "person action in the Worktrees window", "another registered worktree", "any pane's folder",
             "modified or untracked files", "ahead of the upstream's local remote-tracking state",
             "not contained in the primary worktree's HEAD", "locked or prunable", "could not be read",
-            "independent Git repository inside an ignored folder", "upstream branch was deleted", "CACHEDIR.TAG",
+            "independent Git repository inside an ignored folder", "reports the branch's upstream gone", "CACHEDIR.TAG", "is not inspected for repositories",
             "more than \(WorktreeCleanupPolicy.maximumReviewedIgnoredPaths) refuses",
             "no pane can start or be created inside the tree", "without --force",
             "removed, not removed, or uncertain", "only clears Parley's record",
