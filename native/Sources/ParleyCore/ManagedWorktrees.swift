@@ -554,7 +554,8 @@ public struct ManagedWorktreeFacts: Equatable, Sendable {
     /// Whether this tree's HEAD is an ancestor of the primary checkout's HEAD:
     /// true means every commit here is already integrated. nil is unknown.
     public let containedInPrimary: Bool?
-    /// The branch's upstream was deleted on the remote and pruned here.
+    /// The configured upstream no longer exists here (Git's `[gone]`); a
+    /// remote deletion after a merge is the usual cause, not an observed one.
     public let upstreamGone: Bool?
 
     public init(recordID: String, currentBranch: String?, head: String?, changedPathCount: Int?, upstreamAheadCount: Int?,
@@ -1400,7 +1401,8 @@ public struct ManagedWorktreeService: Sendable {
 
     /// The Cache Directory Tagging Specification's signature: a directory
     /// holding a regular file `CACHEDIR.TAG` that begins with exactly these
-    /// 43 bytes contains only data its tool can regenerate. SwiftPM writes
+    /// 43 bytes declares that its tool can regenerate it. The check proves
+    /// the tag's shape, not that the contents are disposable. SwiftPM writes
     /// one in `.build`, beside its own package clones.
     public static let cacheDirectoryTagSignature = "Signature: 8a477f597d28d172789f06886806bc55"
 
