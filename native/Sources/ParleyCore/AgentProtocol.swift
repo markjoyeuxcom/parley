@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "33"
+    public static let version = "34"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -53,7 +53,14 @@ public enum AgentProtocol {
       drafts with `parley context list` or `parley context show <draft-id>`.
       Discard an abandoned draft with `parley context discard <draft-id>`.
       Agent-staged files must remain inside this pane's working folder and are
-      labelled as agent-provided rather than person-selected.
+      labelled as agent-provided rather than person-selected. A staged file is
+      UTF-8 text, or a PNG or JPEG image of at most 10 MB (a screenshot, for
+      example); Parley checks that an image is one and keeps its own copy.
+    - A pack or result that holds an image names it with
+      `parley image <sha256> --to <file>`. Run that to write the image into a
+      file you choose, then open the file with your own image tool, and say so
+      if you cannot. Only a pane that staged the image or was sent a handoff
+      naming it may fetch it.
     - To ask with a staged draft, run
       `parley ask <target> --context <draft-id> "<question>"` and wait. Parley
       shows the complete editable pack to the person and submits nothing until
@@ -193,7 +200,7 @@ public enum AgentProtocol {
       resolves to whichever delegation this pane holds when the command runs,
       which may by then be a later one. A report naming a delegation that has
       closed is refused with the state it reached.
-      For a substantial UTF-8 result file, use
+      For a substantial UTF-8 result file, or a PNG or JPEG image, use
       `parley done <id> --file <path>`. The file must remain inside this
       pane's working folder. Parley completes the tracked work only after it
       durably stages the bounded file as agent-provided content for explicit
@@ -303,6 +310,7 @@ public enum AgentProtocol {
       parley context discard <draft-id>
       parley ask <target> --context <draft-id> [question...]
                                         wait for human review before submitting
+      parley image <sha256> --to <file>  write an image a pack or result names
 
     Delegated work:
       parley delegate <target> [task...] create tracked asynchronous work

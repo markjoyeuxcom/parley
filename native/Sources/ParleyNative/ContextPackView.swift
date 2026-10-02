@@ -237,11 +237,21 @@ struct ContextPackView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                 }
-                // One editor per part: its undo history belongs to that part's text.
-                PlainTextEditor(text: partTextBinding(part.id), accessibilityLabel: "Part text")
-                    .id(part.id)
-                    .frame(minHeight: 120)
-                    .border(Color.secondary.opacity(0.25))
+                if let image = part.image {
+                    // An image is shown, not edited: its text is Parley's own
+                    // description of how the receiver fetches it.
+                    ContextImagePreview(image: image, store: model.contextImageStore)
+                    Text(part.text)
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                } else {
+                    // One editor per part: its undo history belongs to that part's text.
+                    PlainTextEditor(text: partTextBinding(part.id), accessibilityLabel: "Part text")
+                        .id(part.id)
+                        .frame(minHeight: 120)
+                        .border(Color.secondary.opacity(0.25))
+                }
                 HStack {
                     if part.isEdited {
                         Button("Restore Capture") {
@@ -594,5 +604,51 @@ private struct ContextCommandCaptureView: View {
             actions: { Button("OK") { errorMessage = nil } },
             message: { Text(errorMessage ?? "Unknown error") }
         )
+    }
+}
+
+/// A staged image as the person reviews it: the picture, scaled to fit, and
+/// exactly what Parley checked about it.
+/// Reads Parley's copy once per digest, off the main actor, and shows a
+/// bounded thumbnail: a render never touches the disk, hashes the copy or
+/// draws a full-size frame.
+struct ContextImagePreview: View {
+    let image: ContextPackImage
+    let store: ContextImageStore
+    @State private var loaded: (digest: String, picture: NSImage?)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let loaded, loaded.digest == image.sha256 {
+                if let picture = loaded.picture {
+                    Image(nsImage: picture)
+                        .resizable()
+                        .interpolation(.medium)
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: .infinity, maxHeight: 360)
+                        .border(Color.secondary.opacity(0.25))
+                        .accessibilityLabel("Image, \(image.width) by \(image.height) pixels")
+                } else {
+                    Text("Parley no longer keeps this image, or its copy no longer matches its digest.")
+                        .foregroundStyle(.orange)
+                }
+            } else {
+                ProgressView().controlSize(.small)
+            }
+            Text("\(image.format.label) · \(image.width) × \(image.height) pixels · \(image.byteCount.formatted()) bytes")
+            Text("SHA-256: \(image.sha256)")
+                .textSelection(.enabled)
+        }
+        .font(.caption.monospaced())
+        .foregroundStyle(.secondary)
+        .task(id: image.sha256) {
+            let image = image, store = store
+            let thumbnail = await Task.detached(priority: .userInitiated) { () -> CGImage? in
+                guard let data = try? store.data(for: image) else { return nil }
+                return ContextImageInspector.thumbnail(data, maximumPixelSize: 1_600)
+            }.value
+            guard !Task.isCancelled else { return }
+            loaded = (image.sha256, thumbnail.map { NSImage(cgImage: $0, size: .zero) })
+        }
     }
 }

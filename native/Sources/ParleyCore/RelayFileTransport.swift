@@ -5,6 +5,8 @@ import Foundation
 public enum RelayFileTransportError: LocalizedError {
     case invalidRuntimeDirectory(String)
     case runtime(String)
+    /// A request field over its bound, so a caller can say which bound.
+    case fieldTooLarge(String)
 
     public var errorDescription: String? {
         switch self {
@@ -12,6 +14,8 @@ public enum RelayFileTransportError: LocalizedError {
             "Parley agent transport refused its runtime directory: \(detail)"
         case let .runtime(detail):
             "Parley agent transport: \(detail)"
+        case let .fieldTooLarge(name):
+            "Parley agent transport: request field \(name) is too large"
         }
     }
 }
@@ -114,6 +118,10 @@ public final class RelayFileTransport: @unchecked Sendable {
     public var maximumWorkerThreadLimit: Int { maximumWorkerThreads }
     private let blockingGate: BlockingRequestGate
     public var activeBlockingRequests: Int { blockingGate.activeCount }
+    /// At most four staging requests hold their bodies at once: each may be
+    /// a 10 MB image, where every other request holds at most 200 KB, so 128
+    /// request threads could otherwise hold 1.3 GB.
+    private let stagingSlots = DispatchSemaphore(value: 4)
     /// Ticks serviced so far (diagnostics and checks).
     public var tickCount: Int { lock.withLock { ticks } }
     private var ticks = 0
@@ -484,15 +492,18 @@ public final class RelayFileTransport: @unchecked Sendable {
                 token: request.token,
                 name: request.item,
                 path: request.target,
-                text: request.body
+                content: request.image.map(AgentStagedContent.image) ?? .text(request.body)
             ))
         case "context-add":
             return encode(broker.handleContextAdd(
                 token: request.token,
                 draftID: request.item,
                 path: request.target,
-                text: request.body
+                content: request.image.map(AgentStagedContent.image) ?? .text(request.body)
             ))
+        case "image":
+            let response = broker.handleImageFetch(token: request.token, digest: request.item)
+            return FileResponse(status: response.status, body: "", data: response.body)
         case "context-list":
             return encode(broker.contextDrafts(token: request.token))
         case "context-show":
@@ -547,7 +558,7 @@ public final class RelayFileTransport: @unchecked Sendable {
                 token: request.token,
                 handoffID: request.item,
                 path: request.target,
-                text: request.body
+                content: request.image.map(AgentStagedContent.image) ?? .text(request.body)
             ))
         case "fail":
             return encode(broker.handleDelegationResult(
@@ -585,7 +596,7 @@ public final class RelayFileTransport: @unchecked Sendable {
         let command = try field("command", maximumBytes: 32)
         let allowed = [
             "request-run", "team-request", "team-add", "team-status", "whoami", "panes", "events", "signal", "relay", "paste", "ask", "ask-many", "answer", "delegate", "status", "wait", "progress", "done", "done-file", "fail", "cancel",
-            "context-draft", "context-add", "context-list", "context-show", "context-discard", "context-ask",
+            "context-draft", "context-add", "context-list", "context-show", "context-discard", "context-ask", "image",
         ]
         guard allowed.contains(command) else { throw RelayFileTransportError.runtime("unknown command") }
         let token = try field("token", maximumBytes: 256)
@@ -609,16 +620,46 @@ public final class RelayFileTransport: @unchecked Sendable {
         } else {
             attestation = .tokenOnly
         }
-        let request = FileRequest(
+        // A staged file may be an image, up to the image limit; anything else
+        // is text within the ordinary body limit, as before images existed.
+        var body = ""
+        var image: Data?
+        var stagingSlot: StagingSlot?
+        if ["context-draft", "context-add", "done-file"].contains(command) {
+            guard stagingSlots.wait(timeout: .now() + 30) == .success else {
+                throw RelayFileTransportError.runtime("Parley is staging other files from panes; nothing was staged, so try again")
+            }
+            stagingSlot = StagingSlot(stagingSlots)
+            let tooLarge = RelayFileTransportError.runtime(
+                "the file is too large: Parley accepts a PNG or JPEG image of at most \(ContextImageInspector.maximumBytes) bytes and any other file of at most \(Self.maximumBodyBytes) bytes, so nothing was staged"
+            )
+            let data: Data
+            do { data = try fields.readData("body", maximumBytes: max(Self.maximumBodyBytes, ContextImageInspector.maximumBytes))! }
+            catch RelayFileTransportError.fieldTooLarge { throw tooLarge }
+            if ContextImageInspector.looksLikeImage(data) {
+                image = data
+            } else {
+                guard data.count <= Self.maximumBodyBytes else { throw tooLarge }
+                guard let text = String(data: data, encoding: .utf8) else {
+                    throw RelayFileTransportError.runtime("request field body is not UTF-8")
+                }
+                body = text
+            }
+        } else {
+            body = try field("body", maximumBytes: Self.maximumBodyBytes)
+        }
+        var request = FileRequest(
             command: command,
             target: try field("target", maximumBytes: command == "request-run" ? 4_096 : 1_024),
             item: try field("item", maximumBytes: 128),
             idempotencyKey: try field("idempotency-key", maximumBytes: 128),
             token: token,
-            body: try field("body", maximumBytes: Self.maximumBodyBytes),
+            body: body,
             attestation: attestation,
             ticketPolicy: policy
         )
+        request.image = image
+        request.stagingSlot = stagingSlot
         return request
     }
 
@@ -635,7 +676,7 @@ public final class RelayFileTransport: @unchecked Sendable {
         let directory = try responseDirectory(requestID: requestID, endpoint: endpoint)
         guard !fileManager.fileExists(atPath: directory.appendingPathComponent("ready").path) else { return }
         try writeProtected(String(response.status), to: directory.appendingPathComponent("status"))
-        try writeProtected(response.body, to: directory.appendingPathComponent("body"))
+        try writeProtected(response.data ?? Data(response.body.utf8), to: directory.appendingPathComponent("body"))
         try writeProtected("ready", to: directory.appendingPathComponent("ready"))
     }
 
@@ -812,7 +853,11 @@ public final class RelayFileTransport: @unchecked Sendable {
     }
 
     private func writeProtected(_ value: String, to file: URL) throws {
-        try Data(value.utf8).write(to: file, options: [.atomic])
+        try writeProtected(Data(value.utf8), to: file)
+    }
+
+    private func writeProtected(_ data: Data, to file: URL) throws {
+        try data.write(to: file, options: [.atomic])
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 
@@ -837,11 +882,26 @@ private struct FileRequest {
     let idempotencyKey: String
     let token: String
     let body: String
+    /// For `context-draft`, `context-add` and `done-file`: the body's bytes
+    /// when they are an image, which then never reach `body` as text.
+    var image: Data? = nil
+    /// Released when the last copy of the request is dropped.
+    var stagingSlot: StagingSlot? = nil
     let attestation: RelayAttestation
     let ticketPolicy: RelayTicketPolicy?
+}
+
+/// One of the transport's staging slots, given back when the request that
+/// holds it is dropped, however the request ends.
+private final class StagingSlot: @unchecked Sendable {
+    private let semaphore: DispatchSemaphore
+    init(_ semaphore: DispatchSemaphore) { self.semaphore = semaphore }
+    deinit { semaphore.signal() }
 }
 
 private struct FileResponse {
     let status: Int
     let body: String
+    /// A body of bytes (a fetched image), written in place of `body`.
+    var data: Data? = nil
 }

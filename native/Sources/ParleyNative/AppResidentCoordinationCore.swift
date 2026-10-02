@@ -94,7 +94,8 @@ final class AppResidentCoordinationCore {
             historyRetentionPolicy: historyRetentionPolicy,
             historyRetentionStore: historyRetentionStore,
             contextReviewStore: contextReviewStore,
-            busyDraftStore: busyDraftStore
+            busyDraftStore: busyDraftStore,
+            contextImageStore: ContextImageStore(directory: ContextImageStore.directory(applicationDirectory: applicationDirectory))
         )
         self.broker = broker
         broker.enableReviewedCommandRuns()

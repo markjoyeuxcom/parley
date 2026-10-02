@@ -1901,7 +1901,15 @@ struct StatusCenterView: View {
         let remaining = review.returnedPart == nil ? review.pack.parts.filter { $0.source.kind == .agentFileDraft } : []
         return DisclosureGroup {
             VStack(alignment: .leading, spacing: 8) {
-                if let returned = review.returnedPart {
+                if let returned = review.returnedPart, let image = returned.image {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Returned image \(returned.source.label) · agent-provided; Parley checked it is a \(image.format.label) image · kept as returned")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        ContextImagePreview(image: image, store: model.contextImageStore)
+                    }
+                } else if let returned = review.returnedPart {
                     returnedPartText(
                         returned,
                         caption: "Returned file \(returned.source.label) · \(returned.capturedByteCount.formatted()) UTF-8 bytes · agent-provided, not independently read · kept as returned, unaffected by edits made before delivery"

@@ -237,6 +237,24 @@ public struct RelayResponse: Equatable, Sendable {
     public let body: RelayResponseBody
 }
 
+/// What an agent staged with `--file`: UTF-8 text, as always, or the bytes
+/// of an image, which Parley checks and keeps its own copy of.
+public enum AgentStagedContent: Sendable {
+    case text(String)
+    case image(Data)
+}
+
+/// A reply whose body is bytes, such as a fetched image.
+public struct RelayDataResponse: Sendable {
+    public let status: Int
+    public let body: Data
+
+    public init(status: Int, body: Data) {
+        self.status = status
+        self.body = body
+    }
+}
+
 public struct RelayTextResponse: Equatable, Sendable {
     public let status: Int
     public let text: String
@@ -493,6 +511,9 @@ public final class RelayBroker: @unchecked Sendable {
     private let activityJournal: RelayActivityJournal?
     private let historyRetentionStore: CollaborationHistoryRetentionStore?
     private let contextReviewStore: AgentContextReviewStore?
+    private let contextImageStore: ContextImageStore?
+    /// A copy this young may belong to a review still being saved.
+    private static let imageCollectionAge: TimeInterval = 600
     private var contextPersistenceErrors: [String: String] = [:]
     public var contextPersistenceError: String? {
         consultationCondition.lock()
@@ -512,6 +533,19 @@ public final class RelayBroker: @unchecked Sendable {
             contextReviewRecords.removeValue(forKey: id)
             contextPersistenceErrors.removeValue(forKey: id)
         }
+        if !pruned.isEmpty { collectUnreferencedImagesLocked() }
+    }
+
+    private func imageDigests(of review: AgentContextReview) -> [String] {
+        (review.pack.parts + [review.returnedPart].compactMap { $0 }).compactMap { $0.image?.sha256 }
+    }
+
+    /// Parley's copy of an image goes when no saved review holds it. Best
+    /// effort: a copy left behind is collected the next time.
+    private func collectUnreferencedImagesLocked() {
+        guard let contextImageStore else { return }
+        let kept = Set(contextReviewRecords.values.flatMap(imageDigests))
+        _ = contextImageStore.removeAll(except: kept, minimumAge: Self.imageCollectionAge)
     }
 
     /// Terminal reality must remain visible even when saving it fails. Retain
@@ -570,7 +604,8 @@ public final class RelayBroker: @unchecked Sendable {
         historyRetentionPolicy: CollaborationHistoryRetentionPolicy = .defaultPolicy,
         historyRetentionStore: CollaborationHistoryRetentionStore? = nil,
         contextReviewStore: AgentContextReviewStore? = nil,
-        busyDraftStore: ReviewedBusyDraftStore? = nil
+        busyDraftStore: ReviewedBusyDraftStore? = nil,
+        contextImageStore: ContextImageStore? = nil
     ) {
         self.credentials = credentials
         self.panes = panes
@@ -590,6 +625,7 @@ public final class RelayBroker: @unchecked Sendable {
         self.historyRetentionStore = historyRetentionStore
         self.contextReviewStore = contextReviewStore
         self.busyDraftStore = busyDraftStore
+        self.contextImageStore = contextImageStore
 
         let terminalStates: Set<RelayHandoffState> = [.completed, .cancelled, .failed, .interrupted]
         var recovered = Dictionary(uniqueKeysWithValues: (handoffJournal?.handoffs() ?? []).map { ($0.id, $0) })
@@ -641,6 +677,9 @@ public final class RelayBroker: @unchecked Sendable {
             _ = persistContextRealityLocked(review)
         }
         contextReviewRecords = recoveredContext
+        // Copies left by reviews removed before a crash, or staged by a review
+        // that never saved, go once the saved reviews are known.
+        collectUnreferencedImagesLocked()
         pruneHandoffsLocked()
     }
 
@@ -650,6 +689,15 @@ public final class RelayBroker: @unchecked Sendable {
         path suppliedPath: String,
         text: String
     ) -> RelayTextResponse {
+        handleContextDraft(token: token, name: suppliedName, path: suppliedPath, content: .text(text))
+    }
+
+    public func handleContextDraft(
+        token: String,
+        name suppliedName: String,
+        path suppliedPath: String,
+        content: AgentStagedContent
+    ) -> RelayTextResponse {
         do {
             guard contextReviewStore != nil else {
                 throw BrokerFailure(status: 503, message: "context review storage is unavailable")
@@ -657,7 +705,7 @@ public final class RelayBroker: @unchecked Sendable {
             let sender = try authenticatedSender(token: token)
             let name = suppliedName.trimmingCharacters(in: .whitespacesAndNewlines)
             guard name.count <= 80 else { throw BrokerFailure(status: 400, message: "context name is too long") }
-            let staged = try agentFileDraftPart(sender: sender, suppliedPath: suppliedPath, text: text)
+            let staged = try agentFileDraftPart(sender: sender, suppliedPath: suppliedPath, content: content)
             let pack = ContextPack(
                 name: name.isEmpty ? "\(sender.displayName) context" : name,
                 parts: [staged.part],
@@ -688,9 +736,18 @@ public final class RelayBroker: @unchecked Sendable {
         path suppliedPath: String,
         text: String
     ) -> RelayTextResponse {
+        handleContextAdd(token: token, draftID: draftID, path: suppliedPath, content: .text(text))
+    }
+
+    public func handleContextAdd(
+        token: String,
+        draftID: String,
+        path suppliedPath: String,
+        content: AgentStagedContent
+    ) -> RelayTextResponse {
         do {
             let sender = try authenticatedSender(token: token)
-            let staged = try agentFileDraftPart(sender: sender, suppliedPath: suppliedPath, text: text)
+            let staged = try agentFileDraftPart(sender: sender, suppliedPath: suppliedPath, content: content)
             consultationCondition.lock()
             guard var review = contextReviewRecords[draftID],
                   review.sourcePaneID == sender.id,
@@ -716,6 +773,35 @@ public final class RelayBroker: @unchecked Sendable {
         } catch {
             return RelayTextResponse(status: 409, text: error.localizedDescription)
         }
+    }
+
+    /// `parley image <digest> --to <file>`. A pane may fetch an image it
+    /// staged, or one named in a handoff it was sent (or a result it was
+    /// returned): approving delivery is what grants access, so a returned
+    /// image stays unreachable to the lead until the person sends it.
+    public func handleImageFetch(token: String, digest: String) -> RelayDataResponse {
+        func message(_ status: Int, _ text: String) -> RelayDataResponse { RelayDataResponse(status: status, body: Data(text.utf8)) }
+        guard ContextPackImage.isDigest(digest) else {
+            return message(400, "name an image by the 64-character SHA-256 Parley printed for it")
+        }
+        guard let contextImageStore else { return message(503, "image storage is unavailable") }
+        let sender: WorkbenchPane
+        do { sender = try authenticatedSender(token: token) }
+        catch let error as BrokerFailure { return message(error.status, error.message) }
+        catch { return message(409, error.localizedDescription) }
+        consultationCondition.lock()
+        let holding = contextReviewRecords.values.filter { imageDigests(of: $0).contains(digest) }
+        let image = holding.lazy.flatMap { ($0.pack.parts + [$0.returnedPart].compactMap { $0 }).compactMap(\.image) }.first { $0.sha256 == digest }
+        let staged = holding.contains { $0.sourcePaneID == sender.id }
+        let sent = handoffRecords.values.contains {
+            ($0.targetPaneID == sender.id && $0.text.contains(digest)) || ($0.sourcePaneID == sender.id && ($0.resultText?.contains(digest) ?? false))
+        }
+        consultationCondition.unlock()
+        guard let image else { return message(404, "Parley no longer keeps image \(digest)") }
+        guard staged || sent else { return message(403, "this pane neither staged that image nor was sent it") }
+        do { return RelayDataResponse(status: 200, body: try contextImageStore.data(for: image)) }
+        catch let error as ContextImageError { return message(error == .missing ? 404 : 409, error.localizedDescription) }
+        catch { return message(409, error.localizedDescription) }
     }
 
     public func contextDrafts(token: String) -> RelayTextResponse {
@@ -1391,7 +1477,10 @@ public final class RelayBroker: @unchecked Sendable {
     private func deleteContextReviewsLocked(ids: Set<String>) throws {
         try contextReviewStore?.remove(ids: ids)
         contextReviewRecords = contextReviewRecords.filter { !ids.contains($0.key) }
-        if !ids.isEmpty { noteChangeLocked() }
+        if !ids.isEmpty {
+            collectUnreferencedImagesLocked()
+            noteChangeLocked()
+        }
     }
 
     /// An Ask refused before any delivery (a busy target, which leaves no
@@ -1514,10 +1603,33 @@ public final class RelayBroker: @unchecked Sendable {
     private func agentFileDraftPart(
         sender: WorkbenchPane,
         suppliedPath: String,
-        text: String,
+        content: AgentStagedContent,
         referenceID: String? = nil
     ) throws -> (path: String, part: ContextPackPart) {
         let path = try normalizedAgentContextPath(suppliedPath, cwd: sender.launchWorkingDirectory)
+        let text: String
+        switch content {
+        case let .text(value):
+            text = value
+        case let .image(data):
+            guard let contextImageStore else {
+                throw BrokerFailure(status: 503, message: "image storage is unavailable")
+            }
+            let image: ContextPackImage
+            do { image = try contextImageStore.store(data) }
+            catch let error as ContextImageError {
+                if case .tooLarge = error { throw BrokerFailure(status: 413, message: error.localizedDescription) }
+                if case .storeFull = error { throw BrokerFailure(status: 507, message: error.localizedDescription) }
+                throw BrokerFailure(status: 400, message: error.localizedDescription)
+            }
+            let lineage = referenceID.map { " · returned from delegation \($0)" } ?? ""
+            return (path, ContextPackPart.agentImage(
+                image,
+                label: URL(fileURLWithPath: path).lastPathComponent,
+                detail: "\(path) · provided by \(sender.displayName)\(lineage); bytes checked by Parley as a \(image.format.label) image, path not read by Parley",
+                referenceID: referenceID
+            ))
+        }
         let normalized = ContextPackText.normalize(text)
         guard !normalized.isEmpty else {
             throw BrokerFailure(status: 400, message: "the context file is empty")
@@ -1983,17 +2095,32 @@ public final class RelayBroker: @unchecked Sendable {
         path suppliedPath: String,
         text: String
     ) -> RelayTextResponse {
+        handleDelegationFileResult(token: token, handoffID: requestedHandoffID, path: suppliedPath, content: .text(text))
+    }
+
+    public func handleDelegationFileResult(
+        token: String,
+        handoffID requestedHandoffID: String,
+        path suppliedPath: String,
+        content suppliedContent: AgentStagedContent
+    ) -> RelayTextResponse {
         do {
             guard contextReviewStore != nil else {
                 throw BrokerFailure(status: 503, message: "context review storage is unavailable")
             }
             let sender = try authenticatedSender(token: token)
-            let normalized = ContextPackText.normalize(text)
-            guard !normalized.isEmpty else {
-                throw BrokerFailure(status: 400, message: "the completion file is empty")
-            }
-            guard normalized.utf8.count <= ContextPackBuilder.defaultMaximumPartBytes else {
-                throw BrokerFailure(status: 413, message: "the completion file is too large")
+            let content: AgentStagedContent
+            if case let .text(text) = suppliedContent {
+                let normalized = ContextPackText.normalize(text)
+                guard !normalized.isEmpty else {
+                    throw BrokerFailure(status: 400, message: "the completion file is empty")
+                }
+                guard normalized.utf8.count <= ContextPackBuilder.defaultMaximumPartBytes else {
+                    throw BrokerFailure(status: 413, message: "the completion file is too large")
+                }
+                content = .text(normalized)
+            } else {
+                content = suppliedContent
             }
             let path = try normalizedAgentContextPath(suppliedPath, cwd: sender.launchWorkingDirectory)
             let gitAtReturn = gitFactsForReportingPane(sender.id)
@@ -2038,7 +2165,7 @@ public final class RelayBroker: @unchecked Sendable {
                 staged = try agentFileDraftPart(
                     sender: sender,
                     suppliedPath: path,
-                    text: normalized,
+                    content: content,
                     referenceID: handoffID
                 )
             } catch {
@@ -2070,7 +2197,11 @@ public final class RelayBroker: @unchecked Sendable {
             contextReviewRecords[review.id] = review
 
             let filename = URL(fileURLWithPath: staged.path).lastPathComponent
-            let receipt = "\(sender.displayName) returned \(filename) (\(normalized.utf8.count) UTF-8 bytes) for explicit review. Context review ID: \(review.id)."
+            // The receipt names no digest: the returning pane's lead can fetch
+            // the image only once the person sends it.
+            let measure = staged.part.image.map { "\($0.format.label) image, \($0.width) × \($0.height) pixels, \($0.byteCount) bytes" }
+                ?? "\(staged.part.capturedByteCount) UTF-8 bytes"
+            let receipt = "\(sender.displayName) returned \(filename) (\(measure)) for explicit review. Context review ID: \(review.id)."
             if var updated = handoffRecords[handoffID] {
                 updated.resultText = receipt
                 updated.resultContextReviewID = review.id
@@ -4996,6 +5127,22 @@ public enum RelayShim {
             ;;
         esac
         ;;
+      image)
+        item="${2:-}"
+        image_usage="usage: parley image <sha256> --to <file>"
+        case "$item" in
+          ""|*[!a-f0-9]*)
+            echo "$image_usage" >&2
+            exit 2
+            ;;
+        esac
+        if [ "${#item}" -ne 64 ] || [ "$#" -ne 4 ] || [ "${3:-}" != "--to" ] || [ -z "${4:-}" ]; then
+          echo "$image_usage" >&2
+          exit 2
+        fi
+        image_to="$4"
+        shift 4
+        ;;
       context)
         subcommand="${2:-}"
         case "$subcommand" in
@@ -5189,7 +5336,7 @@ public enum RelayShim {
     esac
 
     case "$command" in
-      whoami|panes|events|signal|status|wait|cancel|context-list|context-show|context-discard|context-draft|context-add|done-file) ;;
+      whoami|panes|events|signal|status|wait|cancel|context-list|context-show|context-discard|context-draft|context-add|done-file|image) ;;
       *)
         if [ "$#" -eq 0 ] && [ -t 0 ]; then
           echo "nothing to $command: give the text as arguments or pipe it in" >&2
@@ -5572,6 +5719,35 @@ public enum RelayShim {
           exit 2
         fi
         /bin/cat -- "$target" | post
+        ;;
+      image)
+        # The reply is the image's bytes, written where this agent asked,
+        # with this agent's own permissions. It lands beside that file first
+        # and replaces it only once Parley has served the image, so a refusal
+        # leaves a file already there as it was; the refusal's text goes to
+        # stderr. A container has cat but no mv, so the copy is a cat.
+        if [ -d "$image_to" ]; then
+          echo "--to names a folder; name the file to write: $image_to" >&2
+          exit 2
+        fi
+        image_partial="$image_to.parley-$$"
+        trap '/bin/rm -f -- "$image_partial"; exit 130' INT
+        trap '/bin/rm -f -- "$image_partial"; exit 143' TERM
+        trap '/bin/rm -f -- "$image_partial"; exit 129' HUP
+        image_status=0
+        printf '' | post > "$image_partial" || image_status=$?
+        if [ "$image_status" -ne 0 ]; then
+          [ -f "$image_partial" ] && { /bin/cat -- "$image_partial" >&2; echo >&2; }
+          /bin/rm -f -- "$image_partial"
+          exit "$image_status"
+        fi
+        if ! /bin/cat -- "$image_partial" > "$image_to"; then
+          /bin/rm -f -- "$image_partial"
+          echo "could not write $image_to" >&2
+          exit 1
+        fi
+        /bin/rm -f -- "$image_partial"
+        echo "Saved the image to $image_to" >&2
         ;;
     esac
     """

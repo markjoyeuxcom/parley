@@ -1979,6 +1979,52 @@ in its draft and says they may have been edited) while the resolved review
 is retained. Approval forms return
 known part ids and edited text, never source metadata or captured originals.
 
+An agent-staged file may be a PNG or JPEG image of at most 10 MB (protocol
+34, 2 October 2026), so a Codex pane using its own computer use can hand over
+a screenshot. Parley does not capture screens. `context draft`, `context add`
+and `done --file` carry the bytes in the request body as before, read through
+`RelayRequestFields.readData` with the image bound; anything without an image
+signature keeps the text bound and must be UTF-8. `ContextImageInspector`
+decides from the bytes alone: the signature, one image in a PNG or JPEG
+container, and at most 16,384 pixels a side and 64 million in all. It never
+decodes the pixels, because ImageIO yields an image for a PNG whose
+compressed data is corrupt or cut short, so a decode would prove nothing and
+cost up to 256 MB a request; a damaged image is staged and previews as
+whatever ImageIO makes of it. The part keeps kind `agentFileDraft` and gains an
+`image` (`ContextPackImage`: format, size, byte count, SHA-256), so an older
+Parley still decodes the record. Its text is a description, never the bytes,
+and its editor is a preview (`ContextImagePreview`), because image bytes
+cannot be edited as text. The copy lives in `context-images/<sha256>.<ext>`
+(`ContextImageStore`: written through `OwnerOnlyFile`, read with no-follow
+opens and hashed again on every read, so a changed file is refused, never
+served). Agents fetch with `parley image <sha256> --to <file>`, a pull
+written by the agent's own command with its own permissions: Parley never
+writes into an agent's folder, and an endpoint path, which carries the pane's
+capability, never appears in any text. The shim writes the reply beside the
+destination and copies it over only once the image is served, so a refusal
+leaves a file already there as it was (a container has `cat` but no `mv`).
+The broker (`handleImageFetch`) serves
+an image only to a pane that staged it or that took part in a handoff naming
+its digest: the target of one whose text names it, or the source of one
+whose result does. A `done --file` receipt deliberately names no digest, so
+the delegating pane gets an image only when the person sends the reviewed
+pack. A digest is therefore a capability among the panes that were shown it:
+such a pane can pass it on in a handoff, which gives the receiver no more
+than sending the bytes would. A copy goes when no saved review holds it,
+checked when reviews are pruned or deleted and at start; a copy younger than
+ten minutes is kept, since it may belong to a review still being saved, and
+staging bytes already kept makes their copy young again. Two bounds replace
+the 200 KB a request used to hold: the store keeps at most 500 MB
+(`defaultMaximumTotalBytes`; sixteen parts in each of a hundred reviews could
+otherwise leave 16 GB nobody sees, and a full store answers 507 naming Delete
+Saved Context), and the transport holds at most four staging bodies at once
+(`stagingSlots`, a slot given back when its request is dropped; a fifth
+waits up to 30 seconds, then is refused with nothing staged). A file over
+either per-file bound is refused naming both, from the field's size before
+it is read (`RelayFileTransportError.fieldTooLarge`).
+`ImageEvidenceChecks` covers the inspector, the store, staging through all
+three commands, fetch authorization, deletion and the shim end to end.
+
 Native **Delete Saved Context** (`/ui/context-reviews/delete`) permanently
 removes selected records, including `returnedPart`, from both the store and
 broker. Every selected revision is checked before any removal; waiting and

@@ -66,7 +66,7 @@ handoffs work. Agy reports hook state as Unknown by design.
    /home/parley/.gemini: permission denied"; Copilot: "EACCES … .cache"),
    which every image with a `/home/parley` directory did before 14
    September 2026 until the home volume was mounted with nocopy.
-3. Confirm protocol uptake (`parley whoami`, protocol 33) fresh and resumed.
+3. Confirm protocol uptake (`parley whoami`, protocol 34) fresh and resumed.
 4. Send an Ask and a Delegate between a container pane and a host pane,
    including a `done --file` result and a reviewed context pack.
 5. Check normal permission prompts appear (unless you chose bypass — then the
