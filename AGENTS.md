@@ -1443,7 +1443,22 @@ longer lists as present, with its record present and unchanged in a
 successfully read store, becomes record-only cleanup that runs no Git
 command. Every ignored entry Git would delete is shown in full in a
 scrollable native list with control characters escaped (`displayPath`), a
-directory entry meaning its whole contents. Ignored directories are also
+directory entry meaning its whole contents.
+
+Removing a merged team worktree used to need two manual steps (the first
+team trial, 2 October 2026, Prax f559be94). An upstream that is configured
+but whose remote-tracking branch is gone (Git's `%(upstream:track)` reads
+`[gone]`), as GitLab's "remove source branch" plus a pruning fetch leave it,
+is `upstreamGone`, and one that cannot be read is `upstreamUnknown`. Neither
+counts as a status failure any more, and the primary checkout's HEAD settles
+both: a tree it already contains is removable. Otherwise each refuses under its
+own name, and the board reads "upstream deleted". Independent repositories in
+ignored folders are `nestedRepositoryPaths`, refused as such rather than as
+registered worktrees. A folder whose regular `CACHEDIR.TAG` begins with the
+Cache Directory Tagging signature (read with `O_NOFOLLOW` and checked with
+`fstat`) is not searched for repositories, because SwiftPM keeps its package
+clones in `.build` beside one. The preview lists it in `cacheDirectories`.
+`worktreeRemovalAfterMergeChecks` runs both cases with real Git. Ignored directories are also
 inspected for independent repositories, including bare repositories, before
 cleanup can proceed; an unreadable or over-budget traversal refuses removal
 as a refusal in the preview, never a failed preview. The budget counts

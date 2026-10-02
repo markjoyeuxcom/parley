@@ -124,10 +124,17 @@ struct WorktreeLifecycleView: View {
             VStack(alignment: .leading, spacing: 6) {
                 let facts = reading.cleanup.facts
                 Text("Modified: \(facts.modifiedPaths.count) · Untracked: \(facts.untrackedPaths.count) · Ignored entries: \(facts.ignoredPaths.count)\(facts.ignoredListTruncated ? "+" : "")")
-                if facts.statusUncertain { Text("Git status or upstream could not be fully read. This is not a clean-state verdict.").foregroundStyle(.orange) }
-                if facts.hasUpstream {
+                if facts.statusUncertain { Text("Git status could not be fully read. This is not a clean-state verdict.").foregroundStyle(.orange) }
+                if facts.hasUpstream, !facts.upstreamGone, !facts.upstreamUnknown {
                     Text("\(facts.upstreamAheadCount) commits ahead of local upstream tracking state. Remote not contacted.")
-                } else { Text(facts.mergedIntoPrimary ? "HEAD is contained in the primary checkout's HEAD." : "No upstream preservation evidence; inspect and preserve your commits before removal.") }
+                } else {
+                    if facts.upstreamGone { Text("The branch's upstream was deleted on the remote and pruned here.") }
+                    else if facts.upstreamUnknown { Text("The branch's upstream could not be read.").foregroundStyle(.orange) }
+                    Text(facts.mergedIntoPrimary ? "HEAD is contained in the primary checkout's HEAD." : "No upstream preservation evidence; inspect and preserve your commits before removal.")
+                }
+                if !facts.cacheDirectories.isEmpty {
+                    Text("Not searched for repositories, because a CACHEDIR.TAG marks them as caches their tool can regenerate: \(facts.cacheDirectories.joined(separator: ", "))")
+                }
                 DisclosureGroup("Changed paths") {
                     ForEach(Array((facts.modifiedPaths + facts.untrackedPaths).prefix(200).enumerated()), id: \.offset) { _, path in
                         Text(DelegationGitFacts.displayPath(path)).font(.caption.monospaced()).textSelection(.enabled)

@@ -2404,6 +2404,7 @@ final class AppModel: ObservableObject {
             }
             switch (facts.hasUpstream, facts.upstreamAheadCount) {
             case (true?, let ahead?): parts.append("\(ahead) ahead of upstream (local tracking state)")
+            case (true?, nil) where facts.upstreamGone == true: parts.append("upstream deleted on the remote")
             case (true?, nil): parts.append("ahead-of-upstream count unknown")
             case (false?, _): parts.append("no upstream")
             case (nil, _): parts.append("upstream unknown")

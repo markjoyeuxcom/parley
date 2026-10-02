@@ -311,6 +311,7 @@ public struct WorktreeBoardRow: Equatable, Sendable {
     /// row says "pushed" rather than leaving a tester to know the rule.
     public var pushLabel: String {
         guard let facts, facts.registered == true else { return "" }
+        if facts.upstreamGone == true { return "upstream deleted" }
         switch (facts.hasUpstream, facts.upstreamAheadCount) {
         case (true?, 0?): return "pushed"
         case (true?, let count?): return "\(count) unpushed commit\(count == 1 ? "" : "s")"
