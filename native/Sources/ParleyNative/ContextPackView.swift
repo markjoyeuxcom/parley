@@ -105,6 +105,11 @@ struct ContextPackView: View {
                 commandCapturePresented = true
             }
             .disabled(model.contextPackCaptureRunning)
+            Button("Capture Window…", systemImage: "macwindow") { model.captureWindowIntoContextPack() }
+                .disabled(!model.canCaptureWindowIntoContextPack)
+                .help(model.contextPackIsAgentProposed
+                    ? "A window capture goes in your own context pack, never an agent's draft"
+                    : "Pick one window with the macOS window picker; Parley captures it once and shows it here before anything is sent")
             Menu("More Sources", systemImage: "plus") {
                 Button("Add Browser/Tool Evidence…", systemImage: "globe") {
                     vendorEvidencePresented = true
@@ -388,6 +393,7 @@ struct ContextPackView: View {
         case .browserSelection: "text.quote"
         case .browserScreenshot: "photo"
         case .toolArtifact: "doc.badge.gearshape"
+        case .windowCapture: "macwindow"
         }
     }
 }

@@ -288,7 +288,9 @@ A staged file or returned result may also be a PNG or JPEG image of at most
 Parley checks the bytes, keeps its own copy and shows a preview in the
 review. A pane you send the image to writes it to a file with
 `parley image <sha256> --to <file>`; naming the image in a message grants
-nothing.
+nothing. Your own context pack can also hold a window you pick with
+**Capture Window…**, which uses the macOS window picker: Parley captures only
+the window you choose, once, and shows it before anything is sent.
 
 `relay` submits immediately because that is the capability the person selected.
 `paste` is the explicit review-before-send route. Multiline content is passed

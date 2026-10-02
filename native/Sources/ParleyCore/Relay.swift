@@ -520,6 +520,10 @@ public final class RelayBroker: @unchecked Sendable {
     /// before it.
     private let imagePinLock = NSLock()
     private var pinnedImageDigests: [String: Int] = [:]
+    /// Images in the person's open pack, which lives only in the app: the
+    /// app replaces this set whenever the pack's images change, before it
+    /// writes a new copy (`holdPersonImages`). Memory-only, like the pack.
+    private var personImageHolds: Set<String> = []
     private var contextPersistenceErrors: [String: String] = [:]
     public var contextPersistenceError: String? {
         consultationCondition.lock()
@@ -553,9 +557,29 @@ public final class RelayBroker: @unchecked Sendable {
     private func collectUnreferencedImagesLocked() {
         guard let contextImageStore else { return }
         let referenced = Set(contextReviewRecords.values.flatMap(imageDigests))
+            .union(handoffRecords.values.flatMap { ($0.deliveredImages ?? []).map(\.sha256) })
         imagePinLock.withLock {
-            _ = contextImageStore.removeAll(except: referenced.union(pinnedImageDigests.keys))
+            _ = contextImageStore.removeAll(except: referenced.union(pinnedImageDigests.keys).union(personImageHolds))
         }
+    }
+
+    /// After handoffs leave memory: a copy only they held goes too.
+    private func collectAfterRemovingHandoffsLocked(_ removed: [RelayHandoff]) {
+        if removed.contains(where: { !($0.deliveredImages ?? []).isEmpty }) { collectUnreferencedImagesLocked() }
+    }
+
+    /// Native control only: the images in the person's open pack. The set
+    /// replaces the last one, and a copy no longer held, sent or saved goes
+    /// at once.
+    public func holdPersonImages(_ digests: Set<String>) -> RelayTextResponse {
+        guard digests.allSatisfy(ContextPackImage.isDigest) else {
+            return RelayTextResponse(status: 400, text: "an image is named by its 64-character SHA-256")
+        }
+        consultationCondition.lock()
+        imagePinLock.withLock { personImageHolds = digests }
+        collectUnreferencedImagesLocked()
+        consultationCondition.unlock()
+        return RelayTextResponse(status: 200, text: "Holding \(digests.count) image\(digests.count == 1 ? "" : "s").")
     }
 
     private func pinImage(_ digest: String) {
@@ -823,7 +847,10 @@ public final class RelayBroker: @unchecked Sendable {
         catch { return message(409, error.localizedDescription) }
         consultationCondition.lock()
         let holding = contextReviewRecords.values.filter { imageDigests(of: $0).contains(digest) }
-        let image = holding.lazy.flatMap { ($0.pack.parts + [$0.returnedPart].compactMap { $0 }).compactMap(\.image) }.first { $0.sha256 == digest }
+        let sentByPerson = handoffRecords.values.filter { ($0.deliveredImages ?? []).contains { $0.sha256 == digest } }
+        let reviewed: [ContextPackImage] = holding.flatMap { ($0.pack.parts + [$0.returnedPart].compactMap { $0 }).compactMap(\.image) }
+        let sent: [ContextPackImage] = sentByPerson.flatMap { $0.deliveredImages ?? [] }
+        let image = (reviewed + sent).first { $0.sha256 == digest }
         let staged = holding.contains { $0.sourcePaneID == sender.id }
         // The person sent this pane a pack holding it: approval records the
         // target, and only a review approved or delivered counts.
@@ -831,7 +858,7 @@ public final class RelayBroker: @unchecked Sendable {
             review.requestedTargetPaneID == sender.id
                 && (review.state == .approved || review.state == .completed)
                 && review.pack.parts.contains { $0.image?.sha256 == digest }
-        }
+        } || sentByPerson.contains { $0.targetPaneID == sender.id }
         consultationCondition.unlock()
         guard let image else { return message(404, "Parley no longer keeps image \(digest)") }
         guard staged || delivered else {
@@ -2843,7 +2870,8 @@ public final class RelayBroker: @unchecked Sendable {
         onSubmitted: (() -> Void)? = nil,
         onAccepted: ((String) -> Void)? = nil,
         reviewedVoice: VoiceHandoffRequest? = nil,
-        onWriterFailed: ((Error) -> Void)? = nil
+        onWriterFailed: ((Error) -> Void)? = nil,
+        deliveredImages: [ContextPackImage] = []
     ) -> RelayTextResponse {
         let recordedOrigin = transitionOrigin ?? (humanInitiated ? .human : nil)
         let sender: WorkbenchPane
@@ -2922,7 +2950,7 @@ public final class RelayBroker: @unchecked Sendable {
             )
         }
 
-        let handoff = makeHandoff(
+        var handoff = makeHandoff(
             idempotencyKey: idempotencyKey,
             kind: .ask,
             sender: sender,
@@ -2933,6 +2961,7 @@ public final class RelayBroker: @unchecked Sendable {
             submitted: true,
             origin: recordedOrigin
         )
+        if !deliveredImages.isEmpty { handoff.deliveredImages = deliveredImages }
         let consultation = RelayConsultation(
             id: handoff.id,
             sourcePaneID: sender.id,
@@ -3273,7 +3302,8 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         idempotencyKey: String,
         preserveFormatting: Bool = false,
-        origin: RelayTransitionOrigin = .human
+        origin: RelayTransitionOrigin = .human,
+        images: [ContextPackImage] = []
     ) -> RelayTextResponse {
         let livePanes: [WorkbenchPane]
         do {
@@ -3283,6 +3313,17 @@ public final class RelayBroker: @unchecked Sendable {
         }
         guard let source = livePanes.first(where: { $0.id == sourcePaneID }), source.kind.isAgent else {
             return RelayTextResponse(status: 400, text: "unknown source agent pane")
+        }
+        // Only images the person's own pack holds, whose copy is intact, go
+        // with the Ask: this route can grant an agent's staged image to no one.
+        if !images.isEmpty {
+            guard let contextImageStore else { return RelayTextResponse(status: 503, text: "image storage is unavailable") }
+            let held = imagePinLock.withLock { personImageHolds }
+            for image in images {
+                guard held.contains(image.sha256), (try? contextImageStore.data(for: image)) != nil else {
+                    return RelayTextResponse(status: 409, text: "an image in the pack is no longer kept, or is not the person's own; nothing was sent")
+                }
+            }
         }
         let sourceToken: String
         do {
@@ -3297,7 +3338,8 @@ public final class RelayBroker: @unchecked Sendable {
             idempotencyKey: idempotencyKey,
             humanInitiated: true,
             preserveFormatting: preserveFormatting,
-            transitionOrigin: origin
+            transitionOrigin: origin,
+            deliveredImages: images
         )
     }
 
@@ -3722,7 +3764,9 @@ public final class RelayBroker: @unchecked Sendable {
         let activityCountBefore = activityRecords.count
         historyRetentionPolicy = policy
         if let retainedIDs = handoffJournal.map({ Set($0.handoffs().map(\.id)) }) {
+            let removedHandoffs = handoffRecords.values.filter { !retainedIDs.contains($0.id) }
             handoffRecords = handoffRecords.filter { retainedIDs.contains($0.key) }
+            collectAfterRemovingHandoffsLocked(removedHandoffs)
         } else {
             pruneHandoffsLocked()
         }
@@ -3910,6 +3954,7 @@ public final class RelayBroker: @unchecked Sendable {
         // Reflect each successful journal compaction immediately. If clearing
         // activity fails next, the already-cleared handoffs must not reappear.
         handoffRecords = handoffRecords.filter { !removalIDs.contains($0.key) }
+        collectAfterRemovingHandoffsLocked(Array(removedHandoffs))
         removedHandoffIDs = removalIDs
         if !removalIDs.isEmpty { noteChangeLocked() }
         idempotencyRecords = idempotencyRecords.filter { !removalIDs.contains($0.value.handoffID) }
@@ -4808,9 +4853,11 @@ public final class RelayBroker: @unchecked Sendable {
                 .map(\.id)
         )
         guard !removalIDs.isEmpty else { return }
+        let removed = removalIDs.compactMap { handoffRecords[$0] }
         handoffRecords = handoffRecords.filter { !removalIDs.contains($0.key) }
         idempotencyRecords = idempotencyRecords.filter { !removalIDs.contains($0.value.handoffID) }
         delegationResponses = delegationResponses.filter { !removalIDs.contains($0.key) }
+        collectAfterRemovingHandoffsLocked(removed)
     }
 
     private func orderedAgentEventsLocked(

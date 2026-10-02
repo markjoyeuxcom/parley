@@ -124,6 +124,37 @@ question, or the refusal is a bare error.
 
 **Fail:** a submission is reported that never arrived.
 
+## P1.7 Images in handoffs (protocol 34)
+
+Use the packaged app: the window picker and macOS's own consent need a bundle.
+
+1. In a Codex pane, ask it to screenshot a window with its computer use, save
+   it as a PNG in its folder and run `parley context draft --name Shot --file
+   <png>`. The Context menu lists the draft; opening it shows the image as a
+   preview, "Agent-provided image", with its size and SHA-256.
+   **Fail:** the part shows text, or no preview.
+2. Send that draft to a Claude pane with **Ask One Pane**. Claude runs the
+   `parley image <sha256> --to <file>` the pack names and describes the
+   picture. A third pane running the same command is refused.
+   **Fail:** Claude cannot fetch it, or the third pane can.
+3. Open a context pack of your own and choose **Capture Window…**. macOS shows
+   its window picker; pick a window. Note whether macOS asks for Screen
+   Recording permission, and what it shows in the menu bar while picking.
+   The capture appears in the pack as "Window capture" with a preview.
+   **Fail:** Parley captures without the picker, captures a window you did
+   not pick, or the picker stays active (its menu-bar indicator remains)
+   after the capture.
+4. Cancel the picker once: nothing is added and no error appears.
+5. With the capture in the pack, **Compare** is unavailable. Send it with
+   **Ask One Pane** to an agent pane: the target fetches the image with the
+   command in the pack, and Status Center shows the Ask with **SENT IMAGES**.
+   **Fail:** the target cannot fetch it, or another pane can.
+6. Ask One Pane to a pane that already has tracked work: Parley says the pack
+   cannot wait in the busy queue and keeps it open.
+7. Remove a capture from an unsent pack, or close the pack unsent, then
+   **Clear history** for an Ask that sent one: the image is gone (a fetch
+   says Parley no longer keeps it).
+
 ---
 
 # Priority 2 — core functions

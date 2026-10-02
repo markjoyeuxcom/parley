@@ -130,6 +130,14 @@ public struct RelayCoreClient: Sendable {
         return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
     }
 
+    /// The images in the person's open pack; replaces the last set.
+    public func holdPersonImages(_ digests: Set<String>) throws -> RelayTextResponse {
+        let response = try request(method: "POST", path: "/ui/context-images/hold",
+            headers: ["X-Parley-Control": controlToken, "Content-Type": "application/json"],
+            body: JSONEncoder().encode(digests.sorted()))
+        return RelayTextResponse(status: response.status, text: String(decoding: response.body, as: UTF8.self))
+    }
+
     public func deleteContextReviews(_ deletion: AgentContextDeletion) throws -> RelayTextResponse {
         let response = try request(method: "POST", path: "/ui/context-reviews/delete",
             headers: ["X-Parley-Control": controlToken, "Content-Type": "application/json"],
@@ -333,7 +341,8 @@ public struct RelayCoreClient: Sendable {
         text: String,
         idempotencyKey: String,
         preserveFormatting: Bool = false,
-        origin: RelayTransitionOrigin = .human
+        origin: RelayTransitionOrigin = .human,
+        images: [ContextPackImage] = []
     ) throws -> RelayTextResponse {
         let body = try JSONEncoder().encode(RelayUIAskRequest(
             sourcePaneID: sourcePaneID,
@@ -341,7 +350,8 @@ public struct RelayCoreClient: Sendable {
             text: text,
             idempotencyKey: idempotencyKey,
             preserveFormatting: preserveFormatting,
-            origin: origin
+            origin: origin,
+            images: images
         ))
         let response = try request(
             method: "POST",

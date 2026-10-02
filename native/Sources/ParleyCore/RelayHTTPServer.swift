@@ -463,8 +463,19 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     text: ask.text,
                     idempotencyKey: ask.idempotencyKey,
                     preserveFormatting: ask.preserveFormatting ?? false,
-                    origin: ask.origin ?? .human
+                    origin: ask.origin ?? .human,
+                    images: ask.images ?? []
                 ), to: client)
+            case "/ui/context-images/hold":
+                guard controlAuthorized(request, client: client) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let digests = try? JSONDecoder().decode([String].self, from: request.body) else {
+                    write(RelayTextResponse(status: 400, text: "invalid image hold"), to: client)
+                    return
+                }
+                write(broker.holdPersonImages(Set(digests)), to: client)
             case "/ui/review-ask":
                 guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)

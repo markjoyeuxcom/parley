@@ -1981,8 +1981,8 @@ known part ids and edited text, never source metadata or captured originals.
 
 An agent-staged file may be a PNG or JPEG image of at most 10 MB (protocol
 34, 2 October 2026), so a Codex pane using its own computer use can hand over
-a screenshot. Parley does not capture screens. Codex's review of MR !138
-shaped most of what follows.
+a screenshot. Parley itself captures only a window the person picks (below).
+Codex's review of MR !138 shaped most of what follows.
 - **Checking:** `ContextImageInspector` decides from the bytes alone: the
   signature, one image in a PNG or JPEG container, and at most 16,384 pixels
   a side and 64 million in all. It never decodes the pixels. ImageIO yields
@@ -2006,8 +2006,9 @@ shaped most of what follows.
   (`defaultMaximumTotalBytes`): sixteen parts in each of a hundred reviews
   could otherwise leave 16 GB nobody sees. A full store first collects, then
   answers 507 naming Delete Saved Context.
-- **Collection:** a copy goes as soon as no saved review holds it and no
-  staging pins it. It runs when reviews are pruned or deleted, at start, and
+- **Collection:** a copy goes as soon as no saved review holds it, no
+  staging pins it, the person's open pack does not hold it and no retained
+  handoff delivered it. It runs when reviews are pruned or deleted, at start, and
   when the store is full. Staging pins the digest before the copy is written
   and releases it once the review is in the broker's map, or staging failed
   (`pinImage`, `unpinImage`). The pin lock is held across a collection's
@@ -2025,8 +2026,9 @@ shaped most of what follows.
   was. `post` now fails with 74 whenever it cannot copy a reply, for every
   command, since `set -e` does not reach it.
 - **Who may fetch:** the broker (`handleImageFetch`) serves an image only to
-  the pane that staged it, or to the pane a person approved sending a pack
-  holding it to. That pane is the review's `requestedTargetPaneID`, with the
+  the pane that staged it, to the pane a person approved sending a pack
+  holding it to, or to the target of an Ask that delivered it from the
+  person's own pack (`deliveredImages`, below). That pane is the review's `requestedTargetPaneID`, with the
   review approved or completed and the image in its sent pack. Naming a
   digest in a message grants nothing. Until review, any handoff whose text or
   result held the digest granted it. A returned file named by its digest
@@ -2046,6 +2048,44 @@ shaped most of what follows.
   part, staging through all three commands, fetch authorization (relayed and
   digest-named cases included), deletion, the pins, room-making, and the
   shim end to end with a reply cut short by a file-size limit.
+
+**Window capture** (2 October 2026, MR B). The person's own context pack can
+take one window the person picks, captured once. The steps:
+- **Picking:** **Capture Window…** shows the system window picker
+  (`SCContentSharingPicker`, single-window mode, switched on only while
+  picking), and `SCScreenshotManager` captures one still image.
+  `WindowCapture.swift` is the only file that imports ScreenCaptureKit, and a
+  check pins that.
+- **Encoding:** the capture is PNG, or JPEG when the PNG would pass 10 MB,
+  and it is refused if neither fits.
+- **Who can start one:** no agent route starts a capture, and an agent's
+  draft never takes one.
+- **The part:** it is `ContextPackSourceKind.windowCapture` with an `image`.
+  It is never saved, because the person's pack is never saved.
+- **Holding:** the core has no record of the person's pack, so the app tells
+  it which images the pack holds (`/ui/context-images/hold`,
+  `holdPersonImages`; a set replaced each time, memory-only). It does that
+  before it writes the copy into the same store, as staging pins first. The
+  hold is re-sent whenever the pack changes (`contextPackDraft`'s `didSet`).
+- **Sending:** the pack goes through the native `/ui/ask` with its images
+  (`RelayUIAskRequest.images`). `handleAskFromUI` accepts only images the
+  person holds whose copy is intact, so the route grants no agent's image to
+  anyone. The handoff records them (`RelayHandoff.deliveredImages`, absent
+  decodes as nil), and they stay kept while it is retained. Collection
+  follows handoff pruning, Clear History and a smaller retention.
+- **During a send:** the app holds the send's images from before it starts
+  until it ends (`beginImageSend`, `endImageSend`). The pack is cleared as
+  the send is launched, and a refused send restores it.
+- **Not yet:** Compare and the busy queue do not carry images, so a pack
+  holding one refuses both.
+- **Core recovery:** a rebuilt core's start collects an unsent pack's
+  captures before the app can hold them again. The preview and the send
+  then say Parley no longer keeps them. A changed `relayClient` resets the
+  app's held set, so later captures are held.
+- **Status Center:** a handoff shows its **SENT IMAGES**.
+- **Hand checks:** whether macOS asks for Screen Recording permission for the
+  picker, and how the bundled app behaves, are hand checks
+  (`docs/test-scenarios.md` P1.7).
 
 Native **Delete Saved Context** (`/ui/context-reviews/delete`) permanently
 removes selected records, including `returnedPart`, from both the store and

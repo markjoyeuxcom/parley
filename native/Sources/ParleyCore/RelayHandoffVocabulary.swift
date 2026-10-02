@@ -180,6 +180,10 @@ public struct RelayHandoff: Identifiable, Codable, Equatable, Sendable {
     public var resultText: String?
     public var commandRun: ReviewedCommandRun? = nil
     public var resultContextReviewID: String? = nil
+    /// Images the person sent with this Ask from their own pack. Set only by
+    /// the native Ask route; its target may fetch them, and Parley keeps
+    /// them while this record is retained.
+    public var deliveredImages: [ContextPackImage]? = nil
     public var readAt: Date? = nil
     public var state: RelayHandoffState
     public var updatedAt: Date
