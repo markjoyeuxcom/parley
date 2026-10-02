@@ -281,12 +281,19 @@ func managedWorktreeCleanupChecks() throws {
     // Make the branch merged into the primary worktree so push/merge state is satisfied.
     try fixture.git(["merge", "-q", "--ff-only", "feat/clean"], in: fixture.repo)
     try wtExpect(try preview().refusals.isEmpty && preview().ignoredPaths.isEmpty, "a merged, clean tree was refused: \(try preview().refusals)")
-    // An upstream that is configured but cannot be counted is unknown, never "nothing unpushed".
+    // An upstream that is configured but cannot be counted is never "nothing
+    // unpushed". This tree is merged into the primary, which keeps every
+    // commit, so it is removable on that evidence alone, and the preview must
+    // say so rather than claim the upstream (2 October 2026: this used to
+    // refuse, and blocked every merged team worktree). Unmerged, it refuses:
+    // worktreeRemovalAfterMergeChecks.
     try fixture.git(["config", "branch.feat/clean.remote", "origin"], in: tree)
     try fixture.git(["config", "branch.feat/clean.merge", "refs/heads/feat/clean"], in: tree)
     let unknownUpstream = try preview()
-    try wtExpect(unknownUpstream.facts.statusUncertain && unknownUpstream.refusals.contains { $0.contains("could not be read") },
-        "a broken upstream was treated as pushed: \(unknownUpstream.refusals)")
+    try wtExpect((unknownUpstream.facts.upstreamGone || unknownUpstream.facts.upstreamUnknown) && !unknownUpstream.facts.statusUncertain
+                 && unknownUpstream.refusals.isEmpty && !unknownUpstream.preservationSummary.contains("no commits ahead")
+                 && unknownUpstream.preservationSummary.contains("contained in the primary worktree's HEAD"),
+        "a broken upstream on a merged tree was refused, or read as pushed: \(unknownUpstream.refusals) \(unknownUpstream.preservationSummary)")
     try fixture.git(["config", "--unset", "branch.feat/clean.remote"], in: tree)
     try fixture.git(["config", "--unset", "branch.feat/clean.merge"], in: tree)
     try wtExpect(try preview().refusals.isEmpty, "unsetting the broken upstream did not restore a clean preview")
@@ -368,6 +375,121 @@ func managedWorktreeEvidenceChecks() throws {
     // Removing the record afterwards leaves the captured evidence untouched.
     try store.remove(id: record.id)
     try wtExpect(inside.managedWorktree != nil && store.evidence(forWorktreeRoot: record.path) == nil, "captured evidence depended on the live record")
+}
+
+/// The first team-session worktree (feat/pane-stop, 2 October 2026) could not
+/// be removed after its merge request was merged. GitLab deleted the source
+/// branch and a pruning fetch removed its remote-tracking ref, so the
+/// upstream count failed and was reported as "Git status could not be read";
+/// and SwiftPM's .build held its own package clones, reported as "another
+/// registered worktree". Both refused a tree whose every commit was on main.
+func worktreeRemovalAfterMergeChecks() throws {
+    // The table: a gone or unreadable upstream is settled by the primary.
+    var facts = WorktreeCleanupFacts(parleyCreated: true, creationTokenVerified: true, registered: true, registryReadable: true, pathInspectable: true,
+        pathExists: true, pathIsDirectory: true, recordInventoryReadable: true, recordPresentInInventory: true, recordUnchangedInInventory: true,
+        locked: false, prunable: false, nestedWorktreePaths: [], livePaneFolders: [], otherRuntimePaneFolders: [], otherRuntimeStateUnreadable: false,
+        modifiedPaths: [], untrackedPaths: [], ignoredPaths: [], ignoredListTruncated: false, upstreamAheadCount: 0, hasUpstream: true,
+        mergedIntoPrimary: true, statusUncertain: false, path: "/r/.worktrees/x", upstreamGone: true)
+    try wtExpect(WorktreeCleanupPolicy.refusals(for: facts).isEmpty, "a merged tree whose upstream was deleted was refused: \(WorktreeCleanupPolicy.refusals(for: facts))")
+    facts.mergedIntoPrimary = false
+    try wtExpect(WorktreeCleanupPolicy.refusals(for: facts).contains { $0.contains("upstream branch no longer exists") },
+                 "an unmerged tree with a deleted upstream did not say why: \(WorktreeCleanupPolicy.refusals(for: facts))")
+    facts.upstreamGone = false; facts.upstreamUnknown = true; facts.mergedIntoPrimary = true
+    try wtExpect(WorktreeCleanupPolicy.refusals(for: facts).isEmpty, "a merged tree with an unreadable upstream was refused")
+    facts.mergedIntoPrimary = false
+    let unknown = WorktreeCleanupPolicy.refusals(for: facts)
+    try wtExpect(unknown.contains { $0.contains("upstream could not be read") } && !unknown.contains { $0.contains("Git status") },
+                 "an unreadable upstream was not named as such: \(unknown)")
+    facts = WorktreeCleanupFacts(parleyCreated: true, creationTokenVerified: true, registered: true, registryReadable: true, pathInspectable: true,
+        pathExists: true, pathIsDirectory: true, recordInventoryReadable: true, recordPresentInInventory: true, recordUnchangedInInventory: true,
+        locked: false, prunable: false, nestedWorktreePaths: [], livePaneFolders: [], otherRuntimePaneFolders: [], otherRuntimeStateUnreadable: false,
+        modifiedPaths: [], untrackedPaths: [], ignoredPaths: [], ignoredListTruncated: false, upstreamAheadCount: 0, hasUpstream: false,
+        mergedIntoPrimary: true, statusUncertain: false, path: "/r/.worktrees/x", nestedRepositoryPaths: ["/r/.worktrees/x/ignored/clone"])
+    let repository = WorktreeCleanupPolicy.refusals(for: facts)
+    try wtExpect(repository.contains { $0.contains("independent Git repository") && $0.contains("ignored/clone") } && !repository.contains { $0.contains("registered worktree") },
+                 "an independent repository was not named as one: \(repository)")
+
+    // Real Git, as GitLab and a pruning pull leave a merged branch.
+    let f = try WorktreeFixture()
+    defer { f.cleanup() }
+    try ".build/\n".write(to: f.repo.appendingPathComponent(".gitignore"), atomically: true, encoding: .utf8)
+    try f.git(["add", ".gitignore"], in: f.repo)
+    try f.git(["commit", "-q", "-m", "ignore build"], in: f.repo)
+    let remote = f.root.appendingPathComponent("merge-remote.git")
+    try f.git(["init", "-q", "--bare", remote.path], in: f.root)
+    try f.git(["remote", "add", "origin", remote.path], in: f.repo)
+    try f.git(["push", "-q", "-u", "origin", "main"], in: f.repo)
+    func pushedTree(_ branch: String, merge: Bool) throws -> ManagedWorktreeRecord {
+        let record = try f.service.create(.init(repositoryFolder: f.repo.path, branch: branch, baseRef: "main"))
+        let folder = URL(fileURLWithPath: record.path)
+        _ = try f.commit("\(branch) work", in: folder, file: "src/\(branch.replacingOccurrences(of: "/", with: "-")).swift", contents: "print(\"\(branch)\")\n")
+        try f.git(["push", "-q", "-u", "origin", branch], in: folder)
+        if merge { try f.git(["merge", "-q", "--no-ff", "--no-edit", branch], in: f.repo) }
+        try f.git(["push", "-q", "origin", "--delete", branch], in: f.repo)
+        try f.git(["fetch", "-q", "--prune", "origin"], in: f.repo)
+        return record
+    }
+    let merged = try pushedTree("feat/merged", merge: true)
+    let mergedPreview = try f.service.cleanupPreview(merged, livePaneFolders: [], otherRuntimeStateFiles: [])
+    try wtExpect(mergedPreview.facts.upstreamGone && !mergedPreview.facts.statusUncertain, "a deleted upstream was not read as gone: \(mergedPreview.facts)")
+    try wtExpect(mergedPreview.decision == .removeTree, "a merged tree whose upstream was deleted was refused: \(mergedPreview.refusals)")
+    try wtExpect(mergedPreview.preservationSummary.contains("upstream gone") && mergedPreview.preservationSummary.contains("contained in the primary worktree's HEAD"),
+                 "the preview did not say what the removal relies on: \(mergedPreview.preservationSummary)")
+    try wtExpect(f.service.facts(for: merged).upstreamGone == true, "the board's facts did not read the upstream as gone")
+    let lost = try pushedTree("feat/lost", merge: false)
+    let lostRefusals = try f.service.cleanupPreview(lost, livePaneFolders: [], otherRuntimeStateFiles: []).refusals
+    try wtExpect(lostRefusals.contains { $0.contains("upstream branch no longer exists") } && !lostRefusals.contains { $0.contains("Git status") },
+                 "an unmerged tree with a deleted upstream was refused for the wrong reason: \(lostRefusals)")
+
+    // A SwiftPM-style build cache: its own package clones, tagged as a cache.
+    let built = try f.service.create(.init(repositoryFolder: f.repo.path, branch: "feat/built", baseRef: "main"))
+    let cache = URL(fileURLWithPath: built.path).appendingPathComponent(".build")
+    let clone = cache.appendingPathComponent("checkouts/Package")
+    try FileManager.default.createDirectory(at: clone, withIntermediateDirectories: true)
+    try f.git(["init", "-q", "-b", "main"], in: clone)
+    let tag = cache.appendingPathComponent("CACHEDIR.TAG")
+    func preview() throws -> WorktreeCleanupPreview { try f.service.cleanupPreview(built, livePaneFolders: [], otherRuntimeStateFiles: []) }
+    let untagged = try preview()
+    try wtExpect(untagged.facts.nestedRepositoryPaths.contains { GitWorktreeResolver.canonicalPath($0) == GitWorktreeResolver.canonicalPath(clone.path) }
+                 && untagged.facts.nestedWorktreePaths.isEmpty && untagged.refusals.contains { $0.contains("independent Git repository") },
+                 "an untagged clone was not refused as an independent repository: \(untagged.refusals)")
+    try "Signature: 0000000000000000000000000000000\n".write(to: tag, atomically: true, encoding: .utf8)
+    try wtExpect(try preview().decision != .removeTree, "a wrongly signed cache tag was trusted")
+    try FileManager.default.removeItem(at: tag)
+    let elsewhere = f.root.appendingPathComponent("real-tag")
+    try "Signature: 8a477f597d28d172789f06886806bc55\n".write(to: elsewhere, atomically: true, encoding: .utf8)
+    try FileManager.default.createSymbolicLink(at: tag, withDestinationURL: elsewhere)
+    try wtExpect(try preview().decision != .removeTree, "a cache tag that is a symbolic link was trusted")
+    try FileManager.default.removeItem(at: tag)
+    try "Signature: 8a477f597d28d172789f06886806bc55\n# This file is a cache directory tag.\n".write(to: tag, atomically: true, encoding: .utf8)
+    let tagged = try preview()
+    try wtExpect(tagged.decision == .removeTree && tagged.facts.cacheDirectories == [".build/"], "a tagged build cache still refused removal: \(tagged.refusals) \(tagged.facts.cacheDirectories)")
+    // The confirmation says what was done, not what the tag claims: the
+    // cache was not inspected, and everything in it goes, a clone included
+    // (Codex's review of MR !136).
+    let summary = tagged.preservationSummary
+    try wtExpect(summary.contains("CACHEDIR.TAG") && summary.contains("not inspected") && summary.contains("including any repository or local change")
+                 && !summary.contains("contains no other registered worktree or independent repository") && tagged.ignoredPaths.contains(".build/"),
+                 "the preview overstated what it checked in the unsearched cache: \(summary)")
+    // Tags that are not a regular file starting with the signature are not trusted.
+    try FileManager.default.removeItem(at: tag)
+    for shape in ["directory", "short", "fifo"] {
+        switch shape {
+        case "directory": try FileManager.default.createDirectory(at: tag, withIntermediateDirectories: false)
+        case "short": try String("Signature: 8a477f597d28d172789f06886806bc5".utf8.map { Character(UnicodeScalar($0)) }).write(to: tag, atomically: true, encoding: .utf8)
+        default: try wtExpect(mkfifo(tag.path, 0o600) == 0, "the FIFO fixture could not be made")
+        }
+        try wtExpect(try preview().decision != .removeTree, "a \(shape) CACHEDIR.TAG was trusted")
+        try FileManager.default.removeItem(at: tag)
+    }
+    try "Signature: 8a477f597d28d172789f06886806bc55\n".write(to: tag, atomically: true, encoding: .utf8)
+    // A cache folder's name reaches the confirmation escaped, like every other path.
+    var odd = tagged.facts
+    odd.cacheDirectories = [".build\nnot a cache/"]
+    try wtExpect(odd.displayedCacheDirectories == [DelegationGitFacts.displayPath(".build\nnot a cache/")] && !odd.displayedCacheDirectories[0].contains("\n"),
+                 "a cache folder's name was shown unescaped: \(odd.displayedCacheDirectories)")
+    let outcome = try f.service.remove(built, confirmed: .removeTree, acknowledgedIgnoredPaths: tagged.ignoredPaths, livePaneFolders: [], otherRuntimeStateFiles: [])
+    try wtExpect(outcome.state == .removed && !FileManager.default.fileExists(atPath: built.path), "the tagged tree was not removed: \(outcome)")
 }
 
 func worktreeCleanupPolicyChecks() throws {
@@ -754,6 +876,7 @@ let managedWorktreeChecks: [(String, () throws -> Void)] = [
     ("worktree manager branch deletion uses -d only and shows Git's refusal", managedWorktreeBranchDeletionChecks),
     ("worktree manager bulk removal proposes only passing trees and stops at the first unconfirmed outcome", worktreeBulkRemovalPlanChecks),
     ("worktree cleanup policy decision table", worktreeCleanupPolicyChecks),
+    ("a merged team worktree is removable: gone upstream, build cache, honest refusals", worktreeRemovalAfterMergeChecks),
     ("managed worktree evidence is captured with delegation git facts", managedWorktreeEvidenceChecks),
 ]
 

@@ -124,10 +124,17 @@ struct WorktreeLifecycleView: View {
             VStack(alignment: .leading, spacing: 6) {
                 let facts = reading.cleanup.facts
                 Text("Modified: \(facts.modifiedPaths.count) · Untracked: \(facts.untrackedPaths.count) · Ignored entries: \(facts.ignoredPaths.count)\(facts.ignoredListTruncated ? "+" : "")")
-                if facts.statusUncertain { Text("Git status or upstream could not be fully read. This is not a clean-state verdict.").foregroundStyle(.orange) }
-                if facts.hasUpstream {
+                if facts.statusUncertain { Text("Git status could not be fully read. This is not a clean-state verdict.").foregroundStyle(.orange) }
+                if facts.hasUpstream, !facts.upstreamGone, !facts.upstreamUnknown {
                     Text("\(facts.upstreamAheadCount) commits ahead of local upstream tracking state. Remote not contacted.")
-                } else { Text(facts.mergedIntoPrimary ? "HEAD is contained in the primary checkout's HEAD." : "No upstream preservation evidence; inspect and preserve your commits before removal.") }
+                } else {
+                    if facts.upstreamGone { Text("Git reports the branch's upstream gone: it no longer exists here, usually because it was deleted on the remote after a merge.") }
+                    else if facts.upstreamUnknown { Text("The branch's upstream could not be read.").foregroundStyle(.orange) }
+                    Text(facts.mergedIntoPrimary ? "HEAD is contained in the primary checkout's HEAD." : "No upstream preservation evidence; inspect and preserve your commits before removal.")
+                }
+                if !facts.cacheDirectories.isEmpty {
+                    Text("Not inspected, because a CACHEDIR.TAG declares them caches; everything in them is deleted with the tree, including any repository or local change: \(facts.displayedCacheDirectories.joined(separator: ", "))")
+                }
                 DisclosureGroup("Changed paths") {
                     ForEach(Array((facts.modifiedPaths + facts.untrackedPaths).prefix(200).enumerated()), id: \.offset) { _, path in
                         Text(DelegationGitFacts.displayPath(path)).font(.caption.monospaced()).textSelection(.enabled)

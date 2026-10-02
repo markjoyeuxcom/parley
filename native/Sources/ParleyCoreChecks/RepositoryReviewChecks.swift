@@ -178,7 +178,7 @@ private func repoReviewPane(_ id: String, kind: PaneKind = .codex) -> WorkbenchP
         let nested = URL(fileURLWithPath: record.path).appendingPathComponent("ignored/nested")
         _ = try git(["init", "-q", nested.path])
         let preview = try service.cleanupPreview(record, livePaneFolders: [], otherRuntimeStateFiles: [])
-        try repoReviewExpect(preview.facts.nestedWorktreePaths.contains { GitWorktreeResolver.canonicalPath($0) == GitWorktreeResolver.canonicalPath(nested.path) }, "ignored directory concealed an independent repository: ignored=\(preview.ignoredPaths), nested=\(preview.facts.nestedWorktreePaths), expected=\(nested.path)")
+        try repoReviewExpect(preview.facts.nestedRepositoryPaths.contains { GitWorktreeResolver.canonicalPath($0) == GitWorktreeResolver.canonicalPath(nested.path) }, "ignored directory concealed an independent repository: ignored=\(preview.ignoredPaths), nested=\(preview.facts.nestedRepositoryPaths), expected=\(nested.path)")
         if case .refuse = preview.decision {} else { throw NSError(domain: "RepositoryReview", code: 1, userInfo: [NSLocalizedDescriptionKey: "nested repository was removable"]) }
         var pane = WorkbenchPane(id: "inside", kind: .codex, customName: nil, terminalTitle: "", cwd: record.path,
             currentCommand: "codex", isActive: true, workspaceID: "workspace", relayEnabled: true)

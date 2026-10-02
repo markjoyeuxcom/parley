@@ -317,6 +317,25 @@ public struct WorktreeCleanupFacts: Equatable, Sendable {
     /// The tree holds a populated submodule. Git refuses to remove such a
     /// worktree without --force, which Parley never passes.
     public var containsSubmodules: Bool
+    /// Independent repositories found inside ignored directories: not
+    /// registered worktrees of anything, but deleted with the tree all the
+    /// same, so each one refuses removal under its own name.
+    public var nestedRepositoryPaths: [String]
+    /// Ignored directories carrying a valid CACHEDIR.TAG, which by that
+    /// standard declare that their tool can regenerate them. A declaration,
+    /// not something Parley checked: they are not searched for repositories,
+    /// and the preview says they were not inspected and that everything in
+    /// them goes with the tree.
+    public var cacheDirectories: [String]
+    /// The branch names an upstream that no longer exists here (Git's
+    /// `[gone]`), usually because the remote branch was deleted after a merge
+    /// and a fetch pruned it. That cause is the usual one, not one observed.
+    public var upstreamGone: Bool
+    /// The branch's upstream could not be read at all.
+    public var upstreamUnknown: Bool
+
+    /// The cache folders as the confirmation and inspector show them.
+    public var displayedCacheDirectories: [String] { cacheDirectories.map(DelegationGitFacts.displayPath) }
 
     public init(parleyCreated: Bool, creationTokenVerified: Bool, registered: Bool, registryReadable: Bool, pathInspectable: Bool, pathExists: Bool, pathIsDirectory: Bool,
                 recordInventoryReadable: Bool, recordPresentInInventory: Bool, recordUnchangedInInventory: Bool, locked: Bool, prunable: Bool,
@@ -324,7 +343,8 @@ public struct WorktreeCleanupFacts: Equatable, Sendable {
                 otherRuntimePaneFolders: [String], otherRuntimeStateUnreadable: Bool, modifiedPaths: [String], untrackedPaths: [String],
                 ignoredPaths: [String], ignoredListTruncated: Bool, upstreamAheadCount: Int, hasUpstream: Bool, mergedIntoPrimary: Bool,
                 statusUncertain: Bool, path: String, isPrimary: Bool = false,
-                uncheckedPaths: [String] = [], nestedCheckRefusal: String? = nil, containsSubmodules: Bool = false) {
+                uncheckedPaths: [String] = [], nestedCheckRefusal: String? = nil, containsSubmodules: Bool = false,
+                nestedRepositoryPaths: [String] = [], cacheDirectories: [String] = [], upstreamGone: Bool = false, upstreamUnknown: Bool = false) {
         self.parleyCreated = parleyCreated
         self.creationTokenVerified = creationTokenVerified
         self.registered = registered
@@ -354,6 +374,10 @@ public struct WorktreeCleanupFacts: Equatable, Sendable {
         self.uncheckedPaths = uncheckedPaths
         self.nestedCheckRefusal = nestedCheckRefusal
         self.containsSubmodules = containsSubmodules
+        self.nestedRepositoryPaths = nestedRepositoryPaths
+        self.cacheDirectories = cacheDirectories
+        self.upstreamGone = upstreamGone
+        self.upstreamUnknown = upstreamUnknown
     }
 }
 
@@ -410,6 +434,9 @@ public enum WorktreeCleanupPolicy {
             reasons.append("another Parley runtime lists a pane inside this worktree")
         }
         if facts.statusUncertain { reasons.append("Git status could not be read") }
+        if !facts.nestedRepositoryPaths.isEmpty {
+            reasons.append("an ignored folder holds an independent Git repository, which would be deleted with it: " + facts.nestedRepositoryPaths.prefix(5).joined(separator: ", "))
+        }
         if !facts.modifiedPaths.isEmpty { reasons.append("modified tracked files: " + facts.modifiedPaths.prefix(5).joined(separator: ", ")) }
         if !facts.untrackedPaths.isEmpty { reasons.append("untracked files: " + facts.untrackedPaths.prefix(5).joined(separator: ", ")) }
         if !facts.uncheckedPaths.isEmpty {
@@ -421,12 +448,20 @@ public enum WorktreeCleanupPolicy {
             reasons.append("the worktree contains submodules, which Git will not remove without --force and Parley never forces; deinitialise them (git submodule deinit) or remove the tree yourself")
         }
         if facts.ignoredListTruncated { reasons.append("more than \(maximumReviewedIgnoredPaths) ignored entries; too many to review here") }
-        if facts.hasUpstream {
+        // A gone or unreadable upstream cannot say where the commits are; the
+        // primary checkout can. Every commit already in its HEAD is safe.
+        if facts.hasUpstream, !facts.upstreamGone, !facts.upstreamUnknown {
             if facts.upstreamAheadCount > 0 {
                 reasons.append("\(facts.upstreamAheadCount) commit\(facts.upstreamAheadCount == 1 ? "" : "s") not on the upstream according to local tracking state")
             }
         } else if !facts.mergedIntoPrimary {
-            reasons.append("no upstream and not merged into the primary worktree; push state is unknown")
+            if facts.upstreamGone {
+                reasons.append("its upstream branch no longer exists here (Git reports it gone, usually deleted on the remote after a merge) and its HEAD is not in the primary checkout, so its commits may exist only here")
+            } else if facts.upstreamUnknown {
+                reasons.append("the branch's upstream could not be read and its HEAD is not in the primary checkout")
+            } else {
+                reasons.append("no upstream and not merged into the primary worktree; push state is unknown")
+            }
         }
         return reasons
     }
@@ -450,13 +485,24 @@ public struct WorktreeCleanupPreview: Equatable, Sendable {
     /// the facts rather than from a fixed sentence.
     public var preservationSummary: String {
         var parts = ["Git status shows no modified tracked files and no untracked files"]
-        if facts.hasUpstream {
+        if facts.hasUpstream, !facts.upstreamGone, !facts.upstreamUnknown {
             parts.append("the branch has an upstream and local remote-tracking state shows no commits ahead of it (Parley did not contact the remote; a newer push or a rewritten remote branch is not known here)")
+        } else if facts.upstreamGone {
+            parts.append("Git reports the branch's upstream gone (missing here, usually deleted on the remote after a merge and then pruned) and its HEAD is already contained in the primary worktree's HEAD")
+        } else if facts.upstreamUnknown {
+            parts.append("the branch's upstream could not be read, and its HEAD is already contained in the primary worktree's HEAD")
         } else {
             parts.append("the branch has no upstream and its HEAD is already contained in the primary worktree's HEAD")
         }
         parts.append("no pane folder of this runtime or the other Parley runtime is inside the tree")
-        parts.append("the tree is not locked and contains no other registered worktree")
+        if facts.cacheDirectories.isEmpty {
+            parts.append("the tree is not locked and contains no other registered worktree or independent repository")
+        } else {
+            // What the tag declares is not what Parley checked: say both.
+            parts.append("the tree is not locked and contains no other registered worktree, and no independent repository was found outside the folders below")
+            parts.append("these ignored folders declare themselves caches with a CACHEDIR.TAG, so they were not inspected, and everything in them is deleted with the tree, including any repository or local change: "
+                + facts.displayedCacheDirectories.joined(separator: ", "))
+        }
         return parts.joined(separator: "; ")
     }
 }
@@ -508,10 +554,13 @@ public struct ManagedWorktreeFacts: Equatable, Sendable {
     /// Whether this tree's HEAD is an ancestor of the primary checkout's HEAD:
     /// true means every commit here is already integrated. nil is unknown.
     public let containedInPrimary: Bool?
+    /// The configured upstream no longer exists here (Git's `[gone]`); a
+    /// remote deletion after a merge is the usual cause, not an observed one.
+    public let upstreamGone: Bool?
 
     public init(recordID: String, currentBranch: String?, head: String?, changedPathCount: Int?, upstreamAheadCount: Int?,
                 hasUpstream: Bool?, registered: Bool?, primaryHead: String? = nil, aheadOfPrimary: Int? = nil,
-                behindPrimary: Int? = nil, containedInPrimary: Bool? = nil) {
+                behindPrimary: Int? = nil, containedInPrimary: Bool? = nil, upstreamGone: Bool? = nil) {
         self.recordID = recordID
         self.currentBranch = currentBranch
         self.head = head
@@ -523,6 +572,7 @@ public struct ManagedWorktreeFacts: Equatable, Sendable {
         self.aheadOfPrimary = aheadOfPrimary
         self.behindPrimary = behindPrimary
         self.containedInPrimary = containedInPrimary
+        self.upstreamGone = upstreamGone
     }
 }
 
@@ -1076,7 +1126,8 @@ public struct ManagedWorktreeService: Sendable {
         return ManagedWorktreeFacts(recordID: id, currentBranch: branch, head: head,
             changedPathCount: status.map { $0.modified.count + $0.untracked.count }, upstreamAheadCount: upstream.ahead,
             hasUpstream: upstream.hasUpstream, registered: true, primaryHead: divergence.primaryHead,
-            aheadOfPrimary: divergence.ahead, behindPrimary: divergence.behind, containedInPrimary: divergence.contained)
+            aheadOfPrimary: divergence.ahead, behindPrimary: divergence.behind, containedInPrimary: divergence.contained,
+            upstreamGone: upstream.hasUpstream == true ? upstream.gone : nil)
     }
 
     /// Where this tree stands against the primary checkout (the registry's
@@ -1267,6 +1318,8 @@ public struct ManagedWorktreeService: Sendable {
         var unchecked: [String] = []
         var submodules = false
         var nestedRefusal: String?
+        var independent: [String] = []
+        var caches: [String] = []
         var truncated = false
         var uncertain = false
         if registered != nil, !(registered?.isPrunable ?? true), pathIsDirectory {
@@ -1280,7 +1333,7 @@ public struct ManagedWorktreeService: Sendable {
                 if !truncated {
                     let directories = status.ignored.filter { $0.hasSuffix("/") }
                         .map { URL(fileURLWithPath: record.path).appendingPathComponent($0) }
-                    do { nested += try nestedRepositories(in: directories) }
+                    do { (independent, caches) = try nestedRepositories(in: directories, base: record.path) }
                     catch let ManagedWorktreeError.refused(reasons) { nestedRefusal = reasons.joined(separator: "; ") }
                 }
                 if let flagged = try? uncheckedPresentPaths(in: record.path) { unchecked = flagged } else { uncertain = true }
@@ -1301,9 +1354,12 @@ public struct ManagedWorktreeService: Sendable {
             livePaneFolders: livePaneFolders, otherRuntimePaneFolders: other, otherRuntimeStateUnreadable: otherUnreadable, modifiedPaths: modified,
             untrackedPaths: untracked, ignoredPaths: ignored, ignoredListTruncated: truncated, upstreamAheadCount: upstream.ahead ?? 0,
             hasUpstream: upstream.hasUpstream ?? false, mergedIntoPrimary: merged,
-            statusUncertain: uncertain || upstream.hasUpstream == nil || (upstream.hasUpstream == true && upstream.ahead == nil), path: record.path,
+            statusUncertain: uncertain, path: record.path,
             isPrimary: registered?.isPrimary ?? false, uncheckedPaths: unchecked, nestedCheckRefusal: nestedRefusal,
-            containsSubmodules: submodules)
+            containsSubmodules: submodules,
+            nestedRepositoryPaths: Set(independent.map(GitWorktreeResolver.canonicalPath)).sorted(), cacheDirectories: caches.sorted(),
+            upstreamGone: upstream.gone,
+            upstreamUnknown: upstream.hasUpstream == nil || (upstream.hasUpstream == true && upstream.ahead == nil && !upstream.gone))
     }
 
     /// Git's own test for refusing `worktree remove` (validate_no_submodules):
@@ -1343,9 +1399,31 @@ public struct ManagedWorktreeService: Sendable {
 
     // MARK: Helpers
 
-    private func nestedRepositories(in directories: [URL]) throws -> [String] {
+    /// The Cache Directory Tagging Specification's signature: a directory
+    /// holding a regular file `CACHEDIR.TAG` that begins with exactly these
+    /// 43 bytes declares that its tool can regenerate it. The check proves
+    /// the tag's shape, not that the contents are disposable. SwiftPM writes
+    /// one in `.build`, beside its own package clones.
+    public static let cacheDirectoryTagSignature = "Signature: 8a477f597d28d172789f06886806bc55"
+
+    /// Read without following a link, and only from a regular file.
+    static func isTaggedCacheDirectory(_ folder: URL) -> Bool {
+        let fd = open(folder.appendingPathComponent("CACHEDIR.TAG").path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return false }
+        var bytes = [UInt8](repeating: 0, count: cacheDirectoryTagSignature.utf8.count)
+        return read(fd, &bytes, bytes.count) == bytes.count && bytes.elementsEqual(cacheDirectoryTagSignature.utf8)
+    }
+
+    /// Independent repositories inside the ignored directories, and the
+    /// tagged cache directories (relative to `base`, with a trailing `/`)
+    /// that were not searched.
+    private func nestedRepositories(in directories: [URL], base: String) throws -> (repositories: [String], caches: [String]) {
         var pending = directories
         var repositories: [String] = []
+        var caches: [String] = []
         var inspected = 0
         let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(readTimeout * 1_000_000_000)
         while let folder = pending.popLast() {
@@ -1356,6 +1434,10 @@ public struct ManagedWorktreeService: Sendable {
             var folderInfo = stat()
             guard lstat(folder.path, &folderInfo) == 0, folderInfo.st_mode & S_IFMT == S_IFDIR else {
                 throw ManagedWorktreeError.refused(["an ignored directory changed or could not be inspected for nested repositories"])
+            }
+            if Self.isTaggedCacheDirectory(folder) {
+                caches.append(String(folder.path.dropFirst(base.count + 1)) + "/")
+                continue
             }
             let entries: [URL]
             do { entries = try FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) }
@@ -1383,7 +1465,7 @@ public struct ManagedWorktreeService: Sendable {
                 if info.st_mode & S_IFMT == S_IFDIR { pending.append(entry) }
             }
         }
-        return repositories
+        return (repositories, caches)
     }
 
     private func primaryToplevel(_ identity: GitRepositoryIdentity) -> String? {
@@ -1456,7 +1538,12 @@ public struct ManagedWorktreeService: Sendable {
 
     /// `hasUpstream == nil` means Git could not answer; that is never treated
     /// as "no upstream". `ahead == nil` with an upstream means the count failed.
-    struct UpstreamState: Equatable { let hasUpstream: Bool?; let ahead: Int? }
+    struct UpstreamState: Equatable {
+        let hasUpstream: Bool?
+        let ahead: Int?
+        /// Configured, but Git reports the remote-tracking branch `[gone]`.
+        var gone = false
+    }
 
     /// The checked-out branch's short name: `.some(nil)` on a detached HEAD,
     /// nil when Git could not answer. Read from the full ref rather than with
@@ -1485,7 +1572,12 @@ public struct ManagedWorktreeService: Sendable {
         }
         guard let count = (try? run(in: folder, ["rev-list", "--count", "--end-of-options", "@{upstream}..HEAD"], timeout: readTimeout))?
             .stdoutText.trimmingCharacters(in: .whitespacesAndNewlines), let ahead = Int(count) else {
-            return UpstreamState(hasUpstream: true, ahead: nil)
+            // A merge request whose source branch was deleted, then a pruning
+            // fetch, leaves the upstream configured with no branch behind it.
+            // Git says so itself; anything else stays unknown.
+            let track = (try? run(in: folder, ["for-each-ref", "--format=%(upstream:track)", "--end-of-options", "refs/heads/\(branch)"],
+                                  timeout: readTimeout))?.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return UpstreamState(hasUpstream: true, ahead: nil, gone: track == "[gone]")
         }
         return UpstreamState(hasUpstream: true, ahead: ahead)
     }
