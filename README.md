@@ -707,8 +707,10 @@ host command runs retain their existing permission controls. The pane badge,
 Status Center and Team Sessions show the selected bypass mode. Existing saved
 containers keep their previous permission mode.
 
-Closing the main window keeps a container running. Closing its pane, restarting
-or quitting stops the recorded container, and a failed cleanup is reported.
+Closing the main window keeps a container running. Closing its pane, restarting,
+**Stop…** in the pane's menu or quitting stops the recorded container, and a
+failed cleanup is reported. Stop keeps the pane, stopped, with its saved vendor
+state, so it can be started again.
 **Status Center → Health → Containers** shows creation receipts and offers
 **Stop and Remove** and a separately confirmed **Delete Saved Vendor State**.
 Docker output logging is disabled. Ordinary history clearing does not delete

@@ -1226,6 +1226,15 @@ public final class WorkbenchController: @unchecked Sendable {
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
                 throw ParleyWorkbenchError.paneNotFound(paneID)
             }
+            // A caller stopping this pane's container checks its workspace
+            // after Docker cleanup; a move meanwhile would leave it refusing
+            // with the container already gone.
+            guard !containerPreparations.contains(paneID) else {
+                throw ContainerPaneError.refused("This pane's container is being prepared or stopped. Move it when that ends.")
+            }
+            guard !moveHolds.contains(paneID) else {
+                throw ContainerPaneError.refused("This pane is being stopped or closed. Move it when that ends.")
+            }
             let target = document.workspaces[try workspaceIndexLocked(targetWorkspaceID)]
             let assessment = PaneMobilityPolicy.assess(
                 action: .move,
@@ -1431,11 +1440,38 @@ public final class WorkbenchController: @unchecked Sendable {
 
     /// Background cleanup is bound to the pane revision the native action saw.
     /// A subsequent start invalidates this receipt without another Docker read.
-    public func prepareContainerStop(_ reviewed: WorkbenchPane) throws {
+    /// Panes a person's lifecycle action is stopping or closing. `movePane`
+    /// refuses them from before the action's first container cleanup until
+    /// after its last step: the cleanup reservation ends when Docker returns,
+    /// and in a batch one pane's cleanup ends while another's still runs.
+    private var moveHolds: Set<String> = []
+
+    /// Holds every pane or none; a pane another action holds is refused.
+    public func holdAgainstMove(_ paneIDs: [String]) throws {
+        try lock.withLock {
+            guard moveHolds.isDisjoint(with: paneIDs) else {
+                throw ContainerPaneError.refused("Another action is already stopping or closing this pane.")
+            }
+            moveHolds.formUnion(paneIDs)
+        }
+    }
+
+    public func releaseMoveHold(_ paneIDs: [String]) {
+        lock.withLock { moveHolds.subtract(paneIDs) }
+    }
+
+    /// `requiringWorkspace` is for a caller that checks the pane's workspace
+    /// again after cleanup (`performAfterContainerStops`): a pane moved after
+    /// its review is refused here, before Docker, not after its container is
+    /// gone. Team Stop, restart, shutdown and lost-client reconciliation follow
+    /// the pane wherever it is and pass false. It has no default. A move waits
+    /// for the cleanup either way (`movePane` refuses during it).
+    public func prepareContainerStop(_ reviewed: WorkbenchPane, requiringWorkspace: Bool) throws {
         try lock.withLock {
             guard !containerPreparations.contains(reviewed.id), let current = document.panes.first(where: { $0.id == reviewed.id }),
                   current.launchGeneration == reviewed.launchGeneration, current.cwd == reviewed.cwd,
-                  current.containerConfiguration == reviewed.containerConfiguration else {
+                  current.containerConfiguration == reviewed.containerConfiguration,
+                  !requiringWorkspace || current.workspaceID == reviewed.workspaceID else {
                 throw ContainerPaneError.refused("The pane changed; review its container again before stopping it.")
             }
             containerPreparations.insert(reviewed.id)
@@ -1495,7 +1531,7 @@ public final class WorkbenchController: @unchecked Sendable {
         catch { failures.append(error.localizedDescription) }
         let preparedPaneIDs = lock.withLock { Set(preparedContainerIDs.keys).union(containerPreparations) }
         for pane in panes where pane.containerConfiguration != nil || recordedPaneIDs.contains(pane.id) || preparedPaneIDs.contains(pane.id) {
-            do { try prepareContainerStop(pane) }
+            do { try prepareContainerStop(pane, requiringWorkspace: false) }
             catch { failures.append("\(pane.displayName): \(error.localizedDescription)") }
         }
         // Visit orphans independently; never retry a failed live-pane removal

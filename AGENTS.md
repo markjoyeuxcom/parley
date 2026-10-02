@@ -205,8 +205,11 @@ Production and a separate Development directory.
   coordination core. There is no separate Stop Everything action: the
   quit-time choice was removed in the 30 August 2026 native cutover, and the
   quit dialog offers Quit Parley or Cancel only. One pane ends when the person
-  exits its CLI, closes it or restarts it; a container pane can also be stopped
-  from Status Center > Health > Containers. Help, README, INSTALL and the
+  exits its CLI, chooses Stop… in its menu (a started agent pane; since 1
+  October 2026, `AppModel.stop`: container cleanup through
+  `performAfterContainerStops`, then `stopPaneProcess` with the reviewed
+  generation, leaving a stopped placeholder), closes it or restarts it; a
+  container pane can also be stopped from Status Center > Health > Containers. Help, README, INSTALL and the
   protocol text described the removed item for two weeks; do not reintroduce
   the name without the button. `shutdown` checks every container first,
   saves every pane stopped, and ends the surfaces only once that is durable;
@@ -1789,6 +1792,22 @@ Every lifecycle stop the app makes names the generation it reviewed:
 cleanup in `GhosttyPaneRegistry` stopped whatever pane generation was current
 once its detached Docker cleanup returned, so a pane restarted meanwhile lost
 its new session.
+`prepareContainerStop(_:requiringWorkspace:)` takes the workspace requirement
+with no default. `performAfterContainerStops` (Close, Stop… and the bulk
+actions) checks the pane's workspace again after cleanup, so it passes true
+and a pane moved after its review is refused before any Docker command; Team
+Stop, restart, the team's failed-start cleanup, shutdown and lost-client
+reconciliation follow the pane wherever it is and pass false. `movePane`
+refuses while the pane's container is being prepared or stopped
+(`containerPreparations`), and while a person's action holds it
+(`holdAgainstMove`): `performAfterContainerStops` holds every pane it
+reviewed, synchronously after the confirmation, and releases them in a
+`defer` once its last step has run. The cleanup reservation alone ends when
+Docker returns, before that last step, and in a batch one pane's cleanup ends
+while another's still runs, so a move could land between a removed container
+and the step that ends its pane (the team review of the pane Stop and its
+verification, 1 October 2026; `checkContainerStopAndMoveExclude`,
+`checkStopHoldsPanesAgainstMove`, and PaneStopChecks for the wiring).
 Stop/close/restart/quit must stop the owned container before terminating its
 host surface; a failed stop refuses the lifecycle operation. Old records are
 shown in Status Center and never adopted as surviving sessions. No daemon

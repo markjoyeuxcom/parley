@@ -3617,7 +3617,7 @@ final class AppModel: ObservableObject {
                           coordinator.sessions().first(where: { $0.id == session.id })?.members.contains(where: { $0.owns(current) }) == true else {
                         throw TeamSessionError.invalid("The pane changed generation; its replacement was left alone.")
                     }
-                    try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(current) }.value
+                    try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(current, requiringWorkspace: false) }.value
                     // Cleanup is confirmed. A pane started again meanwhile is a
                     // new session, left alone; that is not a cleanup failure.
                     if let now = try? controller.listPanes().first(where: { $0.id == pane.id }), now.launchGeneration != current.launchGeneration {
@@ -3854,7 +3854,7 @@ final class AppModel: ObservableObject {
         let cleanupFailures = await Task.detached(priority: .userInitiated) {
             var failures: [String: String] = [:]
             for pane in containers {
-                do { try controller.prepareContainerStop(pane) }
+                do { try controller.prepareContainerStop(pane, requiringWorkspace: false) }
                 catch { failures[pane.id] = error.localizedDescription }
             }
             return failures
@@ -4992,7 +4992,7 @@ final class AppModel: ObservableObject {
             throw RelayUIError.message("That pane no longer exists.")
         }
         if reviewed.containerConfiguration != nil {
-            try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(reviewed) }.value
+            try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(reviewed, requiringWorkspace: false) }.value
             try controller.stopPaneProcess(paneID, expectedGeneration: reviewed.launchGeneration)
         } else if configuration != nil, reviewed.isStarted {
             try controller.stopPaneProcess(paneID, expectedGeneration: reviewed.launchGeneration)
@@ -5014,16 +5014,29 @@ final class AppModel: ObservableObject {
 
     /// Docker may be unavailable for seconds. Keep the main actor and the
     /// relay's workbench reads free, then revalidate before touching Ghostty.
+    /// Stops the reviewed panes' containers, then runs `operation` if every
+    /// pane is still as reviewed. The panes are held against a move for the
+    /// whole of it, taken before the first cleanup and released after the
+    /// last step on every path: the cleanup's own reservation ends when
+    /// Docker returns, and in a batch one pane's cleanup ends while another's
+    /// still runs, so a move could otherwise land between a removed container
+    /// and the step that ends its pane.
     private func performAfterContainerStops(_ reviewed: [WorkbenchPane], operation: @escaping @MainActor () throws -> Void) {
         guard reviewed.contains(where: { $0.containerConfiguration != nil }), let controller else {
             perform(operation)
             return
         }
+        let held = reviewed.map(\.id)
+        do { try controller.holdAgainstMove(held) } catch {
+            NSAlert(error: error).runModal()
+            return
+        }
         Task {
+            defer { controller.releaseMoveHold(held) }
             do {
                 var failures: [String] = []
                 for pane in reviewed where pane.containerConfiguration != nil {
-                    do { try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(pane) }.value }
+                    do { try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(pane, requiringWorkspace: true) }.value }
                     catch { failures.append("\(pane.displayName): \(error.localizedDescription)") }
                 }
                 if !failures.isEmpty { throw ContainerPaneError.refused(failures.joined(separator: "\n")) }
@@ -7320,6 +7333,27 @@ final class AppModel: ObservableObject {
                 paneKind: pane.kind,
                 detail: "\(pane.kind.label) pane restarted."
             ))
+            try refresh()
+        }
+    }
+
+    /// Ends a started agent pane's process and keeps the pane, stopped, to be
+    /// started or resumed later. A container pane's container is stopped
+    /// first, as Close stops it; its home volume, with the vendor's login and
+    /// conversations, stays. Until 1 October 2026 the only way to stop a
+    /// container pane without closing it was Status Center's Stop and Remove.
+    func stop(_ pane: WorkbenchPane) {
+        let alert = NSAlert()
+        alert.messageText = "Stop \(pane.displayName)?"
+        alert.informativeText = pane.containerConfiguration == nil
+            ? "The \(pane.kind.label) process ends and the pane stays, stopped. Start it again from its menu later."
+            : "The \(pane.kind.label) process ends, its container is stopped and removed, and the pane stays, stopped. The pane's saved vendor login and conversations are kept. Start it again from its menu later."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Stop")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        performAfterContainerStops([pane]) { [self] in
+            try controller?.stopPaneProcess(pane.id, expectedGeneration: pane.launchGeneration)
             try refresh()
         }
     }
