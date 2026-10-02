@@ -308,13 +308,8 @@ public final class ContextImageStore: @unchecked Sendable {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-            // A copy already here is made young again, or a collection between
-            // this and saving the review could take it as unreferenced and old.
             let file = url(for: image)
-            if (try? readLocked(image)) == data,
-               (try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: file.path)) != nil {
-                return
-            }
+            if (try? readLocked(image)) == data { return }
             let kept = keptBytesLocked()
             guard kept + data.count <= maximumTotalBytes else {
                 throw ContextImageError.storeFull(keptBytes: kept, maximum: maximumTotalBytes)
@@ -328,24 +323,17 @@ public final class ContextImageStore: @unchecked Sendable {
         try lock.withLock { try readLocked(image) }
     }
 
-    /// Removes every copy whose digest is not kept; returns how many went. A
-    /// copy younger than `minimumAge` stays: it may be one being staged now,
-    /// whose review is not saved yet.
+    /// Removes every copy whose digest is not kept; returns how many went.
+    /// The broker keeps every digest a saved review holds or a staging pins.
     @discardableResult
-    public func removeAll(except kept: Set<String>, minimumAge: TimeInterval = 0) -> Int {
+    public func removeAll(except kept: Set<String>) -> Int {
         lock.withLock {
             guard let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return 0 }
             var removed = 0
             for name in names {
                 let digest = String(name.split(separator: ".", maxSplits: 1).first ?? "")
                 guard ContextPackImage.isDigest(digest), !kept.contains(digest) else { continue }
-                let file = directory.appendingPathComponent(name)
-                if minimumAge > 0 {
-                    var metadata = stat()
-                    guard lstat(file.path, &metadata) == 0,
-                          Date().timeIntervalSince1970 - TimeInterval(metadata.st_mtimespec.tv_sec) >= minimumAge else { continue }
-                }
-                if unlink(file.path) == 0 { removed += 1 }
+                if unlink(directory.appendingPathComponent(name).path) == 0 { removed += 1 }
             }
             return removed
         }

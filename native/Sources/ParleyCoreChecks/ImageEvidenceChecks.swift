@@ -18,13 +18,17 @@ private func imageRejects(_ message: String, _ body: () throws -> Void) throws {
     throw NSError(domain: "ImageEvidence", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
 }
 
-/// A real image of the given size, encoded by ImageIO.
-func imageEvidenceFixture(width: Int, height: Int, type: UTType = .png) -> Data {
+/// A real image of the given size, encoded by ImageIO: one colour, or opaque
+/// noise, which does not compress, when the size on disk matters.
+func imageEvidenceFixture(width: Int, height: Int, type: UTType = .png, noise: Bool = false) -> Data {
     let space = CGColorSpaceCreateDeviceRGB()
     let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
         space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
     context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
     context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+    if noise, let pixels = context.data?.assumingMemoryBound(to: UInt8.self) {
+        for index in 0..<(context.bytesPerRow * height) { pixels[index] = index % 4 == 3 ? 255 : UInt8.random(in: 0...255) }
+    }
     let output = NSMutableData()
     let destination = CGImageDestinationCreateWithData(output, type.identifier as CFString, 1, nil)!
     CGImageDestinationAddImage(destination, context.makeImage()!, nil)
@@ -83,15 +87,6 @@ private func sha256(_ data: Data) -> String { SHA256.hash(data: data).map { Stri
         try imageExpect(store.removeAll(except: [image.sha256]) == 1, "the unreferenced copy was not the one removed")
         try imageExpect(FileManager.default.fileExists(atPath: file.path) && !FileManager.default.fileExists(atPath: store.url(for: other).path),
                         "the referenced copy went, or the unreferenced one stayed")
-        // Only a copy left alone for the minimum age goes, and staging the same
-        // bytes again makes an old copy young: its review is not saved yet.
-        let old = Date(timeIntervalSinceNow: -7_200)
-        try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: file.path)
-        _ = try store.store(png)
-        try imageExpect(store.removeAll(except: [], minimumAge: 600) == 0 && FileManager.default.fileExists(atPath: file.path),
-                        "a copy staged again was collected as old before its review could be saved")
-        try FileManager.default.setAttributes([.modificationDate: old], ofItemAtPath: file.path)
-        try imageExpect(store.removeAll(except: [], minimumAge: 600) == 1, "an old unreferenced copy was kept")
         // The store as a whole is bounded: a new copy that would pass the
         // total is refused, while bytes already kept can be staged again.
         let small = ContextImageStore(directory: root.appendingPathComponent("bounded"), maximumTotalBytes: png.count + 10)
@@ -196,7 +191,7 @@ private final class ImageBrokerFixture: @unchecked Sendable {
                                                      content: .image(imageEvidenceFixture(width: 9, height: 9)))
         try imageExpect(refused.status == 507 && refused.text.contains("Delete Saved Context"),
                         "a full image store was not refused with its remedy: \(refused.status) \(refused.text)")
-        // A returned image waits for review, and the receipt names no digest.
+        // A returned image waits for review; Parley's receipt adds no digest of its own.
         let delegated = f.broker.handleDelegate(token: f.targetToken, target: "Driver", text: "Capture the window")
         try imageExpect(delegated.status == 200, "could not delegate: \(delegated.body)")
         let returned = f.broker.handleDelegationFileResult(token: f.sourceToken, handoffID: "current", path: f.path("result.png"), content: .image(png))
@@ -212,30 +207,90 @@ private final class ImageBrokerFixture: @unchecked Sendable {
         try imageExpect(bare.broker.handleContextDraft(token: bare.sourceToken, name: "T", path: bare.path("t.md"), content: .text("t\n")).status == 201,
                         "text needed an image store")
     }),
-    ("image evidence: only the staging pane or a pane sent the image may fetch it", {
+    ("image evidence: only the staging pane or a pane the person sent the image to may fetch it", {
         let f = try ImageBrokerFixture()
         let png = imageEvidenceFixture(width: 5, height: 5)
         let drafted = f.broker.handleContextDraft(token: f.sourceToken, name: "Shots", path: f.path("shot.png"), content: .image(png))
         let review = try f.review(from: drafted)
-        let digest = review.pack.parts[0].image!.sha256
+        let image = review.pack.parts[0].image!
+        let digest = image.sha256
         let own = f.broker.handleImageFetch(token: f.sourceToken, digest: digest)
         try imageExpect(own.status == 200 && own.body == png, "the staging pane could not fetch its image: \(own.status)")
         try imageExpect(f.broker.handleImageFetch(token: f.targetToken, digest: digest).status == 403, "a pane never sent the image fetched it")
         try imageExpect(f.broker.handleImageFetch(token: f.sourceToken, digest: "../etc").status == 400, "a malformed digest was accepted")
-        // Sent to the reviewer (the rendered pack names it), the reviewer may fetch it; a bystander still may not.
-        let rendered = try ContextPackBuilder().render(review.pack)
-        let sent = f.broker.handle(token: f.sourceToken, target: "Reviewer", text: rendered)
-        try imageExpect(sent.status == 200, "the pack could not be sent: \(sent.body)")
+        // Naming the digest grants nothing: an agent relaying the rendered
+        // pack itself, or a returned file named by its digest, whose receipt
+        // then names it (Codex's review of MR !138, M1).
+        let relayed = f.broker.handle(token: f.sourceToken, target: "Reviewer", text: try ContextPackBuilder().render(review.pack))
+        try imageExpect(relayed.status == 200, "the pack could not be relayed: \(relayed.body)")
+        try imageExpect(f.broker.handleImageFetch(token: f.targetToken, digest: digest).status == 403,
+                        "a pane fetched an image an agent named in a message, which no person reviewed")
+        let delegated = f.broker.handleDelegate(token: f.targetToken, target: "Driver", text: "Capture the window")
+        try imageExpect(delegated.status == 200, "could not delegate: \(delegated.body)")
+        let returned = f.broker.handleDelegationFileResult(token: f.sourceToken, handoffID: "current", path: f.path("\(digest).png"), content: .image(png))
+        let receipt = f.broker.handoffs().first { $0.resultContextReviewID != nil }?.resultText ?? ""
+        try imageExpect(returned.status == 200 && receipt.contains(digest), "the digest-named file was not returned, or its receipt lacks the name: \(returned.status) \(receipt)")
+        try imageExpect(f.broker.handleImageFetch(token: f.targetToken, digest: digest).status == 403,
+                        "the lead fetched a returned image before the person sent it")
+        // The person sends the draft to the reviewer: now the reviewer may
+        // fetch it and a bystander still may not. Nobody answers the Ask, which
+        // times out after three seconds; the person's send stands.
+        let current = f.broker.contextReviews().first { $0.id == review.id }!
+        _ = f.broker.completeContextDraft(AgentContextReviewApproval(reviewID: current.id, expectedUpdatedAt: current.updatedAt,
+                                                                     targetPaneID: "target", pack: current.pack))
+        let sent = f.broker.contextReviews().first { $0.id == review.id }!
+        try imageExpect(sent.state == .completed && sent.requestedTargetPaneID == "target", "the person's send did not complete: \(sent.state)")
         let fetched = f.broker.handleImageFetch(token: f.targetToken, digest: digest)
-        try imageExpect(fetched.status == 200 && fetched.body == png, "the pane sent the image could not fetch it: \(fetched.status)")
+        try imageExpect(fetched.status == 200 && fetched.body == png, "the pane the person sent the image to could not fetch it: \(fetched.status)")
         try imageExpect(f.broker.handleImageFetch(token: f.otherToken, digest: digest).status == 403, "a bystander fetched the image")
-        // Deleting the review deletes Parley's copy.
-        let discard = f.broker.discardContextDraft(AgentContextDraftDiscard(reviewID: review.id, expectedUpdatedAt: review.updatedAt))
-        try imageExpect(discard.status == 200, "could not discard the draft")
-        let discarded = f.broker.contextReviews().first { $0.id == review.id }!
-        let deleted = f.broker.deleteContextReviews(AgentContextDeletion(reviews: [AgentContextDraftDiscard(reviewID: discarded.id, expectedUpdatedAt: discarded.updatedAt)]))
-        try imageExpect(deleted.status == 200, "could not delete the review: \(deleted.text)")
-        try imageExpect(f.broker.handleImageFetch(token: f.targetToken, digest: digest).status == 404, "an image outlived its review")
+        // Deleting every review that holds it deletes Parley's copy at once.
+        let held = f.broker.contextReviews().filter { ($0.pack.parts + [$0.returnedPart].compactMap { $0 }).contains { $0.image?.sha256 == digest } }
+        let deleted = f.broker.deleteContextReviews(AgentContextDeletion(reviews: held.map {
+            AgentContextDraftDiscard(reviewID: $0.id, expectedUpdatedAt: $0.updatedAt)
+        }))
+        try imageExpect(deleted.status == 200, "could not delete the reviews: \(deleted.text)")
+        try imageExpect(f.broker.handleImageFetch(token: f.targetToken, digest: digest).status == 404
+                        && !FileManager.default.fileExists(atPath: f.images.url(for: image).path),
+                        "an image outlived its reviews, on disk or to a fetch")
+    }),
+    ("image evidence: a copy goes once no review holds it or is being saved with it, and a full store makes room first", {
+        // Saving a review can prune an older one, and the collection that
+        // follows runs before the new review joins the broker's map. The copy
+        // it holds is pinned from before it is written until then (Codex's
+        // review of MR !138, M5), not protected by its age.
+        let f = try ImageBrokerFixture()
+        for index in 0..<100 {
+            let drafted = f.broker.handleContextDraft(token: f.sourceToken, name: "N\(index)", path: f.path("n.md"), content: .text("note \(index)\n"))
+            let review = try f.review(from: drafted)
+            let discarded = f.broker.discardContextDraft(AgentContextDraftDiscard(reviewID: review.id, expectedUpdatedAt: review.updatedAt))
+            try imageExpect(discarded.status == 200, "could not discard filler review \(index): \(discarded.text)")
+        }
+        let png = imageEvidenceFixture(width: 7, height: 7)
+        let drafted = f.broker.handleContextDraft(token: f.sourceToken, name: "Shot", path: f.path("shot.png"), content: .image(png))
+        try imageExpect(drafted.status == 201 && f.broker.contextReviews().count == 100, "the image draft was not saved over a pruned review: \(drafted.status)")
+        let image = try f.review(from: drafted).pack.parts[0].image!
+        try imageExpect(FileManager.default.fileExists(atPath: f.images.url(for: image).path)
+                        && f.broker.handleImageFetch(token: f.sourceToken, digest: image.sha256).status == 200,
+                        "the collection that pruning ran removed the copy its own review was being saved with")
+        // A copy no review holds, such as one left by a crash, makes way for a
+        // new one when the store is full, whether staging holds the broker
+        // lock (done --file) or not (context draft).
+        let orphan = imageEvidenceFixture(width: 30, height: 30)
+        let incoming = imageEvidenceFixture(width: 31, height: 31)
+        let cap = max(orphan.count, incoming.count) + 10
+        for useDelegation in [false, true] {
+            let full = try ImageBrokerFixture(maximumImageBytes: cap)
+            let left = try full.images.store(orphan)
+            let staged: Int
+            if useDelegation {
+                _ = full.broker.handleDelegate(token: full.targetToken, target: "Driver", text: "Capture the window")
+                staged = full.broker.handleDelegationFileResult(token: full.sourceToken, handoffID: "current", path: full.path("r.png"), content: .image(incoming)).status
+            } else {
+                staged = full.broker.handleContextDraft(token: full.sourceToken, name: "New", path: full.path("new.png"), content: .image(incoming)).status
+            }
+            try imageExpect((staged == 200 || staged == 201) && !FileManager.default.fileExists(atPath: full.images.url(for: left).path),
+                            "a full store did not make room from a copy no review holds (done --file: \(useDelegation)): \(staged)")
+        }
     }),
     ("image evidence: an image goes through the shim and transport and back with parley image", { try checkImageEvidenceThroughTheShim() }),
 ]
@@ -276,7 +331,7 @@ func checkImageEvidenceThroughTheShim() throws {
     try imageExpect(fetched.status == 0 && (try Data(contentsOf: out)) == png, "the fetched image differs: \(fetched.stderrText)")
     let refused = f.directory.appendingPathComponent("refused.png")
     let other = try parley(f.otherToken, ["image", digest, "--to", refused.path])
-    try imageExpect(other.status != 0 && other.stderrText.contains("neither staged") && !FileManager.default.fileExists(atPath: refused.path),
+    try imageExpect(other.status != 0 && other.stderrText.contains("did not stage that image") && !FileManager.default.fileExists(atPath: refused.path),
                     "a pane never sent the image fetched it, or a refusal left a file: \(other.status) \(other.stderrText)")
     // A refusal leaves a file already at the destination as it was, and no
     // partial reply beside it.
@@ -286,6 +341,24 @@ func checkImageEvidenceThroughTheShim() throws {
     let leftovers = try FileManager.default.contentsOfDirectory(atPath: f.directory.path).filter { $0.contains(".parley-") }
     try imageExpect(kept.status != 0 && (try Data(contentsOf: existing)) == Data("keep me".utf8) && leftovers.isEmpty,
                     "a refused fetch changed the file already there or left a partial reply: \(kept.status) \(leftovers)")
+    // A reply that cannot be written out in full is a failure, never a saved
+    // image: a file-size limit stops the copy of this one partway, and the
+    // copy over the destination would then fit (Codex's review of MR !138,
+    // M2).
+    let noisy = imageEvidenceFixture(width: 64, height: 64, noise: true)
+    let noisyFile = f.directory.appendingPathComponent("noisy.png")
+    try noisy.write(to: noisyFile)
+    let noisyDraft = try parley(f.sourceToken, ["context", "draft", "--name", "Noise", "--file", noisyFile.path])
+    let noisySummary = try JSONDecoder().decode(AgentContextReviewSummary.self, from: Data(noisyDraft.stdoutText.utf8))
+    let noisyDigest = try imageExpectValue(f.broker.contextReviews().first { $0.id == noisySummary.id }?.pack.parts.first?.image?.sha256,
+                                           "the noisy draft holds no image")
+    let limited = try runner.run(executable: URL(fileURLWithPath: "/bin/sh"),
+                                 arguments: ["-c", "ulimit -f 4; exec /bin/sh \"$0\" \"$@\"", shim, "image", noisyDigest, "--to", existing.path],
+                                 environment: ProcessInfo.processInfo.environment.merging(["PARLEY_RELAY_TOKEN": f.sourceToken]) { _, supplied in supplied },
+                                 input: nil)
+    let limitedLeftovers = try FileManager.default.contentsOfDirectory(atPath: f.directory.path).filter { $0.contains(".parley-") }
+    try imageExpect(noisy.count > 8_192 && limited.status != 0 && (try Data(contentsOf: existing)) == Data("keep me".utf8) && limitedLeftovers.isEmpty,
+                    "a reply cut short was saved as the image: \(noisy.count) bytes, \(limited.status) \(limited.stderrText) \(limitedLeftovers)")
     let malformed = try parley(f.sourceToken, ["image", "abc", "--to", out.path])
     try imageExpect(malformed.status == 2, "a malformed digest reached the broker: \(malformed.status)")
     // A file over either bound names both, for an image and for text alike.

@@ -286,8 +286,9 @@ silently promoted to person-selected evidence.
 A staged file or returned result may also be a PNG or JPEG image of at most
 10 MB, such as a screenshot a Codex pane took with its own computer use.
 Parley checks the bytes, keeps its own copy and shows a preview in the
-review. A pane that was sent a handoff naming the image writes it to a file
-with `parley image <sha256> --to <file>`.
+review. A pane you send the image to writes it to a file with
+`parley image <sha256> --to <file>`; naming the image in a message grants
+nothing.
 
 `relay` submits immediately because that is the capability the person selected.
 `paste` is the explicit review-before-send route. Multiline content is passed

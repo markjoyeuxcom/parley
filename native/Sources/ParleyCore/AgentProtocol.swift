@@ -59,8 +59,9 @@ public enum AgentProtocol {
     - A pack or result that holds an image names it with
       `parley image <sha256> --to <file>`. Run that to write the image into a
       file you choose, then open the file with your own image tool, and say so
-      if you cannot. Only a pane that staged the image or was sent a handoff
-      naming it may fetch it.
+      if you cannot. Only the pane that staged the image, or a pane the person
+      sent a pack holding it, may fetch it; naming it in a message grants
+      nothing.
     - To ask with a staged draft, run
       `parley ask <target> --context <draft-id> "<question>"` and wait. Parley
       shows the complete editable pack to the person and submits nothing until

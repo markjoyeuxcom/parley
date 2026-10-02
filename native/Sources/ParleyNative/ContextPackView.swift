@@ -615,24 +615,35 @@ private struct ContextCommandCaptureView: View {
 struct ContextImagePreview: View {
     let image: ContextPackImage
     let store: ContextImageStore
-    @State private var loaded: (digest: String, picture: NSImage?)?
+    @State private var loaded: (digest: String, outcome: Outcome)?
+
+    /// Kept but not drawable is not missing: the inspector does not decode
+    /// pixels, so an image ImageIO cannot draw is still Parley's copy and an
+    /// agent can still fetch it (Codex's review of MR !138, L2).
+    private enum Outcome: Sendable {
+        case shown(CGImage)
+        case notDrawable
+        case missing
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if let loaded, loaded.digest == image.sha256 {
-                if let picture = loaded.picture {
-                    Image(nsImage: picture)
-                        .resizable()
-                        .interpolation(.medium)
-                        .aspectRatio(contentMode: .fit)
-                        .frame(maxWidth: .infinity, maxHeight: 360)
-                        .border(Color.secondary.opacity(0.25))
-                        .accessibilityLabel("Image, \(image.width) by \(image.height) pixels")
-                } else {
-                    Text("Parley no longer keeps this image, or its copy no longer matches its digest.")
-                        .foregroundStyle(.orange)
-                }
-            } else {
+            switch loaded?.digest == image.sha256 ? loaded?.outcome : nil {
+            case let .shown(picture):
+                Image(nsImage: NSImage(cgImage: picture, size: .zero))
+                    .resizable()
+                    .interpolation(.medium)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: 360)
+                    .border(Color.secondary.opacity(0.25))
+                    .accessibilityLabel("Image, \(image.width) by \(image.height) pixels")
+            case .notDrawable:
+                Text("Parley keeps this image, but cannot draw a preview of it. A pane it is sent to can still fetch it.")
+                    .foregroundStyle(.orange)
+            case .missing:
+                Text("Parley no longer keeps this image, or its copy no longer matches its digest.")
+                    .foregroundStyle(.orange)
+            case nil:
                 ProgressView().controlSize(.small)
             }
             Text("\(image.format.label) · \(image.width) × \(image.height) pixels · \(image.byteCount.formatted()) bytes")
@@ -643,12 +654,12 @@ struct ContextImagePreview: View {
         .foregroundStyle(.secondary)
         .task(id: image.sha256) {
             let image = image, store = store
-            let thumbnail = await Task.detached(priority: .userInitiated) { () -> CGImage? in
-                guard let data = try? store.data(for: image) else { return nil }
-                return ContextImageInspector.thumbnail(data, maximumPixelSize: 1_600)
+            let outcome = await Task.detached(priority: .userInitiated) { () -> Outcome in
+                guard let data = try? store.data(for: image) else { return .missing }
+                return ContextImageInspector.thumbnail(data, maximumPixelSize: 1_600).map(Outcome.shown) ?? .notDrawable
             }.value
             guard !Task.isCancelled else { return }
-            loaded = (image.sha256, thumbnail.map { NSImage(cgImage: $0, size: .zero) })
+            loaded = (image.sha256, outcome)
         }
     }
 }

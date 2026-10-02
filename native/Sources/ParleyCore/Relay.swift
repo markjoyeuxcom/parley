@@ -512,8 +512,14 @@ public final class RelayBroker: @unchecked Sendable {
     private let historyRetentionStore: CollaborationHistoryRetentionStore?
     private let contextReviewStore: AgentContextReviewStore?
     private let contextImageStore: ContextImageStore?
-    /// A copy this young may belong to a review still being saved.
-    private static let imageCollectionAge: TimeInterval = 600
+    /// Digests being staged: pinned before their copy is written and released
+    /// once the review holding them is in `contextReviewRecords` or staging
+    /// failed, so a collection never takes a copy whose review is still being
+    /// saved (Codex's review of MR !138, M5; a ten-minute age did this before
+    /// and failed across a long sleep). Taken after the broker lock, never
+    /// before it.
+    private let imagePinLock = NSLock()
+    private var pinnedImageDigests: [String: Int] = [:]
     private var contextPersistenceErrors: [String: String] = [:]
     public var contextPersistenceError: String? {
         consultationCondition.lock()
@@ -540,12 +546,27 @@ public final class RelayBroker: @unchecked Sendable {
         (review.pack.parts + [review.returnedPart].compactMap { $0 }).compactMap { $0.image?.sha256 }
     }
 
-    /// Parley's copy of an image goes when no saved review holds it. Best
+    /// Parley's copy of an image goes once no saved review holds it and no
+    /// staging pins it. The pin lock is held across the listing too, so a
+    /// digest pinned after the snapshot is stored only after this ends. Best
     /// effort: a copy left behind is collected the next time.
     private func collectUnreferencedImagesLocked() {
         guard let contextImageStore else { return }
-        let kept = Set(contextReviewRecords.values.flatMap(imageDigests))
-        _ = contextImageStore.removeAll(except: kept, minimumAge: Self.imageCollectionAge)
+        let referenced = Set(contextReviewRecords.values.flatMap(imageDigests))
+        imagePinLock.withLock {
+            _ = contextImageStore.removeAll(except: referenced.union(pinnedImageDigests.keys))
+        }
+    }
+
+    private func pinImage(_ digest: String) {
+        imagePinLock.withLock { pinnedImageDigests[digest, default: 0] += 1 }
+    }
+
+    private func unpinImage(_ digest: String) {
+        imagePinLock.withLock {
+            let count = (pinnedImageDigests[digest] ?? 1) - 1
+            pinnedImageDigests[digest] = count > 0 ? count : nil
+        }
     }
 
     /// Terminal reality must remain visible even when saving it fails. Retain
@@ -705,7 +726,8 @@ public final class RelayBroker: @unchecked Sendable {
             let sender = try authenticatedSender(token: token)
             let name = suppliedName.trimmingCharacters(in: .whitespacesAndNewlines)
             guard name.count <= 80 else { throw BrokerFailure(status: 400, message: "context name is too long") }
-            let staged = try agentFileDraftPart(sender: sender, suppliedPath: suppliedPath, content: content)
+            let staged = try agentFileDraftPart(sender: sender, suppliedPath: suppliedPath, content: content, holdingBrokerLock: false)
+            defer { staged.pinned.map(unpinImage) }
             let pack = ContextPack(
                 name: name.isEmpty ? "\(sender.displayName) context" : name,
                 parts: [staged.part],
@@ -747,7 +769,14 @@ public final class RelayBroker: @unchecked Sendable {
     ) -> RelayTextResponse {
         do {
             let sender = try authenticatedSender(token: token)
-            let staged = try agentFileDraftPart(sender: sender, suppliedPath: suppliedPath, content: content)
+            // Checked before staging, so an add to a draft that is not this
+            // pane's leaves no copy behind; checked again once staged.
+            consultationCondition.lock()
+            let editable = contextReviewRecords[draftID].map { $0.sourcePaneID == sender.id && $0.state == .draft } ?? false
+            consultationCondition.unlock()
+            guard editable else { throw BrokerFailure(status: 404, message: "no editable context draft named \(draftID)") }
+            let staged = try agentFileDraftPart(sender: sender, suppliedPath: suppliedPath, content: content, holdingBrokerLock: false)
+            defer { staged.pinned.map(unpinImage) }
             consultationCondition.lock()
             guard var review = contextReviewRecords[draftID],
                   review.sourcePaneID == sender.id,
@@ -776,9 +805,12 @@ public final class RelayBroker: @unchecked Sendable {
     }
 
     /// `parley image <digest> --to <file>`. A pane may fetch an image it
-    /// staged, or one named in a handoff it was sent (or a result it was
-    /// returned): approving delivery is what grants access, so a returned
-    /// image stays unreachable to the lead until the person sends it.
+    /// staged, or one in a pack the person approved sending to it. Naming the
+    /// digest in a message grants nothing: until 2 October 2026 any handoff
+    /// whose text or result held the digest did, so a returned file named by
+    /// its digest reached the lead through Parley's own receipt before the
+    /// person had seen it, and a digest learned that way could be passed on
+    /// (Codex's review of MR !138, M1).
     public func handleImageFetch(token: String, digest: String) -> RelayDataResponse {
         func message(_ status: Int, _ text: String) -> RelayDataResponse { RelayDataResponse(status: status, body: Data(text.utf8)) }
         guard ContextPackImage.isDigest(digest) else {
@@ -793,12 +825,18 @@ public final class RelayBroker: @unchecked Sendable {
         let holding = contextReviewRecords.values.filter { imageDigests(of: $0).contains(digest) }
         let image = holding.lazy.flatMap { ($0.pack.parts + [$0.returnedPart].compactMap { $0 }).compactMap(\.image) }.first { $0.sha256 == digest }
         let staged = holding.contains { $0.sourcePaneID == sender.id }
-        let sent = handoffRecords.values.contains {
-            ($0.targetPaneID == sender.id && $0.text.contains(digest)) || ($0.sourcePaneID == sender.id && ($0.resultText?.contains(digest) ?? false))
+        // The person sent this pane a pack holding it: approval records the
+        // target, and only a review approved or delivered counts.
+        let delivered = holding.contains { review in
+            review.requestedTargetPaneID == sender.id
+                && (review.state == .approved || review.state == .completed)
+                && review.pack.parts.contains { $0.image?.sha256 == digest }
         }
         consultationCondition.unlock()
         guard let image else { return message(404, "Parley no longer keeps image \(digest)") }
-        guard staged || sent else { return message(403, "this pane neither staged that image nor was sent it") }
+        guard staged || delivered else {
+            return message(403, "this pane did not stage that image, and the person has not sent it a pack holding it")
+        }
         do { return RelayDataResponse(status: 200, body: try contextImageStore.data(for: image)) }
         catch let error as ContextImageError { return message(error == .missing ? 404 : 409, error.localizedDescription) }
         catch { return message(409, error.localizedDescription) }
@@ -1600,12 +1638,16 @@ public final class RelayBroker: @unchecked Sendable {
         return candidate.path
     }
 
+    /// An image's digest comes back pinned: the caller releases it with
+    /// `unpinImage` once the review holding it is in `contextReviewRecords`,
+    /// or staging failed.
     private func agentFileDraftPart(
         sender: WorkbenchPane,
         suppliedPath: String,
         content: AgentStagedContent,
-        referenceID: String? = nil
-    ) throws -> (path: String, part: ContextPackPart) {
+        referenceID: String? = nil,
+        holdingBrokerLock: Bool
+    ) throws -> (path: String, part: ContextPackPart, pinned: String?) {
         let path = try normalizedAgentContextPath(suppliedPath, cwd: sender.launchWorkingDirectory)
         let text: String
         switch content {
@@ -1615,12 +1657,32 @@ public final class RelayBroker: @unchecked Sendable {
             guard let contextImageStore else {
                 throw BrokerFailure(status: 503, message: "image storage is unavailable")
             }
+            func failure(_ error: ContextImageError) -> BrokerFailure {
+                switch error {
+                case .tooLarge: BrokerFailure(status: 413, message: error.localizedDescription)
+                case .storeFull: BrokerFailure(status: 507, message: error.localizedDescription)
+                default: BrokerFailure(status: 400, message: error.localizedDescription)
+                }
+            }
+            let inspected: ContextPackImage
+            do { inspected = try ContextImageInspector.inspect(data) }
+            catch let error as ContextImageError { throw failure(error) }
+            pinImage(inspected.sha256)
             let image: ContextPackImage
-            do { image = try contextImageStore.store(data) }
-            catch let error as ContextImageError {
-                if case .tooLarge = error { throw BrokerFailure(status: 413, message: error.localizedDescription) }
-                if case .storeFull = error { throw BrokerFailure(status: 507, message: error.localizedDescription) }
-                throw BrokerFailure(status: 400, message: error.localizedDescription)
+            do {
+                do { image = try contextImageStore.store(data) }
+                catch ContextImageError.storeFull {
+                    // Copies no review holds, such as one a crash or a refused
+                    // add left, make way before the person is asked to.
+                    if !holdingBrokerLock { consultationCondition.lock() }
+                    collectUnreferencedImagesLocked()
+                    if !holdingBrokerLock { consultationCondition.unlock() }
+                    image = try contextImageStore.store(data)
+                }
+            } catch {
+                unpinImage(inspected.sha256)
+                if let error = error as? ContextImageError { throw failure(error) }
+                throw error
             }
             let lineage = referenceID.map { " · returned from delegation \($0)" } ?? ""
             return (path, ContextPackPart.agentImage(
@@ -1628,7 +1690,7 @@ public final class RelayBroker: @unchecked Sendable {
                 label: URL(fileURLWithPath: path).lastPathComponent,
                 detail: "\(path) · provided by \(sender.displayName)\(lineage); bytes checked by Parley as a \(image.format.label) image, path not read by Parley",
                 referenceID: referenceID
-            ))
+            ), image.sha256)
         }
         let normalized = ContextPackText.normalize(text)
         guard !normalized.isEmpty else {
@@ -1648,7 +1710,8 @@ public final class RelayBroker: @unchecked Sendable {
                     referenceID: referenceID
                 ),
                 capturedText: normalized
-            )
+            ),
+            nil
         )
     }
 
@@ -2160,18 +2223,20 @@ public final class RelayBroker: @unchecked Sendable {
                 return RelayTextResponse(status: 409, text: "this delegation belongs to an earlier run of the target pane")
             }
 
-            let staged: (path: String, part: ContextPackPart)
+            let staged: (path: String, part: ContextPackPart, pinned: String?)
             do {
                 staged = try agentFileDraftPart(
                     sender: sender,
                     suppliedPath: path,
                     content: content,
-                    referenceID: handoffID
+                    referenceID: handoffID,
+                    holdingBrokerLock: true
                 )
             } catch {
                 consultationCondition.unlock()
                 throw error
             }
+            defer { staged.pinned.map(unpinImage) }
             let review = AgentContextReview(
                 sourcePaneID: sender.id,
                 sourcePaneName: sender.displayName,
@@ -2197,8 +2262,10 @@ public final class RelayBroker: @unchecked Sendable {
             contextReviewRecords[review.id] = review
 
             let filename = URL(fileURLWithPath: staged.path).lastPathComponent
-            // The receipt names no digest: the returning pane's lead can fetch
-            // the image only once the person sends it.
+            // The receipt never adds Parley's digest, though the agent's own
+            // filename may hold one; naming a digest grants nothing
+            // (`handleImageFetch`), so the lead reaches the image only once
+            // the person sends it.
             let measure = staged.part.image.map { "\($0.format.label) image, \($0.width) × \($0.height) pixels, \($0.byteCount) bytes" }
                 ?? "\(staged.part.capturedByteCount) UTF-8 bytes"
             let receipt = "\(sender.displayName) returned \(filename) (\(measure)) for explicit review. Context review ID: \(review.id)."
@@ -5603,7 +5670,14 @@ public enum RelayShim {
             cleanup
             return 75
           fi
-          /bin/cat "$response_dir/body"
+          # A reply not written out in full is a failure, whatever the
+          # broker answered: `post` runs where `set -e` does not reach, and a
+          # cut-short image used to be saved as if whole.
+          if ! /bin/cat "$response_dir/body"; then
+            cleanup
+            echo "Parley answered, but its reply could not be written out in full" >&2
+            return 74
+          fi
           cleanup
           case "$status" in
             2??) return 0 ;;
@@ -5722,31 +5796,46 @@ public enum RelayShim {
         ;;
       image)
         # The reply is the image's bytes, written where this agent asked,
-        # with this agent's own permissions. It lands beside that file first
-        # and replaces it only once Parley has served the image, so a refusal
-        # leaves a file already there as it was; the refusal's text goes to
-        # stderr. A container has cat but no mv, so the copy is a cat.
+        # with this agent's own permissions. It lands in a scratch folder
+        # beside that file first and replaces it only once Parley has served
+        # the whole image, so a refusal leaves a file already there as it
+        # was; the refusal's text goes to stderr. A container has cat but no
+        # mv, so the copy is a cat.
         if [ -d "$image_to" ]; then
           echo "--to names a folder; name the file to write: $image_to" >&2
           exit 2
         fi
-        image_partial="$image_to.parley-$$"
-        trap '/bin/rm -f -- "$image_partial"; exit 130' INT
-        trap '/bin/rm -f -- "$image_partial"; exit 143' TERM
-        trap '/bin/rm -f -- "$image_partial"; exit 129' HUP
+        # The scratch folder is made with mkdir, which fails on anything
+        # already there, a link included, so nothing but this run's own
+        # folder is ever written or removed.
+        image_scratch="$image_to.parley-$(/usr/bin/uuidgen | /usr/bin/tr '[:upper:]' '[:lower:]')"
+        if ! /bin/mkdir -m 700 -- "$image_scratch"; then
+          echo "could not make a scratch folder beside $image_to, so nothing was fetched" >&2
+          exit 1
+        fi
+        image_partial="$image_scratch/image"
+        image_cleanup() { /bin/rm -f -- "$image_partial"; /bin/rmdir -- "$image_scratch" 2>/dev/null || true; }
+        trap 'image_cleanup; exit 130' INT
+        trap 'image_cleanup; exit 143' TERM
+        trap 'image_cleanup; exit 129' HUP
         image_status=0
         printf '' | post > "$image_partial" || image_status=$?
         if [ "$image_status" -ne 0 ]; then
-          [ -f "$image_partial" ] && { /bin/cat -- "$image_partial" >&2; echo >&2; }
-          /bin/rm -f -- "$image_partial"
+          # Only a refusal (22) carries the broker's text; anything else
+          # may hold part of the image.
+          if [ "$image_status" -eq 22 ] && [ -f "$image_partial" ]; then
+            /bin/cat -- "$image_partial" >&2
+            echo >&2
+          fi
+          image_cleanup
           exit "$image_status"
         fi
         if ! /bin/cat -- "$image_partial" > "$image_to"; then
-          /bin/rm -f -- "$image_partial"
+          image_cleanup
           echo "could not write $image_to" >&2
           exit 1
         fi
-        /bin/rm -f -- "$image_partial"
+        image_cleanup
         echo "Saved the image to $image_to" >&2
         ;;
     esac
