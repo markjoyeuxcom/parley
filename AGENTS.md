@@ -348,10 +348,16 @@ the whole endpoint when its pane restarts); the script's top-level `EXIT`
 trap never did anything and is gone. A pane can remove its own endpoint's
 folders (a container writes there): with `processing` gone every claim used
 to fail while the heartbeat went on, so the pane's commands waited forever and
-Reconnect, which checks only the UI socket, could not help. A failed claim
-now prepares `processing` again and a reply prepares `outbox` (Codex's review
-of 3 October 2026); anything else in their place still refuses until the pane
-restarts. Each heartbeat's content is the
+Reconnect, which checks only the UI socket, could not help (Codex's review of
+3 October 2026). A missing `processing` or `outbox` is made again with
+`mkdir`, which never follows a link; nothing is `chmod`ed by path. A claim
+opens `inbox` and `processing` without following a link, checks each is a
+directory this user owns, and moves the request with `renameat` between
+those descriptors, so a link there, stable or swapped in, is refused; it used
+to be a path move that followed one (Codex's review of MR !144). A reply is
+made only under an `outbox` that `lstat` shows is such a directory. Its files
+are still written by path after that check, so a container that swaps its
+own outbox in that moment can misdirect its own reply. Each heartbeat's content is the
 transport instance, new on every `start()`: a restart (core recovery)
 discards the requests shims are still waiting on, and a request leaves the
 filesystem while it is processed, so a shim that sees a different instance
