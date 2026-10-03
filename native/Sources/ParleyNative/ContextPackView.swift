@@ -755,9 +755,12 @@ struct ContextImageFullSizeSheet: View {
         }
     }
 
+    /// From the budget's own decision, not the decoded size: a rotated JPEG
+    /// decodes with its sides swapped and is not smaller (Codex's review of
+    /// MR !146).
     private var isScaledDown: Bool {
-        guard let picture else { return false }
-        return picture.width < image.width || picture.height < image.height
+        picture != nil
+            && ContextImageDecodeBudget.decodedSide(width: image.width, height: image.height) < max(image.width, image.height)
     }
 
     private var sizeLabel: String {

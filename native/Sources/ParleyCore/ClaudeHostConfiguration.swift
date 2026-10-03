@@ -104,9 +104,10 @@ public enum ClaudeHostConfiguration {
 }
 
 /// One regular file read through one descriptor: its type and size are
-/// checked on that descriptor, a FIFO or device is never opened or waited
-/// on, and nothing past the bound is kept, even if the file grows during the
-/// read. A symlink is followed, as an open dialog or a vendor follows it; the
+/// checked on that descriptor, a FIFO or device is never waited on (the type
+/// is checked before the open, and the open is non-blocking for one swapped
+/// in meanwhile, which the descriptor check then refuses), and nothing past
+/// the bound is returned, even if the file grows during the read. A symlink is followed, as an open dialog or a vendor follows it; the
 /// bytes come from the file the descriptor names, not a later lookup. Used
 /// for vendor settings, the person's chosen files and a pack's re-read files
 /// (Codex's review of MR !146: an image was read with `Data(contentsOf:)`

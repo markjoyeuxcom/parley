@@ -26,10 +26,13 @@ func checkCompareAnswersShareTheWindow() throws {
     try reviewExpect(!AskManyComparisonLayout.questionNeedsExpanding("One line."), "a short question offered to expand")
     try reviewExpect(AskManyComparisonLayout.questionNeedsExpanding("a\nb\nc\nd\ne"), "a five-line question was not offered in full")
     try reviewExpect(AskManyComparisonLayout.questionNeedsExpanding(String(repeating: "x", count: 400)), "a long one-line question was not offered in full")
-    // Four 80-character lines wrap past four rendered lines (Codex's review of MR !146).
+    // Wide lines and full-width glyphs wrap past four rendered lines sooner
+    // than any count knows (Codex's reviews of MR !146): anything but one
+    // short line is offered in full.
     let fourWide = Array(repeating: String(repeating: "W", count: 80), count: 4).joined(separator: "\n")
     try reviewExpect(AskManyComparisonLayout.questionNeedsExpanding(fourWide), "four wide lines were not offered in full")
-    try reviewExpect(!AskManyComparisonLayout.questionNeedsExpanding("a\nb\nc\nd"), "four short lines offered to expand")
+    try reviewExpect(AskManyComparisonLayout.questionNeedsExpanding(String(repeating: "\u{FF37}", count: 41)), "full-width text was not offered in full")
+    try reviewExpect(AskManyComparisonLayout.questionNeedsExpanding("a\tb"), "a tab was not offered in full")
     let view = try nativeText("ParleyNative", "AskManyComparisonView.swift")
     try reviewExpect(!view.contains(".frame(width: 330, height: 390)"), "Compare's fixed card size is back")
     try reviewExpect(view.contains("AskManyComparisonLayout.columns("), "Compare no longer sizes its columns to the window")
@@ -44,11 +47,18 @@ func checkAgyAllowEntryIsReadNotRecited() throws {
     try reviewExpect(entry == #"command("$PARLEY_COMMAND")"#, "the recommended entry changed: \(entry)")
     try reviewExpect(AgyHostConfiguration.parleyAllowFact(settingsData: nil) == .unknown, "unreadable settings read as known")
     try reviewExpect(fact("not json") == .unknown, "invalid settings read as known")
-    try reviewExpect(fact(#"{"trustedWorkspaces": []}"#) == .absent, "settings with no permissions did not read as absent")
-    try reviewExpect(fact(#"{"permissions": {"allow": ["command(git)"]}}"#) == .absent, "an unrelated allow rule counted")
+    try reviewExpect(fact(#"{"trustedWorkspaces": []}"#) == .absent(otherRules: false), "settings with no permissions did not read as absent")
+    // An allow rule Parley does not evaluate might cover it: unknown, not "asks".
+    let unevaluatedAllow = fact(#"{"permissions": {"allow": ["command(regex:.*parley.*)"]}}"#)
+    try reviewExpect(unevaluatedAllow == .absent(otherRules: true), "an unevaluated allow rule was ignored: \(unevaluatedAllow)")
+    try reviewExpect(AgyHostConfiguration.describe(unevaluatedAllow).contains("unknown"), "an unevaluated allow rule still reads as asking")
+    // An unevaluated deny rule may decide before a recognised ask.
+    let askUnderRegexDeny = fact(#"{"permissions": {"ask": ["command(*)"], "deny": ["command(regex:.*)"]}}"#)
+    try reviewExpect(askUnderRegexDeny == .asked(otherRules: true), "an unevaluated deny rule above ask was ignored: \(askUnderRegexDeny)")
+    try reviewExpect(!AgyHostConfiguration.describe(askUnderRegexDeny).contains("asks each time"), "ask under an unevaluated deny claims Agy's outcome")
     try reviewExpect(fact(#"{"permissions": {"allow": ["command(\"$PARLEY_COMMAND\")"]}}"#) == .allowed(byWildcard: false, otherRules: false), "the entry was not found")
     try reviewExpect(fact(#"{"permissions": {"allow": ["command(*)"]}}"#) == .allowed(byWildcard: true, otherRules: false), "command(*) was not recognised")
-    try reviewExpect(fact(#"{"permissions": {"allow": ["command(\"$PARLEY_COMMAND\")"], "ask": ["command(*)"]}}"#) == .asked,
+    try reviewExpect(fact(#"{"permissions": {"allow": ["command(\"$PARLEY_COMMAND\")"], "ask": ["command(*)"]}}"#) == .asked(otherRules: false),
                      "an ask rule did not override allow (Agy: Deny > Ask > Allow)")
     try reviewExpect(fact(#"{"permissions": {"allow": ["command(*)"], "deny": ["command(\"$PARLEY_COMMAND\")"]}}"#) == .denied,
                      "a deny rule did not override allow")
@@ -64,7 +74,7 @@ func checkAgyAllowEntryIsReadNotRecited() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("parley-agy-\(UUID().uuidString.prefix(8))", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
-    try reviewExpect(AgyHostConfiguration.parleyAllowFact(settingsFile: directory.appendingPathComponent("none.json")) == .absent,
+    try reviewExpect(AgyHostConfiguration.parleyAllowFact(settingsFile: directory.appendingPathComponent("none.json")) == .absent(otherRules: false),
                      "a missing settings file did not read as absent")
     // A FIFO must be refused, never waited on.
     let fifo = directory.appendingPathComponent("settings.json")
@@ -143,10 +153,13 @@ func checkChosenFilesAreReadBoundedAndNeverWaitedOn() throws {
     } catch let failure as BoundedRegularFile.Failure {
         try reviewExpect(failure == .notRegularFile, "a FIFO failed as \(failure)")
     }
+    var builderPart: ContextPackPart?
     do {
-        _ = try ContextPackBuilder().file(at: fifo)
-        try reviewExpect(false, "a FIFO became a pack part")
-    } catch {}
+        builderPart = try ContextPackBuilder().file(at: fifo)
+    } catch ContextPackError.invalidFile {
+        // Refused, as it must be.
+    }
+    try reviewExpect(builderPart == nil, "a FIFO became a pack part")
     try reviewExpect(Date().timeIntervalSince(started) < 2, "reading a FIFO waited")
     let large = directory.appendingPathComponent("large.png")
     try Data(count: 2_000).write(to: large)

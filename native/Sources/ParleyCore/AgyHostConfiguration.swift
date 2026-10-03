@@ -15,11 +15,11 @@ public enum AgyParleyAllowFact: Equatable, Sendable {
     /// applies first.
     case allowed(byWildcard: Bool, otherRules: Bool)
     /// `permissions.ask` names it or every command; ask wins over allow.
-    case asked
+    case asked(otherRules: Bool)
     /// `permissions.deny` names it or every command; Agy refuses to run it.
     case denied
     /// No settings file, or no entry for Parley's command in it.
-    case absent
+    case absent(otherRules: Bool)
     /// The file exists but could not be read as JSON settings.
     case unknown
 }
@@ -40,7 +40,7 @@ public enum AgyHostConfiguration {
     }
 
     public static func parleyAllowFact(settingsFile: URL = settingsFile) -> AgyParleyAllowFact {
-        guard FileManager.default.fileExists(atPath: settingsFile.path) else { return .absent }
+        guard FileManager.default.fileExists(atPath: settingsFile.path) else { return .absent(otherRules: false) }
         return parleyAllowFact(settingsData: ClaudeHostConfiguration.boundedRegularFile(
             settingsFile, maximumBytes: ClaudeHostConfiguration.maximumSettingsBytes
         ))
@@ -50,17 +50,21 @@ public enum AgyHostConfiguration {
     public static func parleyAllowFact(settingsData: Data?) -> AgyParleyAllowFact {
         guard let settingsData,
               let object = try? JSONSerialization.jsonObject(with: settingsData) as? [String: Any] else { return .unknown }
-        guard let permissions = object["permissions"] as? [String: Any] else { return .absent }
+        guard let permissions = object["permissions"] as? [String: Any] else { return .absent(otherRules: false) }
         func rules(_ key: String) -> [String] { (permissions[key] as? [Any])?.compactMap { $0 as? String } ?? [] }
         func names(_ list: [String]) -> Bool { list.contains { $0 == allowEntry || $0 == wildcardEntry } }
-        // Agy applies Deny > Ask > Allow.
+        func unevaluated(_ lists: [String]) -> Bool {
+            lists.flatMap(rules).contains { $0.hasPrefix("command(") && $0 != allowEntry && $0 != wildcardEntry }
+        }
+        // Agy applies Deny > Ask > Allow. A recognised deny settles it; below
+        // that, a rule Parley does not evaluate in a list Agy applies first
+        // may decide instead, so each result says when one is there.
         if names(rules("deny")) { return .denied }
-        if names(rules("ask")) { return .asked }
-        let otherRules = !(rules("deny") + rules("ask")).filter { $0.hasPrefix("command(") }.isEmpty
+        if names(rules("ask")) { return .asked(otherRules: unevaluated(["deny"])) }
         let allow = rules("allow")
-        if allow.contains(allowEntry) { return .allowed(byWildcard: false, otherRules: otherRules) }
-        if allow.contains(wildcardEntry) { return .allowed(byWildcard: true, otherRules: otherRules) }
-        return .absent
+        if allow.contains(allowEntry) { return .allowed(byWildcard: false, otherRules: unevaluated(["deny", "ask"])) }
+        if allow.contains(wildcardEntry) { return .allowed(byWildcard: true, otherRules: unevaluated(["deny", "ask"])) }
+        return .absent(otherRules: unevaluated(["deny", "ask", "allow"]))
     }
 
     /// One line for the launch review.
@@ -71,12 +75,16 @@ public enum AgyHostConfiguration {
                 ? "Agy's allow list holds command(*), which covers Parley's command."
                 : "Agy's allow list holds Parley's entry.")
                 + (otherRules ? " Its ask or deny lists also hold command rules, which Agy applies first and Parley does not evaluate." : "")
-        case .asked:
-            "Agy's ask list names Parley's command or every command, and Agy applies ask before allow, so it asks each time."
+        case let .asked(otherRules):
+            otherRules
+                ? "Agy's ask list names Parley's command or every command. Its deny list also holds command rules Parley does not evaluate, which Agy applies first."
+                : "Agy's ask list names Parley's command or every command, and Agy applies ask before allow, so it asks each time."
         case .denied:
             "Agy's deny list names Parley's command or every command, so Agy refuses to run it, and Parley's coordination commands fail in that pane."
-        case .absent:
-            "Agy's settings have no allow entry for Parley's command, so Agy asks each time an agent runs it."
+        case let .absent(otherRules):
+            otherRules
+                ? "Agy's settings have no entry for Parley's command, but hold other command rules Parley does not evaluate, so whether Agy asks is unknown."
+                : "Agy's settings have no allow entry for Parley's command, so Agy asks each time an agent runs it."
         case .unknown:
             "Parley could not read Agy's settings, so whether Agy will ask is unknown."
         }

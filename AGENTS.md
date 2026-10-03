@@ -2428,10 +2428,11 @@ alter an existing model context.
   `command("$PARLEY_COMMAND")`. The host launch review reads that file
   (`AgyHostConfiguration`, through `BoundedRegularFile`, so a FIFO is
   refused) and reports entries, not Agy's decision: the exact entry or
-  `command(*)` in deny (Agy refuses), in ask (Agy asks) or in allow, and
-  whether ask or deny hold other command rules, which Agy applies first and
-  Parley does not evaluate (Codex's review of MR !146). Unknown when it cannot
-  read the file. It offers Copy Allow Entry (3 October 2026). Parley never
+  `command(*)` in deny (Agy refuses), in ask or in allow, and whether a list
+  Agy applies first holds other command rules Parley does not evaluate; then
+  it claims no outcome, and with no recognised entry it reads unknown rather
+  than "asks" (Codex's review of MR !146 and its verification). Unknown too
+  when it cannot read the file. It offers Copy Allow Entry (3 October 2026). Parley never
   writes it; the recipe and its reasons stay in Help.
 - Copilot receives the canonical text as additional instructions through
   `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`. Applicable instructions are combined
