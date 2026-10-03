@@ -541,10 +541,11 @@ successful dictation test.
    Grant it in macOS Privacy & Security and retry. Test Speech Recognition
    denial too on the older backend. Use a dedicated test app identity or
    explicitly reset only its consent; do not reset system-wide permissions.
-2. **Hold and consent race.** Hold Dictate or Control-Shift-Space. Release
-   while preparation/consent is pending, then grant permission: no late
-   recording may begin. Start again, dictate a short sentence, release and
-   confirm the microphone indicator ends. Repeat with mouse drag/release,
+2. **Start, stop and consent race.** Click Dictate (or hold
+   Control-Shift-Space), then click it again (or release the keys) while
+   preparation/consent is pending, then grant permission: no late recording
+   may begin. Click Dictate, dictate a short sentence without holding
+   anything, click Stop and confirm the microphone indicator ends. Repeat with
    keyboard release, release of a modifier before Space, window close/app
    deactivation and the 60-second limit. Test device disconnection and consent
    revocation during recording: show an error, stop capture, retain any partial

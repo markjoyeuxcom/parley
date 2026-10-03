@@ -199,13 +199,13 @@ for the current application session, shows both vendors in the route, and still
 requires Command-Return or the visible Send Ask button before submission. It
 never captures scrollback or sends merely because the shortcut was pressed.
 
-**Voice input:** select a running agent pane and hold **Dictate** or
-Control–Shift–Space in the main window. Release to edit the transcript, then
-choose **Paste** (no Enter), **Send**, or **Handoff Draft → Ask/Delegate**.
-The draft shows its pane, vendor and workspace; changing the selected pane
-does not redirect it. A closed, moved, restarted or changed destination must
-be explicitly selected again. Keyboard or VoiceOver activation of Dictate
-toggles recording; Stop Recording and Discard are also available.
+**Voice input:** select a running agent pane and click **Dictate** to start,
+then click it again (it reads **Stop**), or hold Control–Shift–Space in the
+main window and release it. Edit the transcript, then choose **Paste** (no
+Enter), **Send**, or **Handoff Draft → Ask/Delegate**. The draft shows its
+pane, vendor and workspace; changing the selected pane does not redirect it.
+A closed, moved, restarted or changed destination must be explicitly
+selected again. Stop Recording and Discard are also available.
 
 **Settings → Voice** offers English (United Kingdom) and English (United
 States). Recognition is local only. On supported macOS 26 Macs, explicitly

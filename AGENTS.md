@@ -838,10 +838,13 @@ microphone and speech consent descriptions, and the signed executable/bundle
 must carry com.apple.security.device.audio-input. The unbundled developer
 executable refuses recording before attempting consent.
 
-Hold Dictate or Control-Shift-Space in the main window; mouse release, shortcut
-release, loss of window/app focus, cancellation or 60 seconds ends recording.
-Control-Option-Space is reserved for VoiceOver. Keyboard/accessible button
-activation toggles recording. Preparation cancellation invalidates the session
+Dictate is click to start, click to stop (`DictateButton`): a mouse click,
+keyboard or VoiceOver activation toggles recording, and while recording the
+button reads Stop. Until 3 October 2026 the mouse held it, recording only while
+the button stayed pressed (Mark's request). Control-Shift-Space is still held
+in the main window. A second click, shortcut release, loss of window/app
+focus, cancellation or 60 seconds ends recording. Control-Option-Space is
+reserved for VoiceOver. Preparation cancellation invalidates the session
 before any late consent callback can start capture. Buffers are bounded and
 copied before the audio tap returns; engine work and conversion run off the
 main actor. Finalization has a five-second UI deadline and preserves a partial

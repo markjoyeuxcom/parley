@@ -7,11 +7,10 @@ struct VoiceToolbarControl: View {
     @ObservedObject var model: AppModel
     @ObservedObject var voice: VoiceController
     var body: some View {
-        HoldToTalkButton(enabled: (voice.canRecord && model.voiceDestinationPane != nil) || voice.session.captureActive,
-            recording: voice.session.captureActive, begin: model.beginVoiceRecording, end: voice.stopRecording,
-            toggle: model.toggleVoiceRecording)
+        DictateButton(enabled: (voice.canRecord && model.voiceDestinationPane != nil) || voice.session.captureActive,
+            recording: voice.session.captureActive, toggle: model.toggleVoiceRecording)
             .frame(width: 88, height: 24)
-            .help("Hold to dictate to an agent pane · ⌃⇧Space")
+            .help(voice.session.captureActive ? "Stop recording and review the transcript" : "Click to dictate to an agent pane, click again to stop · or hold ⌃⇧Space")
     }
 }
 
@@ -91,7 +90,7 @@ struct VoiceDraftView: View {
     private var phaseLabel: String {
         switch voice.session.phase {
         case .preparing: "Preparing microphone…"
-        case .recording: "Recording · release to review"
+        case .recording: "Recording · click Stop to review"
         case .finishing: "Finishing transcript…"
         case .delivering: "Delivering reviewed text…"
         case .deliveryUncertain: "Check delivery in the pane"
@@ -130,7 +129,7 @@ struct VoiceSettingsView: View {
                     Text("English (United Kingdom)").tag("en-GB")
                     Text("English (United States)").tag("en-US")
                 }.disabled(voice.session.captureActive || voice.installingModel)
-                Text("Hold Dictate or Control–Shift–Space in the main window. Release to edit; Paste and Send are explicit actions. Keyboard and VoiceOver button activation toggles recording.")
+                Text("Click Dictate to start and again to stop, or hold Control–Shift–Space in the main window and release it. Then edit; Paste and Send are explicit actions.")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("Each recording is limited to 60 seconds. Use Dictate again to add to the reviewed draft. No raw audio files are saved; drafts are held in memory until sent, discarded or Parley quits.")
                     .font(.caption).foregroundStyle(.secondary)

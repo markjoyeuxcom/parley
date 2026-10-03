@@ -61,11 +61,10 @@ private func voicePane(_ id: String = "voice-pane") -> WorkbenchPane {
         var activations = 0
         let window = NSWindow(contentRect: NSRect(x: 100, y: 100, width: 160, height: 80), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false; defer { MainActor.assumeIsolated { window.close() } }
-        let host = NSHostingView(rootView: HoldToTalkButton(enabled: true, recording: false,
-            begin: {}, end: {}, toggle: { activations += 1 }))
+        let host = NSHostingView(rootView: DictateButton(enabled: true, recording: false, toggle: { activations += 1 }))
         window.contentView = host; window.orderFront(nil)
-        @MainActor func button(_ view: NSView) -> VoiceHoldButton? {
-            if let result = view as? VoiceHoldButton { return result }
+        @MainActor func button(_ view: NSView) -> DictateToggleButton? {
+            if let result = view as? DictateToggleButton { return result }
             return view.subviews.lazy.compactMap(button).first
         }
         let deadline = ProcessInfo.processInfo.systemUptime + 2
@@ -74,8 +73,20 @@ private func voicePane(_ id: String = "voice-pane") -> WorkbenchPane {
         }
         guard let control = button(host) else { throw VoiceError.unavailable("Voice button never mounted") }
         try voiceExpect(control.accessibilityPerformPress() && control.accessibilityPerformPress() && activations == 2, "accessible start and stop were not delivered")
+        // A mouse click toggles too: Dictate is click to start, click to stop,
+        // not held (Mark's request, 3 October 2026). The click goes through
+        // AppKit's own tracking, released by a queued mouse-up.
+        let centre = control.convert(NSPoint(x: control.bounds.midX, y: control.bounds.midY), to: nil)
+        func mouse(_ type: NSEvent.EventType) -> NSEvent? {
+            NSEvent.mouseEvent(with: type, location: centre, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                               windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+        }
+        guard let down = mouse(.leftMouseDown), let up = mouse(.leftMouseUp) else { throw VoiceError.unavailable("could not make mouse events") }
+        NSApp.postEvent(up, atStart: false)
+        control.mouseDown(with: down)
+        try voiceExpect(activations == 3, "a mouse click did not toggle recording once (\(activations - 2) toggles)")
         control.isEnabled = false
-        try voiceExpect(!control.accessibilityPerformPress() && activations == 2, "disabled voice button activated")
+        try voiceExpect(!control.accessibilityPerformPress() && activations == 3, "disabled voice button activated")
     }),
     ("voice cancellation ignores late permission and recognition callbacks", {
         var session = VoiceSession()
