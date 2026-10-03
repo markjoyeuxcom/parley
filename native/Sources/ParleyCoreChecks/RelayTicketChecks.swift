@@ -330,7 +330,43 @@ let relayTicketChecks: [(String, () throws -> Void)] = [
     ("the ticket socket issues to a kernel-attributed descendant and redeems once", checkTicketSocketIssuesAndRedeems),
     ("tickets travel through the real shim and are required, optional or unavailable by policy", checkTicketsThroughTheShim),
     ("a ticket socket that does not answer in time is asked again, and a refusal is not", checkTicketRetriedAfterNoAnswer),
+    ("a blocking request's text leaves the filesystem once the transport has read it", checkStagedBodyLeavesBeforeAWait),
 ]
+
+/// The shim keeps its staged body until a request could still be refused for
+/// want of a ticket, so it can send it again. Once the transport has read the
+/// request, nothing can refuse it that way, and the body goes: request text
+/// must not sit on disk through a long Ask (Codex's review of MR !141).
+func checkStagedBodyLeavesBeforeAWait() throws {
+    let directory = try ticketDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("tokens.json"))
+    let askerToken = try credentials.token(for: "pane-claude")
+    let panes = [ticketPane(id: "pane-claude", kind: .claude), ticketPane(id: "pane-codex", kind: .codex)]
+    let broker = RelayBroker(credentials: credentials, panes: { panes }, paste: { _, _ in }, submit: { _, _ in }, consultationTimeout: 6)
+    let transportDirectory = directory.appendingPathComponent("t", isDirectory: true)
+    let shim = try RelayShim.install(in: directory, transportDirectory: transportDirectory).appendingPathComponent("parley").path
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory)
+    try transport.start()
+    defer { transport.stop() }
+    let inbox = transportDirectory.appendingPathComponent(askerToken).appendingPathComponent("inbox")
+    let finished = DispatchSemaphore(value: 0)
+    DispatchQueue.global().async {
+        var environment = ProcessInfo.processInfo.environment
+        environment["PARLEY_RELAY_TOKEN"] = askerToken
+        _ = try? ProcessCommandRunner(timeout: 20).run(executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [shim, "ask", "pane-codex", "a question nobody answers"], environment: environment, input: nil)
+        finished.signal()
+    }
+    // The Ask is accepted and waits for an answer it never gets.
+    let deadline = ProcessInfo.processInfo.systemUptime + 10
+    while broker.handoffs().isEmpty && ProcessInfo.processInfo.systemUptime < deadline { Thread.sleep(forTimeInterval: 0.05) }
+    Thread.sleep(forTimeInterval: 1.5)
+    let staged = (try? FileManager.default.contentsOfDirectory(atPath: inbox.path))?.filter { $0.hasPrefix(".body-") } ?? []
+    _ = finished.wait(timeout: .now() + 15)
+    try ticketExpect(!broker.handoffs().isEmpty && staged.isEmpty,
+        "the request text stayed on disk while the Ask waited: \(staged), \(broker.handoffs().count) handoffs")
+}
 
 /// While the Mac slept and dark-woke every fifteen seconds (2 October 2026,
 /// 19:45 onwards), a `parley wait` in a Claude pane got no answer from the

@@ -616,17 +616,22 @@ a different source identity.
   for explicit human review. It never forwards the file automatically.
 - `parley status` returns the caller's initiated work as JSON. Each
   delegation carries `targetTurnStarted` (protocol 34, 3 October 2026):
-  - true once the target's authenticated turn-start hook arrived after the
-    handoff was created (`RelayHandoff.targetTurnStartedAt`, stamped by
+  - true once the target's authenticated turn-start hook arrived after Parley
+    began handing the text over (`RelayHandoff.targetTurnStartedAt`, stamped by
     `handleVendorSignal`);
-  - false while it has not, for a target that reported any hook this run;
-  - nil otherwise: Agy has no hooks, and Copilot's run only when its plugin
-    does.
+  - false while it has not, for active work to a target that reported any
+    hook this run;
+  - nil otherwise: finished or historical work without a stamp, Agy (no hooks)
+    and Copilot (hooks only when its plugin runs).
 
-  Status Center shows "Delivered, no turn started" (`HandoffStartProjection`,
-  advisory) for an Ask or Delegate a minute or more after delivery. The
-  stamp's bound is creation, not delivery, because the hook can arrive before
-  the delivered transition is recorded. On 2 October 2026 a delegation was
+  Status Center shows "No turn-start report since delivery"
+  (`HandoffStartProjection`, advisory) for an Ask or Delegate a minute or more
+  after delivery. The stamp's bound is `submissionStartedAt`, set just before
+  the writer runs:
+  - not delivery, because the hook can arrive before the delivered transition
+    is recorded;
+  - not creation, because a turn that began during a delegation's Git read
+    would hide a lost paste (Codex's review of MR !141). On 2 October 2026 a delegation was
   delivered (paste and Enter succeeded), and Codex's own session record shows
   it never arrived. The cause lies inside the vendor's terminal UI, which
   Parley must not read; the protocol tells the sending agent to ask the
@@ -1088,7 +1093,12 @@ ticket. A pane that must present a ticket and sent none is refused with 428
 (`RelayFileTransportError.ticketRequired`) before anything is read. When the
 socket gave no answer within `nc -w 3`, the shim keeps its staged body and
 sends the same request again under a new id with a fresh ticket, a second
-apart, up to ten times. A socket that answered "refused" is final at once. On
+apart, up to ten times. A socket that answered "refused" is final at once.
+The staged body goes once the transport has read the request: the request
+is in neither the inbox nor `processing`, and there is no reply yet. A
+refusal is written before the request leaves `processing`, so it is never
+mistaken for that. Request text therefore still leaves the filesystem before
+a long Ask or wait (`checkStagedBodyLeavesBeforeAWait`). On
 2 October 2026 a `parley wait` in a Claude pane died with that refusal while
 the Mac slept and dark-woke every fifteen seconds; the check
 `checkTicketRetriedAfterNoAnswer` delays the first ticket past `nc`'s timeout.

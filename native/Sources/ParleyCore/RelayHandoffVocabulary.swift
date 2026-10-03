@@ -184,8 +184,11 @@ public struct RelayHandoff: Identifiable, Codable, Equatable, Sendable {
     /// the native Ask route; its target may fetch them, and Parley keeps
     /// them while this record is retained.
     public var deliveredImages: [ContextPackImage]? = nil
+    /// When Parley began handing this Ask's or Delegate's text to the
+    /// target's writer: only a turn-start hook from then on is its stamp.
+    public var submissionStartedAt: Date? = nil
     /// When the target's authenticated turn-start hook first arrived after
-    /// this Ask or Delegate was created (`HandoffStartProjection`).
+    /// the text began to be handed over (`HandoffStartProjection`).
     public var targetTurnStartedAt: Date? = nil
     public var readAt: Date? = nil
     public var state: RelayHandoffState

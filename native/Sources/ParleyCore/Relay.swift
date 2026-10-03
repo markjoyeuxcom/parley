@@ -2059,6 +2059,10 @@ public final class RelayBroker: @unchecked Sendable {
             // A reader may have fetched the record during the capture.
             noteChangeLocked()
         }
+        // From here the text is handed to the target: a turn that began
+        // during the Git read above is not this delegation's (Codex's review
+        // of MR !141).
+        handoffRecords[handoff.id]?.submissionStartedAt = clock()
         consultationCondition.unlock()
 
         do {
@@ -2471,16 +2475,19 @@ public final class RelayBroker: @unchecked Sendable {
         }
     }
 
-    /// The target's turn began: every active Ask or Delegate to it created
-    /// before that moment and not yet stamped records it. Creation, not
-    /// delivery, is the bound, because the vendor's hook can arrive before
-    /// Parley records the delivered transition.
+    /// The target's turn began: every active Ask or Delegate to it whose text
+    /// Parley had begun handing over by that moment, and not yet stamped,
+    /// records it. The bound is the start of submission, not delivery,
+    /// because the vendor's hook can arrive before Parley records the
+    /// delivered transition; nor creation, because a turn during a
+    /// delegation's Git read is not that delegation's (Codex's review of MR
+    /// !141, M1).
     private func stampTargetTurnStartedLocked(paneID: String, at occurredAt: Date) {
         let active: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
         for (id, var handoff) in handoffRecords
         where handoff.targetPaneID == paneID && (handoff.kind == .ask || handoff.kind == .delegate)
             && active.contains(handoff.state) && handoff.targetTurnStartedAt == nil
-            && (handoff.transitions.first?.occurredAt ?? .distantFuture) <= occurredAt {
+            && (handoff.submissionStartedAt ?? .distantFuture) <= occurredAt {
             handoff.targetTurnStartedAt = occurredAt
             handoffRecords[id] = handoff
             handoffJournal?.record(handoff)
@@ -3004,6 +3011,7 @@ public final class RelayBroker: @unchecked Sendable {
             origin: recordedOrigin
         )
         if !deliveredImages.isEmpty { handoff.deliveredImages = deliveredImages }
+        handoff.submissionStartedAt = clock()
         let consultation = RelayConsultation(
             id: handoff.id,
             sourcePaneID: sender.id,
@@ -5741,6 +5749,16 @@ public enum RelayShim {
       stale_readings=0
       last_beat="$(heartbeat_time)"
       while :; do
+        # Once the transport has read the request (it is in neither the inbox
+        # nor processing, and has no reply yet), no ticket refusal can follow,
+        # so the staged body goes: request text does not sit on disk through
+        # a long Ask or wait. A refusal is written before the request leaves
+        # processing, so it is never mistaken for this.
+        if [ -n "$staged_body" ] && [ ! -e "$request_dir" ] && [ ! -e "$endpoint/processing/$request_id" ] \
+          && [ ! -e "$response_dir/ready" ]; then
+          /bin/rm -f "$staged_body"
+          staged_body=""
+        fi
         if [ "$ask_id_reported" -eq 0 ] \
           && { [ "$command" = "ask" ] || [ "$command" = "context-ask" ] || [ "$command" = "request-run" ] || [ "$command" = "team-request" ] || [ "$command" = "team-add" ]; } \
           && protected_directory "$response_dir" \

@@ -137,7 +137,7 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
         try helpAuditContains(runs.searchableText, ["Integrate…", "Proposed by you", "always waits for your approval", "creates no session trust", "no agent pane can recover"])
         // A delivered handoff whose target never started a turn (2 October 2026).
         try helpAuditContains(try helpAuditTopic("coordination").searchableText,
-            ["Delivered, no turn started", "never from terminal text", "targetTurnStarted"])
+            ["No turn-start report since delivery", "never from terminal text", "targetTurnStarted"])
         let context = try helpAuditTopic("context-packs")
         let commands = context.sections.flatMap(\.commands).map(\.command)
         try helpAuditRequire(commands.contains("parley context list"), "Missing context list example")

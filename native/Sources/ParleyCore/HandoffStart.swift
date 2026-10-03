@@ -1,7 +1,7 @@
 import Foundation
 
-/// Whether the target of an Ask or Delegate has started a turn since it was
-/// delivered, from the vendor's authenticated turn-start hook
+/// Whether the target of an Ask or Delegate has reported starting a turn
+/// since its text was handed over, from the vendor's authenticated hook
 /// (`RelayHandoff.targetTurnStartedAt`), never from terminal text. On 2
 /// October 2026 a delegation was delivered (paste and Enter succeeded) and
 /// the Codex pane never received it; nothing in Parley said so. Unknown for a
@@ -13,12 +13,15 @@ public enum HandoffStartProjection {
     public static let window: TimeInterval = 60
     private static let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
 
-    /// True once the target's turn-start hook arrived after this handoff was
-    /// created; false while it has not, for a target that reports hooks; nil
-    /// when that cannot be known.
+    /// True once the target reported a turn start after the text began to be
+    /// handed over; false while it has not, for active work to a target that
+    /// reports hooks this run; nil otherwise. Finished or historical work
+    /// without a stamp is nil, never false: today's hooks say nothing about a
+    /// run they did not observe (Codex's review of MR !141, M2).
     public static func turnStarted(_ handoff: RelayHandoff, target: WorkbenchPane?) -> Bool? {
         if handoff.targetTurnStartedAt != nil { return true }
-        guard handoff.kind == .ask || handoff.kind == .delegate,
+        guard activeStates.contains(handoff.state),
+              handoff.kind == .ask || handoff.kind == .delegate,
               handoff.transitions.contains(where: { $0.state == .delivered }),
               let target, target.id == handoff.targetPaneID,
               HandoffComposerSignalProjection.advisory(for: target) != nil else { return nil }
@@ -32,8 +35,8 @@ public enum HandoffStartProjection {
         return now.timeIntervalSince(deliveredAt) >= window
     }
 
-    public static let title = "Delivered, no turn started"
+    public static let title = "No turn-start report since delivery"
     public static func detail(targetName: String) -> String {
-        "\(targetName) has not reported starting a turn since this was delivered. It may still be finishing an earlier turn, or the text may not have arrived. Check that pane before sending it again."
+        "\(targetName) has not reported starting a turn since this was delivered. It may still be finishing an earlier turn, its report may have failed, or the text may not have arrived. Check that pane before sending it again."
     }
 }

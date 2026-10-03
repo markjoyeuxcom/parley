@@ -36,6 +36,13 @@ private final class StartClock: @unchecked Sendable {
     func advance(_ seconds: TimeInterval) { lock.withLock { current = current.addingTimeInterval(seconds) } }
 }
 
+private final class BrokerBox: @unchecked Sendable {
+    var broker: RelayBroker?
+    private let lock = NSLock()
+    private var reads = 0
+    func firstRead() -> Bool { lock.withLock { reads += 1; return reads == 1 } }
+}
+
 @MainActor let handoffStartChecks: [(String, () throws -> Void)] = [
     ("a target's turn-start hook is stamped on the handoffs delivered to it, and survives a reload", {
         let directory = URL(fileURLWithPath: "/private/tmp/parley-handoff-start-\(UUID().uuidString.prefix(8))")
@@ -68,6 +75,41 @@ private final class StartClock: @unchecked Sendable {
         try startExpect(broker.handoffs().first { $0.id == id }?.targetTurnStartedAt == stamped, "a later turn moved the first stamp")
         let reloaded = try RelayHandoffJournal(file: journalFile).handoffs().first { $0.id == id }
         try startExpect(reloaded?.targetTurnStartedAt == stamped, "the stamp did not reach the handoff journal")
+    }),
+    ("a turn that started before the text was handed to the target does not count, and finished work is unknown", {
+        // Codex's review of MR !141 (M1): a turn-start from the target while a
+        // delegation's Git facts are read, before its text is pasted, would
+        // stamp it as started and hide exactly the lost paste the flag is for.
+        let directory = URL(fileURLWithPath: "/private/tmp/parley-handoff-start-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let credentials = try RelayCredentials(file: directory.appendingPathComponent("tokens.json"))
+        let lead = startPane("%lead", .claude)
+        let worker = startPane("%worker", .codex, hookSignal: .turnEnded)
+        let leadToken = try credentials.token(for: lead.id)
+        let workerToken = try credentials.token(for: worker.id)
+        let clock = StartClock()
+        let brokerBox = BrokerBox()
+        let broker = RelayBroker(credentials: credentials, panes: { [lead, worker] }, paste: { _, _ in }, submit: { _, _ in },
+                                 gitFacts: { _ in
+                                     // The delegation-time read only; Git is read again at return.
+                                     guard brokerBox.firstRead() else { return nil }
+                                     clock.advance(1)
+                                     _ = brokerBox.broker?.handleVendorSignal(token: workerToken, signal: "turn-started")
+                                     clock.advance(1)
+                                     return nil
+                                 }, clock: { clock.now })
+        brokerBox.broker = broker
+        let delegated = broker.handleDelegate(token: leadToken, target: "%worker", text: "Review the change")
+        try startExpect(delegated.status == 200, "could not delegate: \(delegated.body)")
+        let handoff = try broker.handoffs().first { $0.kind == .delegate } ?? { throw startFailure("no delegation") }()
+        try startExpect(handoff.targetTurnStartedAt == nil && HandoffStartProjection.turnStarted(handoff, target: worker) == false,
+                        "a turn that started before the text was handed over was stamped as this delegation's")
+        // Finished work without a stamp is unknown, never "no turn" (M2).
+        _ = broker.handleDelegationResult(token: workerToken, handoffID: "current", text: "done", succeeded: true)
+        let finished = try broker.handoffs().first { $0.kind == .delegate } ?? { throw startFailure("no delegation") }()
+        try startExpect(finished.state == .completed && HandoffStartProjection.turnStarted(finished, target: worker) == nil,
+                        "a finished handoff without a stamp reported that no turn started: state \(finished.state), stamp \(String(describing: finished.targetTurnStartedAt)), \(String(describing: HandoffStartProjection.turnStarted(finished, target: worker)))")
     }),
     ("a handoff with no turn a minute after delivery is flagged, only where the target reports turns", {
         let directory = URL(fileURLWithPath: "/private/tmp/parley-handoff-start-\(UUID().uuidString.prefix(8))")

@@ -410,13 +410,16 @@ public final class RelayFileTransport: @unchecked Sendable {
         do {
             request = try readRequest(from: directory, expectedToken: endpoint.lastPathComponent)
         } catch {
-            try? fileManager.removeItem(at: directory)
+            // The refusal is written before the request leaves processing: a
+            // shim that sees its request gone with no reply knows it was read
+            // and drops its staged body, so a 428 must already be there.
             try? writeResponse(
                 FileResponse(status: { if case .ticketRequired = error as? RelayFileTransportError { return 428 } else { return 400 } }(),
                              body: error.localizedDescription),
                 requestID: requestID,
                 endpoint: endpoint
             )
+            try? fileManager.removeItem(at: directory)
             return
         }
 
