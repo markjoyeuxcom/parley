@@ -80,26 +80,7 @@ private func stopBody(_ reader: SwiftSourceReader, _ signature: String) throws -
         let outside = String(stop[..<work.startIndex]) + String(stop[work.endIndex...])
         try stopExpect(!outside.contains("stopPaneProcess"), "stop(_:) stops a process outside the container-stop closure")
     }),
-    ("the container-stop helper holds its panes against a move and requires their reviewed workspace", {
-        let model = try stopSource("ParleyNative", "AppModel.swift")
-        let helper = try stopBody(model, "private func performAfterContainerStops(")
-        guard let hold = helper.range(of: "try controller.holdAgainstMove(held)"),
-              let task = stopBlocks(model, "Task {", in: helper).first else {
-            throw stopFailure("performAfterContainerStops must hold its panes before its Task")
-        }
-        try stopExpect(hold.upperBound <= task.startIndex, "the panes are held only after the cleanup began")
-        let first = task.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }.first { !$0.isEmpty }
-        try stopExpect(first == "defer { controller.releaseMoveHold(held) }", "the hold is not released on every path of the Task")
-        try stopExpect(task.contains("controller.prepareContainerStop(pane, requiringWorkspace: true)"),
-                       "the helper must require each pane's reviewed workspace before Docker")
-        try stopExpect(!helper.contains("requiringWorkspace: false"), "the helper let a moved pane's container be stopped")
-        // What it holds is every reviewed pane, released once, and the
-        // operation it exists for still runs at the end of the Task.
-        try stopExpect(helper.contains("let held = reviewed.map(\\.id)"), "the helper does not hold every reviewed pane")
-        try stopExpect(helper.components(separatedBy: "releaseMoveHold").count == 2, "the helper releases its hold more than once")
-        guard let validation = task.range(of: "guard reviewed.allSatisfy("),
-              let run = task.range(of: "try operation()") else { throw stopFailure("the helper no longer runs its operation after validating the panes") }
-        try stopExpect(validation.upperBound <= run.lowerBound && task.components(separatedBy: "operation()").count == 2,
-                       "the helper must run its operation exactly once, after validating the panes")
-    }),
+    // The helper's hold, per-container stop, change check, single run and
+    // release are now ContainerStopSequence, checked by behaviour in
+    // ContainerStopSequenceChecks (Prax 8544b63f).
 ]
