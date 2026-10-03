@@ -330,6 +330,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var betaFeedbackExporting = false
     @Published private(set) var diagnosticsExporting = false
     @Published private(set) var repeatingAskHandoffID: String?
+    @Published private(set) var repeatingDelegateHandoffID: String?
     @Published private(set) var sendingReviewedBusyDraftID: String?
     @Published private(set) var submittingHandoffComposer = false
     /// One pending pane choice presented as a native sheet instead of a
@@ -4724,6 +4725,72 @@ final class AppModel: ObservableObject {
                 }
             } catch {
                 self.repeatingAskHandoffID = nil
+                self.refreshStatusCenterQuietly()
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
+    func canDelegateAgain(_ handoff: RelayHandoff) -> Bool {
+        repeatingDelegateHandoffID == nil
+            && relayClient != nil
+            && CollaborationHistoryRepeat.delegateRoute(for: handoff, panes: panes) != nil
+    }
+
+    /// Delegate This Again (3 October 2026, after a delivered delegation that
+    /// never arrived could only be cancelled). The person reviews the whole
+    /// task and is told the target may already have it: cancelling tracking
+    /// never stops the target's CLI. A busy target is refused, never queued.
+    func delegateAgain(_ handoff: RelayHandoff) {
+        guard repeatingDelegateHandoffID == nil,
+              let route = CollaborationHistoryRepeat.delegateRoute(for: handoff, panes: panes),
+              let source = panes.first(where: { $0.id == route.sourcePaneID }),
+              let target = panes.first(where: { $0.id == route.targetPaneID }),
+              let relayClient else {
+            NSAlert(error: RelayUIError.message(
+                "This delegation cannot be sent again on its original route. It must have ended, and both original panes must still be running, relay-ready and on Parley's current protocol."
+            )).runModal()
+            return
+        }
+        guard !handoffReviewTargetIsBusy(target) else {
+            NSAlert(error: RelayUIError.message(
+                "\(target.displayName) already has tracked work. Finish or cancel that work first; a repeated delegation is never queued."
+            )).runModal()
+            return
+        }
+        guard let edited = editRelay(
+            title: "Delegate to \(target.displayName) Again",
+            message: "Look at \(target.displayName)'s pane first. Cancelling tracking did not stop its CLI: if it received this task, it may still be working on it, and sending it again gives it the same task twice. This creates a new tracked delegation from \(source.displayName); the original record stays as it is.",
+            text: handoff.text,
+            action: "Delegate Again",
+            insertVisible: { [weak self] in
+                guard let self, let controller = self.controller else { return "" }
+                return try controller.capturePane(source.id)
+            }
+        ) else { return }
+
+        let freshIdentity = UUID().uuidString.lowercased()
+        let repeatedID = handoff.id
+        repeatingDelegateHandoffID = repeatedID
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await Task.detached(priority: .userInitiated) {
+                    try relayClient.delegateAgainFromUI(
+                        sourcePaneID: route.sourcePaneID,
+                        targetPaneID: route.targetPaneID,
+                        text: edited,
+                        idempotencyKey: freshIdentity,
+                        repeatsHandoffID: repeatedID
+                    )
+                }.value
+                self.repeatingDelegateHandoffID = nil
+                self.refreshStatusCenterQuietly()
+                guard response.status == 200 else {
+                    throw RelayUIError.message(response.text)
+                }
+            } catch {
+                self.repeatingDelegateHandoffID = nil
                 self.refreshStatusCenterQuietly()
                 NSAlert(error: error).runModal()
             }

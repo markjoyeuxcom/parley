@@ -642,7 +642,17 @@ a different source identity.
   delivered (paste and Enter succeeded), and Codex's own session record shows
   it never arrived. The cause lies inside the vendor's terminal UI, which
   Parley must not read; the protocol tells the sending agent to ask the
-  person, never to resend.
+  person, never to resend. The person resends: once they have looked and
+  used Cancel Tracking, Status Center offers **Delegate This Again…** (3
+  October 2026), as Ask This Again does for an Ask. It is native-only
+  (`/ui/delegate-again`, `handleDelegateAgainFromUI`), takes an editable
+  preview that warns the target may already have the task, refuses a busy
+  target rather than queueing, and creates a new delegation with a fresh
+  identity on the original's route. `handleDelegate` checks under its lock
+  that the original is an ended Delegate from the same source to the same
+  target. The new handoff records `repeatsHandoffID` (absent decodes as nil;
+  an older Parley ignores it), which is not review lineage and never reaches
+  `parley status`, so the protocol is unchanged.
 - `parley wait <id|current>` waits for one exact result.
 
 Relay requests never run on the shared dispatch pool (22 September 2026, H2

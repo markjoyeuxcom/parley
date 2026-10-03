@@ -1300,6 +1300,9 @@ struct StatusCenterView: View {
                     if handoff.inReplyToHandoffID != nil {
                         lineageSection(handoff)
                     }
+                    if handoff.repeatsHandoffID != nil || !repeats(of: handoff).isEmpty {
+                        repeatSection(handoff)
+                    }
                     if threadMembers(handoff).count > 1 {
                         threadSection(handoff)
                     }
@@ -1524,6 +1527,21 @@ struct StatusCenterView: View {
                             : "Available after this Ask ends while its original source and target panes remain relay-ready"
                     )
                 }
+                if handoff.kind == .delegate {
+                    Button(
+                        model.repeatingDelegateHandoffID == handoff.id
+                            ? "Delivering Repeated Delegation…"
+                            : "Delegate This Again…"
+                    ) {
+                        model.delegateAgain(handoff)
+                    }
+                    .disabled(!model.canDelegateAgain(handoff))
+                    .help(
+                        model.canDelegateAgain(handoff)
+                            ? "Open the recorded task in an editable preview and create a new tracked delegation on the same route"
+                            : "Available after this delegation ends (use Cancel Tracking if it never arrived) while its original source and target panes remain relay-ready"
+                    )
+                }
                 if handoff.canRetrySafely {
                     Button("Retry Delivery…") { model.retry(handoff) }
                 }
@@ -1680,6 +1698,47 @@ struct StatusCenterView: View {
     }
 
 
+    private func repeats(of handoff: RelayHandoff) -> [RelayHandoff] {
+        snapshot.handoffs.filter { $0.repeatsHandoffID == handoff.id }
+    }
+
+    /// Delegate This Again links the new delegation to the one it repeats.
+    /// It is not review lineage: the original need not have returned.
+    private func repeatSection(_ handoff: RelayHandoff) -> some View {
+        let original = handoff.repeatsHandoffID.flatMap { id in snapshot.handoffs.first { $0.id == id } }
+        return VStack(alignment: .leading, spacing: 7) {
+            Text("SENT AGAIN")
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
+            if let repeatedID = handoff.repeatsHandoffID {
+                HStack {
+                    statusChip("REPEAT", color: .accentColor)
+                    Text("Repeats \(String(repeatedID.prefix(12)))")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Open Original") {
+                        if let original { select(original) }
+                    }
+                    .disabled(original == nil)
+                }
+            }
+            ForEach(repeats(of: handoff)) { repeated in
+                HStack {
+                    Text("Sent again \(repeated.updatedAt.formatted(date: .abbreviated, time: .shortened)) · \(repeated.state.rawValue)")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Open Repeat") { select(repeated) }
+                }
+            }
+        }
+        .padding(9)
+        .background(Color.secondary.opacity(0.055))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+    }
+
     /// Advisory, from the target's authenticated turn-start hook: delivered a
     /// minute ago or more and no turn has begun (`HandoffStartProjection`).
     private func notStartedSection(_ handoff: RelayHandoff) -> some View {
@@ -1694,6 +1753,11 @@ struct StatusCenterView: View {
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if let recovery = HandoffStartProjection.recovery(kind: handoff.kind) {
+                Text(recovery)
+                    .font(.system(size: 10, weight: .medium))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(9)
         .frame(maxWidth: .infinity, alignment: .leading)

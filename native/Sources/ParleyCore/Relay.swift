@@ -1962,6 +1962,7 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         idempotencyKey suppliedIdempotencyKey: String? = nil,
         inReplyToHandoffID: String? = nil,
+        repeatsHandoffID: String? = nil,
         humanInitiated: Bool = false,
         preserveFormatting: Bool = false,
         reviewedVoice: VoiceHandoffRequest? = nil
@@ -1994,9 +1995,30 @@ public final class RelayBroker: @unchecked Sendable {
         }
 
         let scope = IdempotencyScope(senderPaneID: sender.id, key: idempotencyKey)
-        let signature = [RelayHandoffKind.delegate.rawValue, target.id, cleaned, inReplyToHandoffID ?? ""].joined(separator: "\u{1f}")
+        let signature = [RelayHandoffKind.delegate.rawValue, target.id, cleaned, inReplyToHandoffID ?? "", repeatsHandoffID ?? ""]
+            .joined(separator: "\u{1f}")
 
         consultationCondition.lock()
+        if let repeatedID = repeatsHandoffID {
+            // Only the person repeats a delegation, on its own route, once it
+            // has ended: an active one still owns its target.
+            guard humanInitiated, inReplyToHandoffID == nil else {
+                consultationCondition.unlock()
+                return failure(403, "only the native Delegate This Again route repeats a delegation")
+            }
+            guard let original = handoffRecords[repeatedID], original.kind == .delegate else {
+                consultationCondition.unlock()
+                return failure(404, "unknown delegation to repeat")
+            }
+            guard !original.state.isActive else {
+                consultationCondition.unlock()
+                return failure(409, "That delegation is still active. Cancel its tracking before sending it again.")
+            }
+            guard original.sourcePaneID == sender.id, original.targetPaneID == target.id else {
+                consultationCondition.unlock()
+                return failure(409, "Delegate This Again uses the original source and target panes")
+            }
+        }
         if let parentID = inReplyToHandoffID {
             guard let parent = handoffRecords[parentID] else {
                 consultationCondition.unlock()
@@ -2041,6 +2063,7 @@ public final class RelayBroker: @unchecked Sendable {
             target: target,
             inReplyToHandoffID: inReplyToHandoffID,
             relationship: inReplyToHandoffID == nil ? nil : .requestChanges,
+            repeatsHandoffID: repeatsHandoffID,
             text: cleaned,
             submitted: true,
             origin: humanInitiated ? .human : nil
@@ -3339,6 +3362,43 @@ public final class RelayBroker: @unchecked Sendable {
             text: text,
             idempotencyKey: idempotencyKey,
             inReplyToHandoffID: inReplyToHandoffID,
+            humanInitiated: true,
+            preserveFormatting: true
+        )
+    }
+
+    /// Delegate This Again: one new tracked delegation on an ended
+    /// delegation's own route, with a fresh identity. `handleDelegate` checks
+    /// the original under its lock. Native-control-only: a pane credential
+    /// cannot repeat work or choose what it repeats.
+    public func handleDelegateAgainFromUI(
+        sourcePaneID: String,
+        targetPaneID: String,
+        text: String,
+        idempotencyKey: String,
+        repeatsHandoffID: String
+    ) -> RelayResponse {
+        let livePanes: [WorkbenchPane]
+        do {
+            livePanes = try panes()
+        } catch {
+            return failure(409, error.localizedDescription)
+        }
+        guard let source = livePanes.first(where: { $0.id == sourcePaneID }), source.kind.isAgent else {
+            return failure(400, "unknown source agent pane")
+        }
+        let sourceToken: String
+        do {
+            sourceToken = try credentials.token(for: source.id)
+        } catch {
+            return failure(409, "could not resolve the source pane credential: \(error.localizedDescription)")
+        }
+        return handleDelegate(
+            token: sourceToken,
+            target: targetPaneID,
+            text: text,
+            idempotencyKey: idempotencyKey,
+            repeatsHandoffID: repeatsHandoffID,
             humanInitiated: true,
             preserveFormatting: true
         )
@@ -4856,6 +4916,7 @@ public final class RelayBroker: @unchecked Sendable {
         target: WorkbenchPane,
         inReplyToHandoffID: String? = nil,
         relationship: RelayHandoffRelationship? = nil,
+        repeatsHandoffID: String? = nil,
         text: String,
         submitted: Bool,
         origin: RelayTransitionOrigin? = nil
@@ -4880,6 +4941,7 @@ public final class RelayBroker: @unchecked Sendable {
             submitted: submitted,
             inReplyToHandoffID: inReplyToHandoffID,
             relationship: relationship,
+            repeatsHandoffID: repeatsHandoffID,
             resultText: nil,
             state: .created,
             updatedAt: now,
