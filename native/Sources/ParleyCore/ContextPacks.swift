@@ -303,6 +303,23 @@ public enum ContextImageError: Error, LocalizedError, Equatable {
 }
 
 /// Decides whether bytes are an image Parley stages, without decoding pixels.
+/// How large an image Parley decodes to show it at full size: at most
+/// `maximumDecodedPixels`, about 64 MB at four bytes a pixel. The inspector
+/// accepts up to 64 million pixels, a quarter of a gigabyte decoded, so the
+/// full-size sheet scales larger ones down and says so (Codex's review of
+/// MR !146).
+public enum ContextImageDecodeBudget {
+    public static let maximumDecodedPixels = 16_000_000
+
+    /// The longest side to decode so the whole stays within the budget.
+    public static func decodedSide(width: Int, height: Int) -> Int {
+        let pixels = Double(width) * Double(height)
+        let longest = Double(max(width, height))
+        guard pixels > Double(maximumDecodedPixels) else { return Int(longest) }
+        return max(1, Int((longest * (Double(maximumDecodedPixels) / pixels).squareRoot()).rounded(.down)))
+    }
+}
+
 public enum ContextImageInspector {
     public static let maximumBytes = 10_000_000
     public static let maximumDimension = 16_384
@@ -763,16 +780,18 @@ public final class ContextPackBuilder: @unchecked Sendable {
         guard fileManager.fileExists(atPath: selected.path) else {
             throw ContextPackError.invalidFile(selected.path)
         }
-        let values = try selected.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-        guard values.isRegularFile == true else { throw ContextPackError.invalidFile(selected.path) }
-        if let size = values.fileSize, size > maximumPartBytes {
+        // One descriptor, checked as a regular file and read up to the
+        // bound: the path used to be checked, then opened with a blocking
+        // FileHandle, so a FIFO swapped in between waited forever (Codex's
+        // review of MR !146, through the pack's re-read before sending).
+        let data: Data
+        do {
+            data = try BoundedRegularFile.read(selected, maximumBytes: maximumPartBytes)
+        } catch BoundedRegularFile.Failure.tooLarge {
             throw ContextPackError.partTooLarge
+        } catch {
+            throw ContextPackError.invalidFile(selected.path)
         }
-
-        let handle = try FileHandle(forReadingFrom: selected)
-        defer { try? handle.close() }
-        let data = try handle.read(upToCount: maximumPartBytes + 1) ?? Data()
-        guard data.count <= maximumPartBytes else { throw ContextPackError.partTooLarge }
         guard !data.contains(0), let content = String(data: data, encoding: .utf8) else {
             throw ContextPackError.notText
         }

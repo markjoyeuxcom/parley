@@ -189,9 +189,18 @@ public enum AskManyComparisonLayout {
         return shared >= minimumColumnWidth ? (shared, false) : (minimumColumnWidth, true)
     }
 
-    /// Whether the question is long enough to be cut at four lines, so the
-    /// view offers to show all of it.
+    /// Whether the question could be cut at four rendered lines, so the view
+    /// offers to show all of it. It errs towards offering: a logical line is
+    /// counted as wrapping every `charactersPerLine`, well below what the
+    /// narrowest window holds, because four 80-character lines of wide text
+    /// used to wrap past four lines with no way to read the rest (Codex's
+    /// review of MR !146).
+    public static let charactersPerLine = 60
+
     public static func questionNeedsExpanding(_ question: String) -> Bool {
-        question.split(separator: "\n", omittingEmptySubsequences: false).count > 4 || question.count > 360
+        let rendered = question.split(separator: "\n", omittingEmptySubsequences: false).reduce(0) { lines, line in
+            lines + max(1, (line.count + charactersPerLine - 1) / charactersPerLine)
+        }
+        return rendered > 4
     }
 }

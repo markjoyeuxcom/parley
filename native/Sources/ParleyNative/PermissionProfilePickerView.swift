@@ -607,7 +607,7 @@ struct PermissionProfilePickerView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(agyAllowFact.map(AgyHostConfiguration.describe) ?? "Reading Agy's settings…")
                 .font(.caption)
-                .foregroundStyle(agyAllowFact == .absent || agyAllowFact == .unknown ? Color.orange : Color.secondary)
+                .foregroundStyle(agyAllowFact.map(isAllowed) == true ? Color.secondary : Color.orange)
                 .fixedSize(horizontal: false, vertical: true)
             if let fact = agyAllowFact, !isAllowed(fact) {
                 HStack(spacing: 8) {

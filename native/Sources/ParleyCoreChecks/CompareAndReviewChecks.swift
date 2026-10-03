@@ -26,6 +26,10 @@ func checkCompareAnswersShareTheWindow() throws {
     try reviewExpect(!AskManyComparisonLayout.questionNeedsExpanding("One line."), "a short question offered to expand")
     try reviewExpect(AskManyComparisonLayout.questionNeedsExpanding("a\nb\nc\nd\ne"), "a five-line question was not offered in full")
     try reviewExpect(AskManyComparisonLayout.questionNeedsExpanding(String(repeating: "x", count: 400)), "a long one-line question was not offered in full")
+    // Four 80-character lines wrap past four rendered lines (Codex's review of MR !146).
+    let fourWide = Array(repeating: String(repeating: "W", count: 80), count: 4).joined(separator: "\n")
+    try reviewExpect(AskManyComparisonLayout.questionNeedsExpanding(fourWide), "four wide lines were not offered in full")
+    try reviewExpect(!AskManyComparisonLayout.questionNeedsExpanding("a\nb\nc\nd"), "four short lines offered to expand")
     let view = try nativeText("ParleyNative", "AskManyComparisonView.swift")
     try reviewExpect(!view.contains(".frame(width: 330, height: 390)"), "Compare's fixed card size is back")
     try reviewExpect(view.contains("AskManyComparisonLayout.columns("), "Compare no longer sizes its columns to the window")
@@ -42,12 +46,20 @@ func checkAgyAllowEntryIsReadNotRecited() throws {
     try reviewExpect(fact("not json") == .unknown, "invalid settings read as known")
     try reviewExpect(fact(#"{"trustedWorkspaces": []}"#) == .absent, "settings with no permissions did not read as absent")
     try reviewExpect(fact(#"{"permissions": {"allow": ["command(git)"]}}"#) == .absent, "an unrelated allow rule counted")
-    try reviewExpect(fact(#"{"permissions": {"allow": ["command(\"$PARLEY_COMMAND\")"]}}"#) == .allowed(byWildcard: false), "the entry was not found")
-    try reviewExpect(fact(#"{"permissions": {"allow": ["command(*)"]}}"#) == .allowed(byWildcard: true), "command(*) was not recognised")
-    try reviewExpect(fact(#"{"permissions": {"allow": ["command(\"$PARLEY_COMMAND\")"], "ask": ["command(*)"]}}"#) == .overridden(list: "ask"),
+    try reviewExpect(fact(#"{"permissions": {"allow": ["command(\"$PARLEY_COMMAND\")"]}}"#) == .allowed(byWildcard: false, otherRules: false), "the entry was not found")
+    try reviewExpect(fact(#"{"permissions": {"allow": ["command(*)"]}}"#) == .allowed(byWildcard: true, otherRules: false), "command(*) was not recognised")
+    try reviewExpect(fact(#"{"permissions": {"allow": ["command(\"$PARLEY_COMMAND\")"], "ask": ["command(*)"]}}"#) == .asked,
                      "an ask rule did not override allow (Agy: Deny > Ask > Allow)")
-    try reviewExpect(fact(#"{"permissions": {"allow": ["command(*)"], "deny": ["command(\"$PARLEY_COMMAND\")"]}}"#) == .overridden(list: "deny"),
+    try reviewExpect(fact(#"{"permissions": {"allow": ["command(*)"], "deny": ["command(\"$PARLEY_COMMAND\")"]}}"#) == .denied,
                      "a deny rule did not override allow")
+    // Codex's review of MR !146: a rule Parley does not evaluate is said to be
+    // there, never read as allowed outright; deny says Agy refuses, not asks.
+    let regexDeny = fact(#"{"permissions": {"allow": ["command(*)"], "deny": ["command(regex:.*)"]}}"#)
+    try reviewExpect(regexDeny == .allowed(byWildcard: true, otherRules: true), "an unevaluated deny rule was not noticed: \(regexDeny)")
+    try reviewExpect(AgyHostConfiguration.describe(regexDeny).contains("Parley does not evaluate"), "the unevaluated rule is not disclosed")
+    try reviewExpect(AgyHostConfiguration.describe(.denied).contains("refuses"), "deny is described as asking")
+    try reviewExpect(!AgyHostConfiguration.describe(.allowed(byWildcard: false, otherRules: false)).contains("should not ask"),
+                     "the review claims Agy's whole decision again")
 
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent("parley-agy-\(UUID().uuidString.prefix(8))", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -113,6 +125,52 @@ func checkPackFilesAreCheckedBeforeSending() throws {
                      "the files are not read again off the main actor")
 }
 
+/// Codex's review of MR !146: the person's image was read with a separate
+/// size check and an unbounded read, so a file that grew or became a FIFO
+/// was read whole or waited on; pack files were opened with a blocking
+/// FileHandle. One descriptor, one bound, no waiting.
+func checkChosenFilesAreReadBoundedAndNeverWaitedOn() throws {
+    let directory = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        .appendingPathComponent("parley-bounded-\(UUID().uuidString.prefix(8))", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let fifo = directory.appendingPathComponent("shot.png")
+    try reviewExpect(mkfifo(fifo.path, 0o600) == 0, "could not make the FIFO fixture")
+    let started = Date()
+    do {
+        _ = try BoundedRegularFile.read(fifo, maximumBytes: 1_000)
+        try reviewExpect(false, "a FIFO was read")
+    } catch let failure as BoundedRegularFile.Failure {
+        try reviewExpect(failure == .notRegularFile, "a FIFO failed as \(failure)")
+    }
+    do {
+        _ = try ContextPackBuilder().file(at: fifo)
+        try reviewExpect(false, "a FIFO became a pack part")
+    } catch {}
+    try reviewExpect(Date().timeIntervalSince(started) < 2, "reading a FIFO waited")
+    let large = directory.appendingPathComponent("large.png")
+    try Data(count: 2_000).write(to: large)
+    do {
+        _ = try BoundedRegularFile.read(large, maximumBytes: 1_000)
+        try reviewExpect(false, "a file over the bound was read")
+    } catch let failure as BoundedRegularFile.Failure {
+        try reviewExpect(failure == .tooLarge, "an oversized file failed as \(failure)")
+    }
+    do {
+        _ = try BoundedRegularFile.read(directory.appendingPathComponent("none.png"), maximumBytes: 1_000)
+        try reviewExpect(false, "a missing file was read")
+    } catch let failure as BoundedRegularFile.Failure {
+        try reviewExpect(failure == .missing, "a missing file failed as \(failure)")
+    }
+    let app = try nativeText("ParleyNative", "AppModel.swift")
+    try reviewExpect(app.contains("BoundedRegularFile.read(url, maximumBytes: ContextImageInspector.maximumBytes)")
+                     && !app.contains("return try Data(contentsOf: url)"), "the person's image is read unbounded again")
+    // Text and images chosen together run in one task, text first, so the
+    // image import cannot take the reservation the text capture needs.
+    try reviewExpect(app.contains("await self?.importContextImageFiles(images"), "a mixed selection is not one sequential task")
+    try reviewExpect(!app.contains("addContextImageFiles("), "the image import still starts a task of its own beside the text capture")
+}
+
 /// Add Files took text only though packs hold images; image previews could
 /// not be read at full size; consequences and recovery steps were 9-point grey.
 func checkImageFilesAndReadableConsequences() throws {
@@ -121,7 +179,12 @@ func checkImageFilesAndReadableConsequences() throws {
     try reviewExpect(part.source.kind == .file && part.image == image && part.source.label == "shot.png", "an image file part is \(part.source)")
     try reviewExpect(ContextPackError.notText.errorDescription?.contains("PNG or JPEG") == true, "the not-text error does not name images")
     let app = try nativeText("ParleyNative", "AppModel.swift")
-    try reviewExpect(app.contains("addContextImageFiles(images") && app.contains("kind: .imageFile"), "Add Files does not take images")
+    try reviewExpect(app.contains("importContextImageFiles(images") && app.contains("kind: .imageFile"), "Add Files does not take images")
+    // The full-size sheet stays within its decoded-pixel budget (Codex's
+    // review of MR !146: 8,192 a side still allowed 64 million pixels).
+    let side = ContextImageDecodeBudget.decodedSide(width: 8_000, height: 8_000)
+    try reviewExpect(side * side <= ContextImageDecodeBudget.maximumDecodedPixels, "an 8,000-pixel square decodes to \(side) a side")
+    try reviewExpect(ContextImageDecodeBudget.decodedSide(width: 2_000, height: 1_000) == 2_000, "a small image was scaled down")
     let pack = try nativeText("ParleyNative", "ContextPackView.swift")
     try reviewExpect(pack.contains("Button(\"Inspect Full Size…\")") && pack.contains("ContextImageFullSizeSheet"), "image previews cannot be opened at full size")
     let status = try nativeText("ParleyNative", "StatusCenterView.swift")
@@ -133,4 +196,5 @@ func checkImageFilesAndReadableConsequences() throws {
     ("agy allow entry is read, not recited", checkAgyAllowEntryIsReadNotRecited),
     ("pack files are checked before sending", checkPackFilesAreCheckedBeforeSending),
     ("image files and readable consequences", checkImageFilesAndReadableConsequences),
+    ("chosen files are read bounded and never waited on", checkChosenFilesAreReadBoundedAndNeverWaitedOn),
 ]

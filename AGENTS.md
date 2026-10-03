@@ -2170,8 +2170,13 @@ take one window the person picks, captured once. The steps:
   (`docs/test-scenarios.md` P1.7).
 
 **Files the person adds** (3 October 2026). Add Files takes PNG and JPEG
-images as well as text: the app reads, checks, holds and stores each as it
-does a window capture, and the part keeps the ordinary `.file` kind with an
+images as well as text, in one task that captures the text first, so an
+image import never takes the reservation a text capture into an agent's
+draft needs. Every chosen or re-read file goes through `BoundedRegularFile`:
+one descriptor, its type and size checked on it, never a FIFO, never past the
+bound even if the file grows (Codex's review of MR !146; the image was read
+with `Data(contentsOf:)` after a separate size check). The app checks, holds
+and stores each image as it does a window capture, and the part keeps the ordinary `.file` kind with an
 `image` (`ContextPackPart.personImageFile`), so every version decodes it. In
 an agent's draft it goes through the trusted capture kind `.imageFile`, whose
 one path only names the part; the core never opens it. Like a window
@@ -2181,6 +2186,8 @@ again, off the main actor, the way it was captured. A changed, missing or
 unreadable file is named, and the person sends the captured version,
 captures the unedited ones again for review (their own pack only), or
 cancels. Edited parts are never replaced; Git Diff parts are not read again.
+Inspect Full Size… decodes at most `ContextImageDecodeBudget` (16 million
+pixels, about 64 MB) and says when it scaled an image down to stay there.
 
 Native **Delete Saved Context** (`/ui/context-reviews/delete`) permanently
 removes selected records, including `returnedPart`, from both the store and
@@ -2419,10 +2426,12 @@ alter an existing model context.
   Agy asks before every command, Parley's included, unless the person's own
   `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` holds
   `command("$PARLEY_COMMAND")`. The host launch review reads that file
-  (`AgyHostConfiguration`, through the same bounded regular-file reader as
-  Claude's settings, so a FIFO is refused), applies Agy's documented Deny >
-  Ask > Allow, says whether the entry is there, unknown when it cannot read
-  the file, and offers Copy Allow Entry (3 October 2026). Parley never
+  (`AgyHostConfiguration`, through `BoundedRegularFile`, so a FIFO is
+  refused) and reports entries, not Agy's decision: the exact entry or
+  `command(*)` in deny (Agy refuses), in ask (Agy asks) or in allow, and
+  whether ask or deny hold other command rules, which Agy applies first and
+  Parley does not evaluate (Codex's review of MR !146). Unknown when it cannot
+  read the file. It offers Copy Allow Entry (3 October 2026). Parley never
   writes it; the recipe and its reasons stay in Help.
 - Copilot receives the canonical text as additional instructions through
   `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`. Applicable instructions are combined

@@ -681,10 +681,13 @@ struct ContextImagePreview: View {
 /// The image at up to its full resolution, for reading fine text in a
 /// screenshot before it is sent (Codex's review of 3 October 2026: the
 /// preview is a 1,600-pixel thumbnail at most 360 points high). Decoded once,
-/// off the main actor, at most `maximumSide` pixels a side, so a 16,384-pixel
-/// image the inspector allows cannot take a quarter of a gigabyte here.
+/// off the main actor, scaled down when needed to at most
+/// `ContextImageDecodeBudget.maximumDecodedPixels` (about 64 MB at four bytes
+/// a pixel): the inspector
+/// accepts up to 64 million, which would be a quarter of a gigabyte here
+/// (Codex's review of MR !146). A scaled image says so, and its 100% is of
+/// what is shown.
 struct ContextImageFullSizeSheet: View {
-    nonisolated static let maximumSide = 8_192
     let image: ContextPackImage
     let store: ContextImageStore
     let close: () -> Void
@@ -696,7 +699,7 @@ struct ContextImageFullSizeSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                Text("\(image.format.label) · \(image.width) × \(image.height) pixels")
+                Text(sizeLabel)
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -705,7 +708,7 @@ struct ContextImageFullSizeSheet: View {
                 Button("Zoom Out") { zoom(by: 0.8) }
                     .keyboardShortcut("-", modifiers: .command)
                     .disabled(fit)
-                Button("Actual Size") { fit = false; scale = 1 }
+                Button(isScaledDown ? "Shown Size" : "Actual Size") { fit = false; scale = 1 }
                     .keyboardShortcut("0", modifiers: .command)
                 Button("Zoom In") { zoom(by: 1.25) }
                     .keyboardShortcut("=", modifiers: .command)
@@ -743,13 +746,24 @@ struct ContextImageFullSizeSheet: View {
             let decoded = await Task.detached(priority: .userInitiated) { () -> CGImage? in
                 guard let data = try? store.data(for: image) else { return nil }
                 return ContextImageInspector.thumbnail(
-                    data, maximumPixelSize: min(max(image.width, image.height), Self.maximumSide)
+                    data, maximumPixelSize: ContextImageDecodeBudget.decodedSide(width: image.width, height: image.height)
                 )
             }.value
             guard !Task.isCancelled else { return }
             picture = decoded
             failed = decoded == nil
         }
+    }
+
+    private var isScaledDown: Bool {
+        guard let picture else { return false }
+        return picture.width < image.width || picture.height < image.height
+    }
+
+    private var sizeLabel: String {
+        let original = "\(image.format.label) · \(image.width) × \(image.height) pixels"
+        guard let picture, isScaledDown else { return original }
+        return original + " · shown at \(picture.width) × \(picture.height) to stay within memory"
     }
 
     private func zoom(by factor: Double) {

@@ -6094,29 +6094,40 @@ final class AppModel: ObservableObject {
         panel.directoryURL = URL(fileURLWithPath: draft.sourceFolder)
         guard panel.runModal() == .OK else { return }
 
-        // Images go the way a window capture does; text as before.
+        // Images go the way a window capture does; text as before. One task
+        // runs them in turn: an image import started beside a text capture
+        // into an agent's draft took the capture reservation first, and the
+        // text was refused (Codex's review of MR !146).
         let images = panel.urls.filter(Self.isImageFile)
         let texts = panel.urls.filter { !Self.isImageFile($0) }
-        if !texts.isEmpty {
-            perform {
-                if let reviewID = draft.reviewID {
-                    captureTrustedContext(
-                        AgentContextTrustedCaptureRequest(
-                            reviewID: reviewID,
-                            kind: .files,
-                            paths: texts.map(\.path)
-                        ),
-                        draftID: draft.id
-                    )
+        guard !contextCaptureInFlight else {
+            NSAlert(error: RelayUIError.message("A capture into this pack is still running. Wait for it to finish before adding another source.")).runModal()
+            return
+        }
+        let draftID = draft.id
+        let reviewID = draft.reviewID
+        Task { @MainActor [weak self] in
+            if !texts.isEmpty {
+                if let reviewID {
+                    do {
+                        try await self?.captureTrustedContextOffMain(
+                            AgentContextTrustedCaptureRequest(reviewID: reviewID, kind: .files, paths: texts.map(\.path)),
+                            draftID: draftID
+                        )
+                    } catch {
+                        NSAlert(error: error).runModal()
+                    }
                 } else {
-                    guard let contextPackBuilder else { return }
-                    let parts = try texts.map { try contextPackBuilder.file(at: $0) }
-                    try appendContextPackParts(parts, draftID: draft.id)
+                    self?.perform {
+                        guard let self, let contextPackBuilder = self.contextPackBuilder else { return }
+                        let parts = try texts.map { try contextPackBuilder.file(at: $0) }
+                        try self.appendContextPackParts(parts, draftID: draftID)
+                    }
                 }
             }
-        }
-        if !images.isEmpty {
-            addContextImageFiles(images, draftID: draft.id, reviewID: draft.reviewID)
+            if !images.isEmpty {
+                await self?.importContextImageFiles(images, draftID: draftID, reviewID: reviewID)
+            }
         }
     }
 
@@ -6128,52 +6139,54 @@ final class AppModel: ObservableObject {
 
     /// The person's own image files (Codex's review of 3 October 2026: Add
     /// Files took text only, though a pack can hold images). Each is read off
-    /// the main actor, checked, held and written as a window capture is, then
-    /// added to the person's pack or, through the core, to an agent's draft.
-    private func addContextImageFiles(_ urls: [URL], draftID: String, reviewID: String?) {
+    /// the main actor through `BoundedRegularFile`, checked, held and written
+    /// as a window capture is, then added to the person's pack or, through
+    /// the core, to an agent's draft. A failure names its file and the rest
+    /// carry on.
+    private func importContextImageFiles(_ urls: [URL], draftID: String, reviewID: String?) async {
         guard !contextCaptureInFlight else { return }
         let store = contextImageStore
         contextCaptureInFlight = true
-        Task { @MainActor [weak self] in
-            defer { self?.contextCaptureInFlight = false }
-            for url in urls {
-                do {
-                    let data = try await Task.detached(priority: .userInitiated) { try Self.readImageFile(url) }.value
-                    let image = try await Task.detached(priority: .userInitiated) { try ContextImageInspector.inspect(data) }.value
-                    guard let self, self.contextPackDraft?.id == draftID else { return }
-                    self.capturingImageDigest = image.sha256
-                    defer {
-                        self.capturingImageDigest = nil
-                        self.syncPersonImageHolds()
-                    }
-                    try self.holdPersonImagesOrThrow()
-                    try await Task.detached(priority: .userInitiated) { _ = try store.store(data) }.value
-                    if let reviewID {
-                        guard let relayClient = self.relayClient else {
-                            throw RelayUIError.message("The app-resident core is unavailable, so the image could not join the agent's draft.")
-                        }
-                        let request = AgentContextTrustedCaptureRequest(reviewID: reviewID, kind: .imageFile, paths: [url.path], image: image)
-                        let response = try await Task.detached(priority: .userInitiated) { try relayClient.captureTrustedContext(request) }.value
-                        try self.appendTrustedContextResponse(response, draftID: draftID)
-                    } else {
-                        try self.appendContextPackParts([.personImageFile(image, path: url.path)], draftID: draftID)
-                    }
-                } catch {
-                    NSAlert(error: RelayUIError.message("\(url.lastPathComponent): \(error.localizedDescription)")).runModal()
+        defer { contextCaptureInFlight = false }
+        for url in urls {
+            do {
+                let data = try await Task.detached(priority: .userInitiated) { try Self.readImageFile(url) }.value
+                let image = try await Task.detached(priority: .userInitiated) { try ContextImageInspector.inspect(data) }.value
+                guard contextPackDraft?.id == draftID else { return }
+                capturingImageDigest = image.sha256
+                defer {
+                    capturingImageDigest = nil
+                    syncPersonImageHolds()
                 }
+                try holdPersonImagesOrThrow()
+                try await Task.detached(priority: .userInitiated) { _ = try store.store(data) }.value
+                if let reviewID {
+                    guard let relayClient else {
+                        throw RelayUIError.message("The app-resident core is unavailable, so the image could not join the agent's draft.")
+                    }
+                    let request = AgentContextTrustedCaptureRequest(reviewID: reviewID, kind: .imageFile, paths: [url.path], image: image)
+                    let response = try await Task.detached(priority: .userInitiated) { try relayClient.captureTrustedContext(request) }.value
+                    try appendTrustedContextResponse(response, draftID: draftID)
+                } else {
+                    try appendContextPackParts([.personImageFile(image, path: url.path)], draftID: draftID)
+                }
+            } catch {
+                NSAlert(error: RelayUIError.message("\(url.lastPathComponent): \(error.localizedDescription)")).runModal()
             }
         }
     }
 
-    /// A regular file of at most the image bound, refused by its size before
-    /// it is read.
+    /// One descriptor, a regular file, at most the image bound.
     nonisolated private static func readImageFile(_ url: URL) throws -> Data {
-        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-        guard values.isRegularFile == true else { throw RelayUIError.message("It is not a regular file.") }
-        guard let size = values.fileSize, size <= ContextImageInspector.maximumBytes else {
+        do {
+            return try BoundedRegularFile.read(url, maximumBytes: ContextImageInspector.maximumBytes)
+        } catch BoundedRegularFile.Failure.tooLarge {
             throw RelayUIError.message("It is larger than the 10 MB an image part may be.")
+        } catch BoundedRegularFile.Failure.notRegularFile {
+            throw RelayUIError.message("It is not a regular file.")
+        } catch {
+            throw RelayUIError.message("Parley could not read it.")
         }
-        return try Data(contentsOf: url)
     }
 
     func addContextGitDiff() {
