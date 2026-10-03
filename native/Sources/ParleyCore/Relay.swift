@@ -452,10 +452,14 @@ public struct RelayDelegationStatus: Identifiable, Codable, Equatable, Sendable 
     public let resultContextReviewID: String?
     public let inReplyToHandoffID: String?
     public let relationship: RelayHandoffRelationship?
+    /// Whether the target reported starting a turn since delivery: false
+    /// for a minute or more means the text may not have arrived, so the
+    /// person checks that pane; nil when the target reports no hooks.
+    public let targetTurnStarted: Bool?
     public let createdAt: Date
     public let updatedAt: Date
 
-    fileprivate init(handoff: RelayHandoff) {
+    fileprivate init(handoff: RelayHandoff, target: WorkbenchPane?) {
         id = handoff.id
         sourcePaneID = handoff.sourcePaneID
         sourceName = handoff.sourceName
@@ -469,6 +473,7 @@ public struct RelayDelegationStatus: Identifiable, Codable, Equatable, Sendable 
         resultContextReviewID = handoff.resultContextReviewID
         inReplyToHandoffID = handoff.inReplyToHandoffID
         relationship = handoff.relationship
+        targetTurnStarted = HandoffStartProjection.turnStarted(handoff, target: target)
         createdAt = handoff.transitions.first?.occurredAt ?? handoff.updatedAt
         updatedAt = handoff.updatedAt
     }
@@ -2054,6 +2059,10 @@ public final class RelayBroker: @unchecked Sendable {
             // A reader may have fetched the record during the capture.
             noteChangeLocked()
         }
+        // From here the text is handed to the target: a turn that began
+        // during the Git read above is not this delegation's (Codex's review
+        // of MR !141).
+        handoffRecords[handoff.id]?.submissionStartedAt = clock()
         consultationCondition.unlock()
 
         do {
@@ -2452,6 +2461,7 @@ public final class RelayBroker: @unchecked Sendable {
                 transientVendorEventRecords[event.id] = event
                 pruneTransientVendorEventsLocked()
             }
+            if signal == .turnStarted { stampTargetTurnStartedLocked(paneID: sender.id, at: occurredAt) }
             noteChangeLocked()
             consultationCondition.unlock()
             return RelayTextResponse(status: 200, text: "")
@@ -2462,6 +2472,25 @@ public final class RelayBroker: @unchecked Sendable {
                 status: 500,
                 text: "Parley could not record the vendor lifecycle signal: \(error.localizedDescription)"
             )
+        }
+    }
+
+    /// The target's turn began: every active Ask or Delegate to it whose text
+    /// Parley had begun handing over by that moment, and not yet stamped,
+    /// records it. The bound is the start of submission, not delivery,
+    /// because the vendor's hook can arrive before Parley records the
+    /// delivered transition; nor creation, because a turn during a
+    /// delegation's Git read is not that delegation's (Codex's review of MR
+    /// !141, M1).
+    private func stampTargetTurnStartedLocked(paneID: String, at occurredAt: Date) {
+        let active: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
+        for (id, var handoff) in handoffRecords
+        where handoff.targetPaneID == paneID && (handoff.kind == .ask || handoff.kind == .delegate)
+            && active.contains(handoff.state) && handoff.targetTurnStartedAt == nil
+            && (handoff.submissionStartedAt ?? .distantFuture) <= occurredAt {
+            handoff.targetTurnStartedAt = occurredAt
+            handoffRecords[id] = handoff
+            handoffJournal?.record(handoff)
         }
     }
 
@@ -2588,11 +2617,12 @@ public final class RelayBroker: @unchecked Sendable {
         catch let error as BrokerFailure { return RelayTextResponse(status: error.status, text: error.message) }
         catch { return RelayTextResponse(status: 409, text: error.localizedDescription) }
         reconcileDelegations()
+        let livePanes = (try? panes()) ?? []
         consultationCondition.lock()
         let statuses = handoffRecords.values
             .filter { $0.kind == .delegate && $0.sourcePaneID == sourceID }
             .sorted { $0.updatedAt > $1.updatedAt }
-            .map(RelayDelegationStatus.init)
+            .map { handoff in RelayDelegationStatus(handoff: handoff, target: livePanes.first { $0.id == handoff.targetPaneID }) }
         consultationCondition.unlock()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -2981,6 +3011,7 @@ public final class RelayBroker: @unchecked Sendable {
             origin: recordedOrigin
         )
         if !deliveredImages.isEmpty { handoff.deliveredImages = deliveredImages }
+        handoff.submissionStartedAt = clock()
         let consultation = RelayConsultation(
             id: handoff.id,
             sourcePaneID: sender.id,
@@ -5625,8 +5656,6 @@ public enum RelayShim {
       /usr/bin/printf '%s' "$idempotency_key" > "$request_dir/idempotency-key" || return 1
       /usr/bin/printf '%s' "$pane_token" > "$request_dir/token" || return 1
       /bin/cat "$staged_body" > "$request_dir/body" || return 1
-      /bin/rm -f "$staged_body"
-      staged_body=""
       request_ticket
       if [ -n "$ticket" ]; then
         /usr/bin/printf '%s' "$ticket" > "$request_dir/ticket" || return 1
@@ -5635,11 +5664,43 @@ public enum RelayShim {
 
     ticket_socket=__PARLEY_TICKET_SOCKET__
     ticket=""
+    # unasked, issued, refused, or silent when the socket gave no answer in
+    # time (an app the Mac had not yet scheduled after a wake): only silence
+    # is worth asking again.
+    ticket_outcome=unasked
     request_ticket() {
       ticket=""
+      ticket_outcome=unasked
       [ -n "$ticket_socket" ] && [ -S "$ticket_socket" ] && [ -x /usr/bin/nc ] || return 0
       ticket="$(/usr/bin/printf '%s %s\n' "$pane_token" "$request_id" | /usr/bin/nc -U -w 3 "$ticket_socket" 2>/dev/null | /usr/bin/tr -d '\r\n')" || ticket=""
-      case "$ticket" in refused:*) ticket="" ;; esac
+      case "$ticket" in
+        refused:*) ticket=""; ticket_outcome=refused ;;
+        "") ticket_outcome=silent ;;
+        *) ticket_outcome=issued ;;
+      esac
+    }
+
+    # Writes the request under a new id, then `ready`. The staged body stays
+    # until the reply's status is known, so a request refused for want of a
+    # ticket can be written again.
+    send_request() {
+      request_id="$(/usr/bin/uuidgen | /usr/bin/tr '[:upper:]' '[:lower:]')"
+      request_dir="$inbox/$request_id"
+      response_dir="$outbox/$request_id"
+      if ! write_request 2>/dev/null; then
+        cleanup
+        if [ -d "$endpoint" ] && [ ! -L "$endpoint" ]; then
+          echo "Parley could not write the request, so nothing was sent" >&2
+        else
+          echo "the Parley relay broker is not running" >&2
+        fi
+        return 2
+      fi
+      if ! /usr/bin/printf '%s' ready > "$request_dir/ready"; then
+        cleanup
+        echo "Parley could not finish writing the request; it may or may not have been sent" >&2
+        return 2
+      fi
     }
 
     post() {
@@ -5680,28 +5741,24 @@ public enum RelayShim {
         return 2
       fi
 
-      request_dir="$inbox/$request_id"
-      response_dir="$outbox/$request_id"
-      if ! write_request 2>/dev/null; then
-        cleanup
-        if [ -d "$endpoint" ] && [ ! -L "$endpoint" ]; then
-          echo "Parley could not write the request, so nothing was sent" >&2
-        else
-          echo "the Parley relay broker is not running" >&2
-        fi
-        return 2
-      fi
-      if ! /usr/bin/printf '%s' ready > "$request_dir/ready"; then
-        cleanup
-        echo "Parley could not finish writing the request; it may or may not have been sent" >&2
-        return 2
-      fi
+      send_request || return 2
 
+      ticket_retries=0
       ask_id_reported=0
       checks=0
       stale_readings=0
       last_beat="$(heartbeat_time)"
       while :; do
+        # Once the transport has read the request (it is in neither the inbox
+        # nor processing, and has no reply yet), no ticket refusal can follow,
+        # so the staged body goes: request text does not sit on disk through
+        # a long Ask or wait. A refusal is written before the request leaves
+        # processing, so it is never mistaken for this.
+        if [ -n "$staged_body" ] && [ ! -e "$request_dir" ] && [ ! -e "$endpoint/processing/$request_id" ] \
+          && [ ! -e "$response_dir/ready" ]; then
+          /bin/rm -f "$staged_body"
+          staged_body=""
+        fi
         if [ "$ask_id_reported" -eq 0 ] \
           && { [ "$command" = "ask" ] || [ "$command" = "context-ask" ] || [ "$command" = "request-run" ] || [ "$command" = "team-request" ] || [ "$command" = "team-add" ]; } \
           && protected_directory "$response_dir" \
@@ -5730,6 +5787,19 @@ public enum RelayShim {
           && [ -f "$response_dir/status" ] && [ ! -L "$response_dir/status" ] \
           && [ -f "$response_dir/body" ] && [ ! -L "$response_dir/body" ]; then
           status="$(/bin/cat "$response_dir/status")"
+          if [ "$status" = "428" ] && [ "$ticket_outcome" = "silent" ] && [ "$ticket_retries" -lt 10 ]; then
+            # Refused before anything was read: this pane must present a
+            # ticket and the socket did not answer in time, as while the Mac
+            # sleeps and dark-wakes. Nothing was sent, so the same request
+            # goes again with a fresh ticket.
+            ticket_retries=$((ticket_retries + 1))
+            cleanup_directory "$request_dir"
+            cleanup_directory "$response_dir"
+            /bin/sleep 1
+            send_request || return 2
+            checks=0
+            continue
+          fi
           if [ "$status" = "102" ]; then
             # The broker's long-poll window passed with the work still open:
             # nothing to print; the caller asks again.
