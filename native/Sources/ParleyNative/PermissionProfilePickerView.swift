@@ -17,6 +17,9 @@ struct PermissionProfilePickerView: View {
     @State private var containerConfiguration: ContainerConfiguration?
     @State private var approvals: PermissionApprovalHandling
     @State private var codexConfigurationFact: String?
+    /// Read once per open review, off the main actor.
+    @State private var agyAllowFact: AgyParleyAllowFact?
+    @Environment(\.openWindow) private var openWindow
     /// The vendor this review will launch. A creation review lets the person
     /// change it; every other action reviews an existing pane, whose vendor
     /// cannot change.
@@ -585,6 +588,9 @@ struct PermissionProfilePickerView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if kind == .agy, !runInContainer {
+                agyAllowSection
+            }
             if kind == .codex, !runInContainer {
                 Text(codexConfigurationFact ?? "Reading Codex's own configuration for this folder…")
                     .font(.caption)
@@ -595,6 +601,43 @@ struct PermissionProfilePickerView: View {
                     }
             }
         }
+    }
+
+    /// Whether Agy's own settings allow Parley's command, read without
+    /// changing them; the recipe and its reasons are in Help.
+    private var agyAllowSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(agyAllowFact.map(AgyHostConfiguration.describe) ?? "Reading Agy's settings…")
+                .font(.caption)
+                .foregroundStyle(agyAllowFact.map(isAllowed) == true ? Color.secondary : Color.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            if let fact = agyAllowFact, !isAllowed(fact) {
+                HStack(spacing: 8) {
+                    Button("Copy Allow Entry") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(AgyHostConfiguration.allowEntry, forType: .string)
+                    }
+                    .help("Copies \(AgyHostConfiguration.allowEntry) for permissions.allow in ~/.gemini/antigravity-cli/settings.json. Parley never edits that file.")
+                    Button("Why This Form?") {
+                        model.requestHelp(topicID: "command-runs")
+                        openWindow(id: "help")
+                    }
+                    .buttonStyle(.link)
+                }
+                .controlSize(.small)
+            }
+        }
+        .task(id: kind) {
+            guard kind == .agy else { return }
+            agyAllowFact = await Task.detached(priority: .userInitiated) {
+                AgyHostConfiguration.parleyAllowFact()
+            }.value
+        }
+    }
+
+    private func isAllowed(_ fact: AgyParleyAllowFact) -> Bool {
+        if case .allowed = fact { return true }
+        return false
     }
 
     private var approvalsCaption: String {
@@ -609,7 +652,7 @@ struct PermissionProfilePickerView: View {
         case .copilot:
             return "Vendor's reviewer means Copilot assisted approval: its judge reviews tool permission requests. It needs Copilot's AUTO_APPROVAL feature flag; Copilot reports if that is off."
         case .agy:
-            return "Agy has no automatic reviewer, only a skip-all-permissions flag Parley never passes on the host, so Agy always asks. To stop it asking for Parley's command, add command(\"$PARLEY_COMMAND\") to the allow list in ~/.gemini/antigravity-cli/settings.json yourself. Allow that absolute form, not a bare parley: Agy runs commands through a login shell whose PATH can put ~/.local/bin first, and its sandbox refuses the router there while it admits the runtime shim."
+            return "Agy has no automatic reviewer, only a skip-all-permissions flag Parley never passes on the host, so Agy asks before commands unless its own settings allow them."
         case .shell:
             return "Shell panes have no vendor prompts."
         }

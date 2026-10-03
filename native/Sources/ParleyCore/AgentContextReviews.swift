@@ -260,6 +260,9 @@ public enum AgentContextTrustedCaptureKind: String, Codable, Equatable, Sendable
     /// The person's own window capture, already held and written by the app
     /// (`image`), added to an agent's draft.
     case windowCapture
+    /// A PNG or JPEG file the person chose with Add Files, already checked,
+    /// held and written by the app (`image`); its one path is only a label.
+    case imageFile
 }
 
 /// A control-token-authorized request for the app-resident core to capture a

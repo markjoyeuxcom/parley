@@ -99,24 +99,51 @@ public enum ClaudeHostConfiguration {
     /// a device is not opened at all in the ordinary case. Nothing here can
     /// stop a hung network or FUSE mount from blocking a regular read.
     static func boundedRegularFile(_ file: URL, maximumBytes: Int) -> Data? {
+        try? BoundedRegularFile.read(file, maximumBytes: maximumBytes)
+    }
+}
+
+/// One regular file read through one descriptor: its type and size are
+/// checked on that descriptor, a FIFO or device is never waited on (the type
+/// is checked before the open, and the open is non-blocking for one swapped
+/// in meanwhile, which the descriptor check then refuses), and nothing past
+/// the bound is returned, even if the file grows during the read. A symlink is followed, as an open dialog or a vendor follows it; the
+/// bytes come from the file the descriptor names, not a later lookup. Used
+/// for vendor settings, the person's chosen files and a pack's re-read files
+/// (Codex's review of MR !146: an image was read with `Data(contentsOf:)`
+/// after a separate size check, so a file that grew or became a FIFO could
+/// be read whole or block the capture). Nothing here can stop a hung network
+/// or FUSE mount from blocking a regular read.
+public enum BoundedRegularFile {
+    public enum Failure: Error, Equatable, Sendable {
+        case missing
+        case notRegularFile
+        case tooLarge
+        case unreadable
+    }
+
+    public static func read(_ file: URL, maximumBytes: Int) throws -> Data {
         var target = stat()
-        guard stat(file.path, &target) == 0, target.st_mode & S_IFMT == S_IFREG else { return nil }
+        guard stat(file.path, &target) == 0 else { throw errno == ENOENT ? Failure.missing : Failure.unreadable }
+        guard target.st_mode & S_IFMT == S_IFREG else { throw Failure.notRegularFile }
         let descriptor = open(file.path, O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC)
-        guard descriptor >= 0 else { return nil }
+        guard descriptor >= 0 else { throw errno == ENOENT ? Failure.missing : Failure.unreadable }
         defer { close(descriptor) }
         var metadata = stat()
-        guard fstat(descriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG,
-              metadata.st_size <= off_t(maximumBytes) else { return nil }
+        guard fstat(descriptor, &metadata) == 0 else { throw Failure.unreadable }
+        guard metadata.st_mode & S_IFMT == S_IFREG else { throw Failure.notRegularFile }
+        guard metadata.st_size <= off_t(maximumBytes) else { throw Failure.tooLarge }
         var data = Data()
         var buffer = [UInt8](repeating: 0, count: 64 * 1_024)
         while data.count <= maximumBytes {
-            let count = read(descriptor, &buffer, buffer.count)
+            let count = Darwin.read(descriptor, &buffer, buffer.count)
             if count < 0, errno == EINTR { continue }
-            guard count >= 0 else { return nil }
+            guard count >= 0 else { throw Failure.unreadable }
             if count == 0 { break }
             data.append(contentsOf: buffer[0..<count])
         }
         // The file grew past the bound after the check.
-        return data.count <= maximumBytes ? data : nil
+        guard data.count <= maximumBytes else { throw Failure.tooLarge }
+        return data
     }
 }

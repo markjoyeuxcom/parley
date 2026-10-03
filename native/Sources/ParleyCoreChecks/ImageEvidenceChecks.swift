@@ -594,6 +594,35 @@ private func imageExpectValue<T>(_ value: T?, _ message: String) throws -> T {
         try imageExpect(f.broker.handleImageFetch(token: f.targetToken, digest: image.sha256).status == 200,
                         "the pane the draft was sent to could not fetch the capture")
     }),
+    ("image file: a file the person adds to an agent's draft is theirs, named by its file and fetched only by the pane it is sent to", {
+        // Codex's review of 3 October 2026: Add Files took text only.
+        let f = try ImageBrokerFixture()
+        let drafted = f.broker.handleContextDraft(token: f.sourceToken, name: "Notes", path: f.path("n.md"), content: .text("notes\n"))
+        let review = try f.review(from: drafted)
+        let png = imageEvidenceFixture(width: 7, height: 4)
+        let image = try ContextImageInspector.inspect(png)
+        _ = try f.images.store(png)
+        let path = "/private/project/screens/login.png"
+        let unheld = f.broker.captureTrustedContext(AgentContextTrustedCaptureRequest(reviewID: review.id, kind: .imageFile, paths: [path], image: image))
+        try imageExpect(unheld.status == 409, "an image file the person does not hold joined an agent's draft: \(unheld.status) \(unheld.text)")
+        _ = f.broker.holdPersonImages([image.sha256])
+        let unnamed = f.broker.captureTrustedContext(AgentContextTrustedCaptureRequest(reviewID: review.id, kind: .imageFile, image: image))
+        try imageExpect(unnamed.status == 400, "an image file with no path was accepted: \(unnamed.status)")
+        let added = f.broker.captureTrustedContext(AgentContextTrustedCaptureRequest(reviewID: review.id, kind: .imageFile, paths: [path], image: image))
+        try imageExpect(added.status == 200, "the person's image file could not join the agent's draft: \(added.status) \(added.text)")
+        let withFile = try imageExpectValue(f.broker.contextReviews().first { $0.id == review.id }, "the draft vanished")
+        let part = try imageExpectValue(withFile.pack.parts.first { $0.image == image }, "the draft does not hold the image file")
+        try imageExpect(part.source.kind == .file && part.source.label == "login.png" && part.source.detail.hasPrefix(path),
+                        "the image file is not named by its file: \(part.source)")
+        try imageExpect(ContextPackFreshness.checkable([part]).isEmpty, "an image file was treated as a text file to re-read")
+        _ = f.broker.holdPersonImages([])
+        try imageExpect(f.broker.handleImageFetch(token: f.sourceToken, digest: image.sha256).status == 403,
+                        "the agent whose draft the person added an image file to fetched it")
+        _ = f.broker.completeContextDraft(AgentContextReviewApproval(reviewID: withFile.id, expectedUpdatedAt: withFile.updatedAt,
+                                                                     targetPaneID: "target", pack: withFile.pack))
+        try imageExpect(f.broker.handleImageFetch(token: f.targetToken, digest: image.sha256).status == 200,
+                        "the pane the draft was sent to could not fetch the image file")
+    }),
     ("window capture: a queued draft whose image copy is damaged is refused before it leaves the queue", {
         // Codex's review of MR !142 (M1): the copy check ran after the draft
         // was marked dispatching, so a failed restore left it stuck.

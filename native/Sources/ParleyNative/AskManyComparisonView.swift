@@ -4,6 +4,17 @@ import SwiftUI
 struct AskManyComparisonView: View {
     @ObservedObject var model: AppModel
     @State private var selectedTargetPaneIDs: Set<String> = []
+    @State private var layoutMode: ComparisonLayoutMode = .sideBySide
+    @State private var focusedTargetPaneID: String?
+    @State private var questionExpanded = false
+
+    /// Side by side shares the window between every answer; one at a time
+    /// gives a single long answer the whole width.
+    private enum ComparisonLayoutMode: String, CaseIterable, Identifiable {
+        case sideBySide = "Side by Side"
+        case oneAtATime = "One at a Time"
+        var id: String { rawValue }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -33,10 +44,25 @@ struct AskManyComparisonView: View {
                 }
             }
             if let question = model.askManyComparisonRun?.question {
-                Text(question)
-                    .font(.body)
-                    .textSelection(.enabled)
-                    .lineLimit(4)
+                if questionExpanded {
+                    ScrollView {
+                        Text(question)
+                            .font(.body)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 220)
+                } else {
+                    Text(question)
+                        .font(.body)
+                        .textSelection(.enabled)
+                        .lineLimit(4)
+                }
+                if AskManyComparisonLayout.questionNeedsExpanding(question) {
+                    Button(questionExpanded ? "Show Less" : "Show the Whole Question") { questionExpanded.toggle() }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                }
             }
             Text("Each pane received the same question without seeing any peer answer. Parley does not manufacture a consensus.")
                 .font(.caption)
@@ -62,16 +88,56 @@ struct AskManyComparisonView: View {
                         .textSelection(.enabled)
                 }
 
-                ScrollView(.horizontal) {
-                    HStack(alignment: .top, spacing: 12) {
-                        ForEach(run.targets) { target in
-                            answerCard(target, answer: answer(for: target))
+                HStack(spacing: 12) {
+                    Picker("Layout", selection: $layoutMode) {
+                        ForEach(ComparisonLayoutMode.allCases) { mode in
+                            Text(mode.rawValue).tag(mode)
                         }
                     }
-                    .padding(.bottom, 8)
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    .accessibilityLabel("Answer layout")
+                    if layoutMode == .oneAtATime {
+                        Picker("Answer", selection: focusedTargetBinding(run)) {
+                            ForEach(run.targets) { target in
+                                Text(target.name).tag(target.paneID)
+                            }
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                        .accessibilityLabel("Answer shown")
+                    }
+                    Spacer()
+                }
+
+                switch layoutMode {
+                case .sideBySide:
+                    GeometryReader { geometry in
+                        let columns = AskManyComparisonLayout.columns(
+                            available: geometry.size.width, count: run.targets.count
+                        )
+                        let row = HStack(alignment: .top, spacing: AskManyComparisonLayout.columnSpacing) {
+                            ForEach(run.targets) { target in
+                                answerCard(target, answer: answer(for: target))
+                                    .frame(width: columns.width)
+                            }
+                        }
+                        .frame(height: geometry.size.height)
+                        if columns.scrolls {
+                            ScrollView(.horizontal) { row }
+                        } else {
+                            row
+                        }
+                    }
+                case .oneAtATime:
+                    if let target = run.targets.first(where: { $0.paneID == focusedTargetBinding(run).wrappedValue }) {
+                        answerCard(target, answer: answer(for: target))
+                    }
                 }
             }
             .padding(18)
+            .frame(maxHeight: .infinity, alignment: .top)
         } else {
             ContentUnavailableView(
                 "No Comparison",
@@ -137,8 +203,23 @@ struct AskManyComparisonView: View {
                 }
             }
             .padding(6)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(width: 330, height: 390)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// The answer One at a Time shows: the person's choice while that pane is
+    /// still in the run, otherwise the first.
+    private func focusedTargetBinding(_ run: AskManyComparisonRun) -> Binding<String> {
+        Binding(
+            get: {
+                if let focusedTargetPaneID, run.targets.contains(where: { $0.paneID == focusedTargetPaneID }) {
+                    return focusedTargetPaneID
+                }
+                return run.targets.first?.paneID ?? ""
+            },
+            set: { focusedTargetPaneID = $0 }
+        )
     }
 
     private var footer: some View {

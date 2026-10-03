@@ -631,6 +631,7 @@ struct ContextImagePreview: View {
     let image: ContextPackImage
     let store: ContextImageStore
     @State private var loaded: (digest: String, outcome: Outcome)?
+    @State private var inspecting = false
 
     /// Kept but not drawable is not missing: the inspector does not decode
     /// pixels, so an image ImageIO cannot draw is still Parley's copy and an
@@ -652,6 +653,9 @@ struct ContextImagePreview: View {
                     .frame(maxWidth: .infinity, maxHeight: 360)
                     .border(Color.secondary.opacity(0.25))
                     .accessibilityLabel("Image, \(image.width) by \(image.height) pixels")
+                Button("Inspect Full Size…") { inspecting = true }
+                    .controlSize(.small)
+                    .help("Open the image at up to its full resolution, with zoom, before sending it")
             case .notDrawable:
                 Text("Parley keeps this image, but cannot draw a preview of it. A pane it is sent to can still fetch it.")
                     .foregroundStyle(.orange)
@@ -676,5 +680,105 @@ struct ContextImagePreview: View {
             guard !Task.isCancelled else { return }
             loaded = (image.sha256, outcome)
         }
+        .sheet(isPresented: $inspecting) {
+            ContextImageFullSizeSheet(image: image, store: store) { inspecting = false }
+        }
+    }
+}
+
+/// The image at up to its full resolution, for reading fine text in a
+/// screenshot before it is sent (Codex's review of 3 October 2026: the
+/// preview is a 1,600-pixel thumbnail at most 360 points high). Decoded once,
+/// off the main actor, scaled down when needed to at most
+/// `ContextImageDecodeBudget.maximumDecodedPixels` (about 64 MB at four bytes
+/// a pixel): the inspector
+/// accepts up to 64 million, which would be a quarter of a gigabyte here
+/// (Codex's review of MR !146). A scaled image says so, and its 100% is of
+/// what is shown.
+struct ContextImageFullSizeSheet: View {
+    let image: ContextPackImage
+    let store: ContextImageStore
+    let close: () -> Void
+    @State private var picture: CGImage?
+    @State private var failed = false
+    @State private var fit = true
+    @State private var scale = 1.0
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Text(sizeLabel)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Toggle("Fit to Window", isOn: $fit)
+                    .toggleStyle(.checkbox)
+                Button("Zoom Out") { zoom(by: 0.8) }
+                    .keyboardShortcut("-", modifiers: .command)
+                    .disabled(fit)
+                Button(isScaledDown ? "Shown Size" : "Actual Size") { fit = false; scale = 1 }
+                    .keyboardShortcut("0", modifiers: .command)
+                Button("Zoom In") { zoom(by: 1.25) }
+                    .keyboardShortcut("=", modifiers: .command)
+                Button("Done", action: close)
+                    .keyboardShortcut(.cancelAction)
+            }
+            .controlSize(.small)
+            .padding(10)
+            Divider()
+            Group {
+                if let picture {
+                    let shown = Image(nsImage: NSImage(cgImage: picture, size: .zero))
+                        .resizable()
+                        .interpolation(.high)
+                        .accessibilityLabel("Image, \(image.width) by \(image.height) pixels")
+                    if fit {
+                        shown.aspectRatio(contentMode: .fit).padding(8)
+                    } else {
+                        ScrollView([.horizontal, .vertical]) {
+                            shown.frame(width: Double(picture.width) * scale, height: Double(picture.height) * scale)
+                        }
+                    }
+                } else if failed {
+                    Text("Parley could not draw this image at full size.")
+                        .foregroundStyle(.orange)
+                } else {
+                    ProgressView()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(minWidth: 520, idealWidth: 900, minHeight: 380, idealHeight: 680)
+        .task(id: image.sha256) {
+            let image = image, store = store
+            let decoded = await Task.detached(priority: .userInitiated) { () -> CGImage? in
+                guard let data = try? store.data(for: image) else { return nil }
+                return ContextImageInspector.thumbnail(
+                    data, maximumPixelSize: ContextImageDecodeBudget.decodedSide(width: image.width, height: image.height)
+                )
+            }.value
+            guard !Task.isCancelled else { return }
+            picture = decoded
+            failed = decoded == nil
+        }
+    }
+
+    /// From the budget's own decision, not the decoded size: a rotated JPEG
+    /// decodes with its sides swapped and is not smaller (Codex's review of
+    /// MR !146).
+    private var isScaledDown: Bool {
+        picture != nil
+            && ContextImageDecodeBudget.decodedSide(width: image.width, height: image.height) < max(image.width, image.height)
+    }
+
+    private var sizeLabel: String {
+        let original = "\(image.format.label) · \(image.width) × \(image.height) pixels"
+        guard let picture, isScaledDown else { return original }
+        return original + " · shown at \(picture.width) × \(picture.height) to stay within memory"
+    }
+
+    private func zoom(by factor: Double) {
+        fit = false
+        scale = min(max(scale * factor, 0.1), 8)
     }
 }

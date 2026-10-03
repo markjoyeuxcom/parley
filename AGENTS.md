@@ -2194,6 +2194,26 @@ take one window the person picks, captured once. The steps:
   picker, and how the bundled app behaves, are hand checks
   (`docs/test-scenarios.md` P1.7).
 
+**Files the person adds** (3 October 2026). Add Files takes PNG and JPEG
+images as well as text, in one task that captures the text first, so an
+image import never takes the reservation a text capture into an agent's
+draft needs. Every chosen or re-read file goes through `BoundedRegularFile`:
+one descriptor, its type and size checked on it, never a FIFO, never past the
+bound even if the file grows (Codex's review of MR !146; the image was read
+with `Data(contentsOf:)` after a separate size check). The app checks, holds
+and stores each image as it does a window capture, and the part keeps the ordinary `.file` kind with an
+`image` (`ContextPackPart.personImageFile`), so every version decodes it. In
+an agent's draft it goes through the trusted capture kind `.imageFile`, whose
+one path only names the part; the core never opens it. Like a window
+capture it is the person's, fetched only by a pane it is sent to. Just before
+a pack is sent, `ContextPackFreshness` reads each text `.file` part's path
+again, off the main actor, the way it was captured. A changed, missing or
+unreadable file is named, and the person sends the captured version,
+captures the unedited ones again for review (their own pack only), or
+cancels. Edited parts are never replaced; Git Diff parts are not read again.
+Inspect Full Size… decodes at most `ContextImageDecodeBudget` (16 million
+pixels, about 64 MB) and says when it scaled an image down to stay there.
+
 Native **Delete Saved Context** (`/ui/context-reviews/delete`) permanently
 removes selected records, including `returnedPart`, from both the store and
 broker. Every selected revision is checked before any removal; waiting and
@@ -2428,6 +2448,17 @@ alter an existing model context.
   Automatic rule loading from that added directory remains unverified; do not
   claim uptake without the fresh/resumed-session check in RELEASING.md. No
   lifecycle adapter is installed because Agy has no verified per-launch path.
+  Agy asks before every command, Parley's included, unless the person's own
+  `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` holds
+  `command("$PARLEY_COMMAND")`. The host launch review reads that file
+  (`AgyHostConfiguration`, through `BoundedRegularFile`, so a FIFO is
+  refused) and reports entries, not Agy's decision: the exact entry or
+  `command(*)` in deny (Agy refuses), in ask or in allow, and whether a list
+  Agy applies first holds other command rules Parley does not evaluate; then
+  it claims no outcome, and with no recognised entry it reads unknown rather
+  than "asks" (Codex's review of MR !146 and its verification). Unknown too
+  when it cannot read the file. It offers Copy Allow Entry (3 October 2026). Parley never
+  writes it; the recipe and its reasons stay in Help.
 - Copilot receives the canonical text as additional instructions through
   `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`. Applicable instructions are combined
   without a general precedence order. It permits only `shell(parley)` without an
