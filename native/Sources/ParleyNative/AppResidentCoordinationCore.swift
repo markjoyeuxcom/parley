@@ -47,7 +47,8 @@ final class AppResidentCoordinationCore {
         credentials: RelayCredentials,
         applicationDirectory: URL,
         transportDirectory: URL,
-        permissionProfiles: @escaping () throws -> [PermissionProfileDefinition]
+        permissionProfiles: @escaping () throws -> [PermissionProfileDefinition],
+        retainingPersonImages: Set<String> = []
     ) throws {
         let controlToken = try RelayCoreControlToken.generate()
         let infoFile = applicationDirectory.appendingPathComponent("relay-url")
@@ -95,7 +96,8 @@ final class AppResidentCoordinationCore {
             historyRetentionStore: historyRetentionStore,
             contextReviewStore: contextReviewStore,
             busyDraftStore: busyDraftStore,
-            contextImageStore: ContextImageStore(directory: ContextImageStore.directory(applicationDirectory: applicationDirectory))
+            contextImageStore: ContextImageStore(directory: ContextImageStore.directory(applicationDirectory: applicationDirectory)),
+            personImageHolds: retainingPersonImages
         )
         self.broker = broker
         broker.enableReviewedCommandRuns()

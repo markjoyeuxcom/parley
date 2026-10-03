@@ -58,6 +58,9 @@ public enum ContextPackSourceKind: String, CaseIterable, Codable, Equatable, Sen
     case browserSelection
     case browserScreenshot
     case toolArtifact
+    /// A window the person picked with the system window picker, captured
+    /// by Parley itself.
+    case windowCapture
 
     public var label: String {
         switch self {
@@ -75,6 +78,7 @@ public enum ContextPackSourceKind: String, CaseIterable, Codable, Equatable, Sen
         case .browserSelection: "Browser selected text"
         case .browserScreenshot: "Browser screenshot"
         case .toolArtifact: "Saved tool artifact"
+        case .windowCapture: "Window capture"
         }
     }
 }
@@ -131,7 +135,10 @@ public struct ContextPackPart: Identifiable, Codable, Equatable, Sendable {
     public var isEdited: Bool { text != capturedText }
 
     /// What the part is, as the pack and the review show it.
-    public var typeLabel: String { image == nil ? source.kind.label : "Agent-provided image" }
+    public var typeLabel: String {
+        guard image != nil else { return source.kind.label }
+        return source.kind == .agentFileDraft ? "Agent-provided image" : source.kind.label
+    }
 
     /// An image part's text is the description Parley wrote, never the
     /// person's or the agent's: it says how to fetch the image.
@@ -149,14 +156,28 @@ public struct ContextPackPart: Identifiable, Codable, Equatable, Sendable {
     public static func agentImage(_ image: ContextPackImage, label: String, detail: String, referenceID: String? = nil) -> ContextPackPart {
         ContextPackPart(
             source: ContextPackSource(kind: .agentFileDraft, label: label, detail: detail, referenceID: referenceID),
-            capturedText: """
-            This part is an image (\(image.format.label), \(image.width) × \(image.height) pixels), not text. Parley keeps a copy.
-            Fetch it into a file of your choosing with:
-            parley image \(image.sha256) --to <file>.\(image.format.fileExtension)
-            then open that file with your own image tool. Say so if you cannot read it.
-            """,
+            capturedText: imageDescription(image),
             image: image
         )
+    }
+
+    /// A window the person picked and Parley captured, described the same
+    /// way. It is only ever in the person's own pack, which is never saved.
+    public static func personWindowCapture(_ image: ContextPackImage, label: String, detail: String) -> ContextPackPart {
+        ContextPackPart(
+            source: ContextPackSource(kind: .windowCapture, label: label, detail: detail),
+            capturedText: imageDescription(image),
+            image: image
+        )
+    }
+
+    private static func imageDescription(_ image: ContextPackImage) -> String {
+        """
+        This part is an image (\(image.format.label), \(image.width) × \(image.height) pixels), not text. Parley keeps a copy.
+        Fetch it into a file of your choosing with:
+        parley image \(image.sha256) --to <file>.\(image.format.fileExtension)
+        then open that file with your own image tool. Say so if you cannot read it.
+        """
     }
 }
 

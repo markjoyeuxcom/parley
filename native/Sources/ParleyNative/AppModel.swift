@@ -250,7 +250,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var permissionProfiles: [PermissionProfileDefinition] = []
     @Published private(set) var activeRecipeRun: ActiveRecipeRun?
     @Published private(set) var askManyComparisonRun: AskManyComparisonRun?
-    @Published private(set) var contextPackDraft: ActiveContextPack?
+    @Published private(set) var contextPackDraft: ActiveContextPack? {
+        didSet { syncPersonImageHolds() }
+    }
     @Published private(set) var contextReviews: [AgentContextReview] = []
     @Published private(set) var contextCommandCapturing = false
     /// One capture into the open context pack at a time: trusted capture into
@@ -417,7 +419,16 @@ final class AppModel: ObservableObject {
     @Published private(set) var managedWorktreeMutation: ManagedWorktreeMutation?
     /// Replacing or dropping the control client invalidates every in-flight
     /// background result that was fetched through the old one.
-    private var relayClient: RelayCoreClient? { didSet { refreshGate.invalidate() } }
+    private var relayClient: RelayCoreClient? {
+        didSet {
+            refreshGate.invalidate()
+            // A rebuilt core was built holding the person's pack's images
+            // (`retainingPersonImages`); hold them again through it all the
+            // same, so the app's record matches the core it now talks to.
+            heldPersonImages = []
+            syncPersonImageHolds()
+        }
+    }
     /// The periodic tick and the Status Center timer fetch off the main actor.
     /// One gate orders both channels against explicit refreshes and direct
     /// mutations, so a slower fetch that started earlier never overwrites
@@ -3049,7 +3060,19 @@ final class AppModel: ObservableObject {
             && askManyComparisonRun?.isRunning != true
             && relayClient != nil
             && contextPackDraft?.reviewID == nil
+            && !contextPackHoldsImages
             && contextPackIsSendable
+    }
+
+    /// Compare and the busy queue do not carry images yet: only one Ask's
+    /// target is granted a window capture (`deliveredImages`).
+    var contextPackHoldsImages: Bool {
+        contextPackDraft?.pack.parts.contains { $0.image != nil } ?? false
+    }
+
+    /// Only the person's own pack takes a window capture.
+    var canCaptureWindowIntoContextPack: Bool {
+        contextPackDraft.map { $0.reviewID == nil } ?? false && !contextPackCaptureRunning
     }
 
     var contextPackRenderedByteCount: Int {
@@ -3998,7 +4021,8 @@ final class AppModel: ObservableObject {
                     transportDirectory: RelayFileTransport.runtimeDirectory(
                         applicationDirectory: controller.applicationDirectory
                     ),
-                    permissionProfiles: { [permissionProfileStore] in try permissionProfileStore.profiles() }
+                    permissionProfiles: { [permissionProfileStore] in try permissionProfileStore.profiles() },
+                    retainingPersonImages: wantedPersonImages
                 )
                 residentCore = core
                 relayClient = core.client
@@ -6075,6 +6099,87 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// The person's own window capture: the system window picker, then one
+    /// still image of the window picked. The core holds the image before
+    /// Parley's copy is written, as staging pins an agent's, and the part
+    /// joins the pack for review like any other source. An agent's draft
+    /// never takes one.
+    func captureWindowIntoContextPack() {
+        guard let draft = contextPackDraft, draft.reviewID == nil, !contextCaptureInFlight else { return }
+        let draftID = draft.id
+        let store = contextImageStore
+        contextCaptureInFlight = true
+        Task { @MainActor [weak self] in
+            defer { self?.contextCaptureInFlight = false }
+            do {
+                guard let captured = try await WindowCapture.pickAndCapture() else { return }
+                let image = try await Task.detached(priority: .userInitiated) { try ContextImageInspector.inspect(captured.data) }.value
+                guard let self, self.contextPackDraft?.id == draftID else { return }
+                self.capturingImageDigest = image.sha256
+                defer {
+                    self.capturingImageDigest = nil
+                    self.syncPersonImageHolds()
+                }
+                try self.holdPersonImagesOrThrow()
+                try await Task.detached(priority: .userInitiated) { _ = try store.store(captured.data) }.value
+                let time = Date().formatted(date: .omitted, time: .shortened)
+                try self.appendContextPackParts([.personWindowCapture(
+                    image,
+                    label: "Window captured at \(time)",
+                    detail: "Captured by the person with the macOS window picker · \(image.width) × \(image.height) pixels"
+                )], draftID: draftID)
+            } catch {
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
+    /// What the core holds for the person's open pack, which it has no other
+    /// record of: the pack's images, one being captured into it and any a
+    /// send still carries. Releasing one lets the core delete Parley's copy
+    /// unless a sent handoff keeps it.
+    private var heldPersonImages: Set<String> = []
+    private var capturingImageDigest: String?
+    private var sendingImageDigests: [String: Int] = [:]
+
+    private var wantedPersonImages: Set<String> {
+        var wanted = Set(sendingImageDigests.keys)
+        if let draft = contextPackDraft, draft.reviewID == nil {
+            wanted.formUnion(draft.pack.parts.compactMap { $0.image?.sha256 })
+        }
+        if let capturingImageDigest { wanted.insert(capturingImageDigest) }
+        return wanted
+    }
+
+    /// Best effort after any change to the pack; a capture and a send hold
+    /// through `holdPersonImagesOrThrow` before they rely on it.
+    private func syncPersonImageHolds() {
+        _ = try? holdPersonImagesOrThrow()
+    }
+
+    private func holdPersonImagesOrThrow(force: Bool = false) throws {
+        let wanted = wantedPersonImages
+        guard force || wanted != heldPersonImages else { return }
+        guard let relayClient else {
+            throw RelayUIError.message("The app-resident core is unavailable, so Parley cannot keep a window capture.")
+        }
+        let response = try relayClient.holdPersonImages(wanted)
+        guard response.status == 200 else { throw RelayUIError.message(response.text) }
+        heldPersonImages = wanted
+    }
+
+    private func beginImageSend(_ images: [ContextPackImage]) {
+        for image in images { sendingImageDigests[image.sha256, default: 0] += 1 }
+    }
+
+    private func endImageSend(_ images: [ContextPackImage]) {
+        for image in images {
+            let count = (sendingImageDigests[image.sha256] ?? 1) - 1
+            sendingImageDigests[image.sha256] = count > 0 ? count : nil
+        }
+        syncPersonImageHolds()
+    }
+
     func addVisibleTerminalContext() {
         guard contextPackDraft != nil else { return }
         let candidates = panes.filter { $0.isStarted && !$0.isDead }
@@ -6280,14 +6385,17 @@ final class AppModel: ObservableObject {
                 )
                 return
             }
+            let images = draft.pack.parts.compactMap(\.image)
             let submission = try submitOrOfferBusyQueue(
                 rendered,
                 from: source,
                 to: target,
                 preserveFormatting: true,
+                images: images,
                 onUnanswered: { [weak self] failure in
                     self?.handleUnansweredAsk(
                         failure, text: rendered, from: source, to: target, preserveFormatting: true,
+                        allowsBusyQueue: images.isEmpty,
                         restore: { [weak self] in
                             // An empty pack opened since then is not a draft to protect.
                             guard let self, self.contextPackDraft.map({ $0.pack.parts.isEmpty }) ?? true else { return false }
@@ -8447,6 +8555,7 @@ final class AppModel: ObservableObject {
         from source: WorkbenchPane,
         to target: WorkbenchPane,
         preserveFormatting: Bool,
+        images: [ContextPackImage] = [],
         onUnanswered: @escaping @MainActor (ReviewedAskFailure) -> Void
     ) throws -> ReviewedAskSubmission {
         guard ReviewedAskHistory.targetHasTrackedWork(target.id, in: latestKnownHandoffs) else {
@@ -8455,9 +8564,13 @@ final class AppModel: ObservableObject {
                 from: source,
                 to: target,
                 preserveFormatting: preserveFormatting,
+                images: images,
                 onUnanswered: onUnanswered
             )
             return .launched
+        }
+        guard images.isEmpty else {
+            throw RelayUIError.message("\(target.displayName) already has tracked work. A pack with a window capture cannot wait in the busy queue yet, so it was kept open; send it once \(target.displayName) is free.")
         }
         return try offerBusyQueue(text, from: source, to: target, preserveFormatting: preserveFormatting) ? .queued : .cancelled
     }
@@ -8509,6 +8622,7 @@ final class AppModel: ObservableObject {
         from source: WorkbenchPane,
         to target: WorkbenchPane,
         preserveFormatting: Bool,
+        images: [ContextPackImage] = [],
         onUnanswered: @escaping @MainActor (ReviewedAskFailure) -> Void
     ) throws {
         guard let relayClient else {
@@ -8517,7 +8631,17 @@ final class AppModel: ObservableObject {
         let idempotencyKey = UUID().uuidString.lowercased()
         let sourceID = source.id
         let targetID = target.id
+        // The images stay held until this send ends, whatever becomes of the
+        // pack meanwhile; the handoff keeps them once the core records it.
+        beginImageSend(images)
+        if !images.isEmpty {
+            do { try holdPersonImagesOrThrow(force: true) } catch {
+                endImageSend(images)
+                throw error
+            }
+        }
         Task { [weak self] in
+            defer { self?.endImageSend(images) }
             let (result, history) = await Task.detached(priority: .userInitiated) { () -> (Result<RelayTextResponse, Error>, [RelayHandoff]?) in
                 let result = Result {
                     try relayClient.askFromUI(
@@ -8525,7 +8649,8 @@ final class AppModel: ObservableObject {
                         targetPaneID: targetID,
                         text: text,
                         idempotencyKey: idempotencyKey,
-                        preserveFormatting: preserveFormatting
+                        preserveFormatting: preserveFormatting,
+                        images: images
                     )
                 }
                 if case let .success(response) = result, response.status == 200 { return (result, nil) }
@@ -8570,6 +8695,7 @@ final class AppModel: ObservableObject {
         from source: WorkbenchPane,
         to target: WorkbenchPane,
         preserveFormatting: Bool,
+        allowsBusyQueue: Bool = true,
         restore: () -> Bool,
         notRestoredNote: String = "Another draft is open in its place, so this one was not reopened; copy its text to keep it."
     ) {
@@ -8581,7 +8707,7 @@ final class AppModel: ObservableObject {
             // needs reopening; declined, the draft comes back quietly because
             // the offer already said why it was not sent.
             var offeredQueue = false
-            if targetBusy {
+            if targetBusy && allowsBusyQueue {
                 do {
                     if try offerBusyQueue(text, from: source, to: target, preserveFormatting: preserveFormatting) { return }
                     offeredQueue = true

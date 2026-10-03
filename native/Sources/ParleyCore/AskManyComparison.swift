@@ -7,6 +7,8 @@ public struct RelayUIAskRequest: Codable, Equatable, Sendable {
     public let idempotencyKey: String
     public let preserveFormatting: Bool?
     public let origin: RelayTransitionOrigin?
+    /// Images from the person's own pack, each held by the person.
+    public let images: [ContextPackImage]?
 
     public init(
         sourcePaneID: String,
@@ -14,7 +16,8 @@ public struct RelayUIAskRequest: Codable, Equatable, Sendable {
         text: String,
         idempotencyKey: String,
         preserveFormatting: Bool = false,
-        origin: RelayTransitionOrigin = .human
+        origin: RelayTransitionOrigin = .human,
+        images: [ContextPackImage] = []
     ) {
         self.sourcePaneID = sourcePaneID
         self.targetPaneID = targetPaneID
@@ -22,6 +25,7 @@ public struct RelayUIAskRequest: Codable, Equatable, Sendable {
         self.idempotencyKey = idempotencyKey
         self.preserveFormatting = preserveFormatting
         self.origin = origin
+        self.images = images.isEmpty ? nil : images
     }
 }
 

@@ -1304,6 +1304,9 @@ struct StatusCenterView: View {
                         threadSection(handoff)
                     }
                     inspectorSection(handoff.kind == .commandRun ? "COMMAND REQUEST" : (handoff.kind == .delegate ? "INSTRUCTION" : "QUESTION OR MESSAGE"), handoff.text)
+                    if let images = handoff.deliveredImages, !images.isEmpty {
+                        sentImagesSection(images)
+                    }
                     if handoff.kind == .delegate {
                         liveClock { date in
                             if let facts = model.delegationVisibility(for: handoff, at: date) {
@@ -1669,6 +1672,20 @@ struct StatusCenterView: View {
         }
     }
 
+
+    /// The window captures the person sent with this Ask, which its target
+    /// may fetch while Parley keeps this record.
+    private func sentImagesSection(_ images: [ContextPackImage]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("SENT IMAGES")
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
+            ForEach(images, id: \.sha256) { image in
+                ContextImagePreview(image: image, store: model.contextImageStore)
+            }
+        }
+    }
 
     private func inspectorSection(_ title: String, _ text: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {

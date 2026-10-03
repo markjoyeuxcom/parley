@@ -120,7 +120,7 @@ private func sha256(_ data: Data) -> String { SHA256.hash(data: data).map { Stri
     }),
 ]
 
-private final class ImageBrokerFixture: @unchecked Sendable {
+final class ImageBrokerFixture: @unchecked Sendable {
     let directory: URL
     let credentials: RelayCredentials
     let images: ContextImageStore
@@ -150,6 +150,14 @@ private final class ImageBrokerFixture: @unchecked Sendable {
     }
 
     deinit { try? FileManager.default.removeItem(at: directory) }
+
+    /// A second broker over the same stores, as core recovery builds one.
+    func rebuiltBroker(holding digests: Set<String> = []) throws -> RelayBroker {
+        RelayBroker(credentials: credentials, panes: { [] }, paste: { _, _ in }, submit: { _, _ in },
+            consultationTimeout: 3, handoffJournal: try RelayHandoffJournal(file: directory.appendingPathComponent("handoffs.jsonl")),
+            contextReviewStore: try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json")),
+            contextImageStore: images, personImageHolds: digests)
+    }
 
     func path(_ name: String) -> String { directory.appendingPathComponent(name).path }
 
@@ -388,3 +396,142 @@ private func imageExpectValue<T>(_ value: T?, _ message: String) throws -> T {
     guard let value else { throw NSError(domain: "ImageEvidence", code: 3, userInfo: [NSLocalizedDescriptionKey: message]) }
     return value
 }
+
+/// The person's own window capture (MR B): a part Parley captured itself, held
+/// while the person's pack is open and granted, on send, to that Ask's target
+/// alone.
+@MainActor let windowCaptureChecks: [(String, () throws -> Void)] = [
+    ("window capture: a person's capture is a trusted image part that says how to fetch it", {
+        let png = imageEvidenceFixture(width: 12, height: 8)
+        let image = try ContextImageInspector.inspect(png)
+        let part = ContextPackPart.personWindowCapture(image, label: "Safari — Docs", detail: "Captured by the person with the macOS window picker")
+        try imageExpect(part.source.kind == .windowCapture && part.image == image && part.typeLabel == "Window capture",
+                        "the capture lost its kind, image or label: \(part.source.kind) \(part.typeLabel)")
+        try imageExpect(part.text.contains("parley image \(image.sha256) --to") && part.replacingText("edited") == part,
+                        "the capture does not say how to fetch it, or its text could be edited")
+        let rendered = try ContextPackBuilder().render(ContextPack(name: "Look", parts: [part]))
+        try imageExpect(rendered.contains("Type: Window capture") && rendered.contains("Image SHA-256: \(image.sha256)")
+                        && !rendered.contains("Agent-provided"),
+                        "the rendered person pack is wrong: \(rendered)")
+    }),
+    ("window capture: a held image survives collection, and sending it grants only that Ask's target", {
+        let f = try ImageBrokerFixture()
+        let png = imageEvidenceFixture(width: 9, height: 6)
+        let image = try ContextImageInspector.inspect(png)
+        // The app holds the digest first, then writes the copy, as staging pins it.
+        try imageExpect(f.broker.holdPersonImages([image.sha256]).status == 200, "the person's image could not be held")
+        _ = try f.images.store(png)
+        // Any collection (here one that deleting an unrelated review runs) keeps it.
+        func collectNow() throws {
+            let drafted = f.broker.handleContextDraft(token: f.otherToken, name: "N", path: f.path("n.md"), content: .text("n\n"))
+            let review = try f.review(from: drafted)
+            _ = f.broker.deleteContextReviews(AgentContextDeletion(reviews: [AgentContextDraftDiscard(reviewID: review.id, expectedUpdatedAt: review.updatedAt)]))
+        }
+        try collectNow()
+        try imageExpect(FileManager.default.fileExists(atPath: f.images.url(for: image).path), "a collection took the image the person's open pack holds")
+        try imageExpect(f.broker.handleImageFetch(token: f.targetToken, digest: image.sha256).status != 200, "a pane fetched a held image nobody sent it")
+        // An image the person does not hold cannot be sent as theirs.
+        let other = try f.images.store(imageEvidenceFixture(width: 3, height: 3))
+        let refused = f.broker.handleAskFromUI(sourcePaneID: "source", targetPaneID: "target", text: "look", idempotencyKey: "window-capture-refused",
+                                               preserveFormatting: true, images: [other])
+        try imageExpect(refused.status == 409 && f.broker.handoffs().isEmpty, "an image the person does not hold was sent: \(refused.status) \(refused.text)")
+        // The person sends the pack: nobody answers, so the Ask times out after
+        // three seconds, and the handoff records the image.
+        let rendered = try ContextPackBuilder().render(ContextPack(name: "Look", note: "What is wrong here?", parts: [
+            .personWindowCapture(image, label: "Window", detail: "Captured by the person with the macOS window picker"),
+        ]))
+        _ = f.broker.handleAskFromUI(sourcePaneID: "source", targetPaneID: "target", text: rendered, idempotencyKey: "window-capture-sent",
+                                     preserveFormatting: true, images: [image])
+        let sent = f.broker.handoffs().first { $0.idempotencyKey == "window-capture-sent" }
+        try imageExpect(sent?.deliveredImages == [image], "the handoff does not record the image it delivered: \(String(describing: sent?.deliveredImages))")
+        let fetched = f.broker.handleImageFetch(token: f.targetToken, digest: image.sha256)
+        try imageExpect(fetched.status == 200 && fetched.body == png, "the Ask's target could not fetch the image: \(fetched.status)")
+        try imageExpect(f.broker.handleImageFetch(token: f.otherToken, digest: image.sha256).status == 403
+                        && f.broker.handleImageFetch(token: f.sourceToken, digest: image.sha256).status == 403,
+                        "a pane other than the Ask's target fetched the person's image")
+        // Released by the pack, the copy lives as long as the handoff does.
+        try imageExpect(f.broker.holdPersonImages([]).status == 200, "the hold could not be released")
+        try collectNow()
+        try imageExpect(f.broker.handleImageFetch(token: f.targetToken, digest: image.sha256).status == 200,
+                        "a sent image went while its handoff remained")
+        let cleared = f.broker.deleteAllHistory()
+        try imageExpect(cleared.status == 200 && !FileManager.default.fileExists(atPath: f.images.url(for: image).path),
+                        "clearing history left the image its handoffs held: \(cleared.status) \(cleared.text)")
+    }),
+    ("window capture: only the native Ask route can record an image on a handoff, and only one file captures the screen", {
+        let sourcesRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        let relay = try String(contentsOf: sourcesRoot.appendingPathComponent("ParleyCore/Relay.swift"), encoding: .utf8)
+        let passes = relay.components(separatedBy: "deliveredImages: images").count - 1
+        try imageExpect(passes == 1 && relay.contains("deliveredImages: [ContextPackImage] = []"),
+                        "images reach handleAsk from somewhere other than handleAskFromUI (\(passes) call sites)")
+        let sources = try FileManager.default.subpathsOfDirectory(atPath: sourcesRoot.path).filter { $0.hasSuffix(".swift") }
+        let capturing = try sources.filter {
+            try String(contentsOf: sourcesRoot.appendingPathComponent($0), encoding: .utf8).contains("\nimport ScreenCaptureKit")
+        }
+        try imageExpect(capturing == ["ParleyNative/WindowCapture.swift"], "screen capture is imported outside the one person-driven file: \(capturing)")
+    }),
+    ("window capture: a rebuilt core keeps the open pack's images, and a refused add leaves no copy", {
+        // Core recovery builds a new broker whose start collects copies no
+        // saved record holds; the app passes the open pack's images to it
+        // (Codex's review of MR !139, medium).
+        let f = try ImageBrokerFixture()
+        let png = imageEvidenceFixture(width: 6, height: 6)
+        let image = try f.images.store(png)
+        _ = try f.rebuiltBroker(holding: [image.sha256])
+        try imageExpect(FileManager.default.fileExists(atPath: f.images.url(for: image).path),
+                        "a rebuilt core collected an image the person's open pack holds")
+        _ = try f.rebuiltBroker()
+        try imageExpect(!FileManager.default.fileExists(atPath: f.images.url(for: image).path),
+                        "a rebuilt core kept an image nothing holds")
+        // An add that passes the first check but is refused once staged (here
+        // a pack already at its part limit) takes its copy with it (Codex's
+        // review of MR !139, low, and !138 M4).
+        let drafted = f.broker.handleContextDraft(token: f.sourceToken, name: "Full", path: f.path("p0.md"), content: .text("part 0\n"))
+        let review = try f.review(from: drafted)
+        for index in 1..<ContextPackBuilder.maximumParts {
+            let added = f.broker.handleContextAdd(token: f.sourceToken, draftID: review.id, path: f.path("p\(index).md"), content: .text("part \(index)\n"))
+            try imageExpect(added.status == 200, "could not fill the pack: \(added.status) \(added.text)")
+        }
+        let extra = imageEvidenceFixture(width: 5, height: 7)
+        let refused = f.broker.handleContextAdd(token: f.sourceToken, draftID: review.id, path: f.path("x.png"), content: .image(extra))
+        let extraImage = try ContextImageInspector.inspect(extra)
+        try imageExpect(refused.status != 200 && !FileManager.default.fileExists(atPath: f.images.url(for: extraImage).path),
+                        "a refused add left its image copy behind: \(refused.status) \(refused.text)")
+    }),
+    ("window capture: the app holds an image before writing it and until its send ends, and never queues one", {
+        let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("ParleyNative/AppModel.swift")
+        let reader = SwiftSourceReader(try String(contentsOf: url, encoding: .utf8))
+        func body(_ signature: String) throws -> Substring {
+            guard let found = reader.text.range(of: signature),
+                  let open = reader.text[found.upperBound...].firstIndex(of: "{"),
+                  let body = reader.balanced(at: open) else {
+                throw NSError(domain: "ImageEvidence", code: 5, userInfo: [NSLocalizedDescriptionKey: "\(signature) was not found"])
+            }
+            return body
+        }
+        func before(_ first: String, _ second: String, in region: Substring) -> Bool {
+            guard let a = region.range(of: first), let b = region.range(of: second) else { return false }
+            return a.lowerBound < b.lowerBound
+        }
+        let capture = try body("func captureWindowIntoContextPack()")
+        try imageExpect(before("try self.holdPersonImagesOrThrow()", "store.store(captured.data)", in: capture),
+                        "a window capture is written before the core holds it")
+        let launch = try body("private func launchTrackedAsk(")
+        guard let task = launch.range(of: "Task {"),
+              let taskBody = reader.balanced(at: reader.text.index(before: task.upperBound)) else {
+            throw NSError(domain: "ImageEvidence", code: 5, userInfo: [NSLocalizedDescriptionKey: "launchTrackedAsk has no tracked task"])
+        }
+        try imageExpect(before("beginImageSend(images)", "Task { [weak self] in", in: launch)
+                        && taskBody.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("[weak self] in\n            defer { self?.endImageSend(images) }")
+                        && taskBody.contains("images: images"),
+                        "a send does not hold its images from before it starts until it ends, or does not send them")
+        try imageExpect(before("guard images.isEmpty else", "offerBusyQueue(", in: try body("private func submitOrOfferBusyQueue(")),
+                        "a pack with an image can be offered the busy queue")
+        try imageExpect(try body("private func handleUnansweredAsk(").contains("if targetBusy && allowsBusyQueue {")
+                        && (try body("private func askWithContextPack(target: WorkbenchPane)")).contains("allowsBusyQueue: images.isEmpty"),
+                        "a refused Ask with an image can be offered the busy queue")
+        try imageExpect(reader.text.contains("var contextPackDraft: ActiveContextPack? {\n        didSet { syncPersonImageHolds() }"),
+                        "a change to the person's pack does not update what the core holds")
+    }),
+]
