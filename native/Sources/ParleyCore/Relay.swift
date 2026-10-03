@@ -5625,8 +5625,6 @@ public enum RelayShim {
       /usr/bin/printf '%s' "$idempotency_key" > "$request_dir/idempotency-key" || return 1
       /usr/bin/printf '%s' "$pane_token" > "$request_dir/token" || return 1
       /bin/cat "$staged_body" > "$request_dir/body" || return 1
-      /bin/rm -f "$staged_body"
-      staged_body=""
       request_ticket
       if [ -n "$ticket" ]; then
         /usr/bin/printf '%s' "$ticket" > "$request_dir/ticket" || return 1
@@ -5635,11 +5633,43 @@ public enum RelayShim {
 
     ticket_socket=__PARLEY_TICKET_SOCKET__
     ticket=""
+    # unasked, issued, refused, or silent when the socket gave no answer in
+    # time (an app the Mac had not yet scheduled after a wake): only silence
+    # is worth asking again.
+    ticket_outcome=unasked
     request_ticket() {
       ticket=""
+      ticket_outcome=unasked
       [ -n "$ticket_socket" ] && [ -S "$ticket_socket" ] && [ -x /usr/bin/nc ] || return 0
       ticket="$(/usr/bin/printf '%s %s\n' "$pane_token" "$request_id" | /usr/bin/nc -U -w 3 "$ticket_socket" 2>/dev/null | /usr/bin/tr -d '\r\n')" || ticket=""
-      case "$ticket" in refused:*) ticket="" ;; esac
+      case "$ticket" in
+        refused:*) ticket=""; ticket_outcome=refused ;;
+        "") ticket_outcome=silent ;;
+        *) ticket_outcome=issued ;;
+      esac
+    }
+
+    # Writes the request under a new id, then `ready`. The staged body stays
+    # until the reply's status is known, so a request refused for want of a
+    # ticket can be written again.
+    send_request() {
+      request_id="$(/usr/bin/uuidgen | /usr/bin/tr '[:upper:]' '[:lower:]')"
+      request_dir="$inbox/$request_id"
+      response_dir="$outbox/$request_id"
+      if ! write_request 2>/dev/null; then
+        cleanup
+        if [ -d "$endpoint" ] && [ ! -L "$endpoint" ]; then
+          echo "Parley could not write the request, so nothing was sent" >&2
+        else
+          echo "the Parley relay broker is not running" >&2
+        fi
+        return 2
+      fi
+      if ! /usr/bin/printf '%s' ready > "$request_dir/ready"; then
+        cleanup
+        echo "Parley could not finish writing the request; it may or may not have been sent" >&2
+        return 2
+      fi
     }
 
     post() {
@@ -5680,23 +5710,9 @@ public enum RelayShim {
         return 2
       fi
 
-      request_dir="$inbox/$request_id"
-      response_dir="$outbox/$request_id"
-      if ! write_request 2>/dev/null; then
-        cleanup
-        if [ -d "$endpoint" ] && [ ! -L "$endpoint" ]; then
-          echo "Parley could not write the request, so nothing was sent" >&2
-        else
-          echo "the Parley relay broker is not running" >&2
-        fi
-        return 2
-      fi
-      if ! /usr/bin/printf '%s' ready > "$request_dir/ready"; then
-        cleanup
-        echo "Parley could not finish writing the request; it may or may not have been sent" >&2
-        return 2
-      fi
+      send_request || return 2
 
+      ticket_retries=0
       ask_id_reported=0
       checks=0
       stale_readings=0
@@ -5730,6 +5746,19 @@ public enum RelayShim {
           && [ -f "$response_dir/status" ] && [ ! -L "$response_dir/status" ] \
           && [ -f "$response_dir/body" ] && [ ! -L "$response_dir/body" ]; then
           status="$(/bin/cat "$response_dir/status")"
+          if [ "$status" = "428" ] && [ "$ticket_outcome" = "silent" ] && [ "$ticket_retries" -lt 10 ]; then
+            # Refused before anything was read: this pane must present a
+            # ticket and the socket did not answer in time, as while the Mac
+            # sleeps and dark-wakes. Nothing was sent, so the same request
+            # goes again with a fresh ticket.
+            ticket_retries=$((ticket_retries + 1))
+            cleanup_directory "$request_dir"
+            cleanup_directory "$response_dir"
+            /bin/sleep 1
+            send_request || return 2
+            checks=0
+            continue
+          fi
           if [ "$status" = "102" ]; then
             # The broker's long-poll window passed with the work still open:
             # nothing to print; the caller asks again.

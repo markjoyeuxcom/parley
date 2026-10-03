@@ -329,4 +329,63 @@ let relayTicketChecks: [(String, () throws -> Void)] = [
     ("ticket ancestry admits a marked descendant and nothing else", checkTicketAncestry),
     ("the ticket socket issues to a kernel-attributed descendant and redeems once", checkTicketSocketIssuesAndRedeems),
     ("tickets travel through the real shim and are required, optional or unavailable by policy", checkTicketsThroughTheShim),
+    ("a ticket socket that does not answer in time is asked again, and a refusal is not", checkTicketRetriedAfterNoAnswer),
 ]
+
+/// While the Mac slept and dark-woke every fifteen seconds (2 October 2026,
+/// 19:45 onwards), a `parley wait` in a Claude pane got no answer from the
+/// ticket socket within `nc -w 3`, sent its request without a ticket and was
+/// refused: "a ticket is required for this pane and none was presented". That
+/// refusal comes before anything is processed, so the shim asks for a fresh
+/// ticket and sends the same request again, but only when the socket gave no
+/// answer; a socket that answered "refused" is final at once.
+func checkTicketRetriedAfterNoAnswer() throws {
+    let directory = try ticketDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let credentials = try RelayCredentials(file: directory.appendingPathComponent("tokens.json"))
+    let claudeToken = try credentials.token(for: "pane-claude")
+    let panes = [ticketPane(id: "pane-claude", kind: .claude)]
+    let broker = RelayBroker(credentials: credentials, panes: { panes }, paste: { _, _ in }, submit: { _, _ in })
+    let transportDirectory = directory.appendingPathComponent("t", isDirectory: true)
+    // The first ticket request answers only after nc has given up, as a
+    // ticket socket in an app the Mac has not yet scheduled after a wake.
+    let calls = LockedCounter()
+    let server = RelayTicketServer(socketFile: RelayTicketServer.socketURL(transportDirectory: transportDirectory), credentials: credentials,
+        paneGeneration: { id in
+            if calls.increment() == 1 { Thread.sleep(forTimeInterval: 4.5) }
+            return panes.first { $0.id == id }?.launchGeneration
+        })
+    let shim = try RelayShim.install(in: directory, transportDirectory: transportDirectory).appendingPathComponent("parley").path
+    let transport = RelayFileTransport(broker: broker, credentials: credentials, runtimeDirectory: transportDirectory, tickets: server)
+    try transport.start()
+    defer { transport.stop() }
+    try server.start()
+    defer { server.stop() }
+    let runner = ProcessCommandRunner(timeout: 40)
+    func whoami(marker: String?, generation: String = "0") throws -> (status: Int, identity: RelayAgentIdentity?, said: String, seconds: Double) {
+        var environment = ProcessInfo.processInfo.environment
+        environment["PARLEY_RELAY_TOKEN"] = claudeToken
+        environment[PaneProcessAnchorProjection.markerKey] = marker
+        environment[RelayTicketServer.generationMarkerKey] = generation
+        let started = ProcessInfo.processInfo.systemUptime
+        let result = try runner.run(executable: checksExecutable(), arguments: ["--run-marked", "/bin/sh", shim, "whoami"], environment: environment, input: nil)
+        return (Int(result.status), try? JSONDecoder().decode(RelayAgentIdentity.self, from: result.stdout),
+                String(decoding: result.stderr, as: UTF8.self) + String(decoding: result.stdout, as: UTF8.self),
+                ProcessInfo.processInfo.systemUptime - started)
+    }
+    let slow = try whoami(marker: "pane-claude")
+    try ticketExpect(slow.status == 0 && slow.identity?.attestation == "peer-verified" && calls.value >= 2,
+        "a request whose first ticket came too late was not sent again with a fresh one: status \(slow.status), \(calls.value) ticket requests, \(slow.said)")
+    // A socket that answers "refused" (here a process of an earlier pane
+    // generation) is not asked again: the refusal is immediate.
+    let refused = try whoami(marker: "pane-claude", generation: "7")
+    try ticketExpect(refused.status != 0 && refused.said.contains("ticket is required") && refused.seconds < 3,
+        "a refused ticket was retried or not refused: status \(refused.status) after \(refused.seconds) s, \(refused.said)")
+}
+
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var value: Int { lock.withLock { count } }
+    func increment() -> Int { lock.withLock { count += 1; return count } }
+}

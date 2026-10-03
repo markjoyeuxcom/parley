@@ -1068,7 +1068,15 @@ remain trusted local processes, not an isolation boundary. The shim asks for one
 writes it as the `ticket` request field; the socket request names both the
 capability and the transport request UUID, and the transport redeems it once
 for that exact pair. The shim stages the body before obtaining the short-lived
-ticket. Both native socket bind paths share a serialized owner-only umask,
+ticket. A pane that must present a ticket and sent none is refused with 428
+(`RelayFileTransportError.ticketRequired`) before anything is read. When the
+socket gave no answer within `nc -w 3`, the shim keeps its staged body and
+sends the same request again under a new id with a fresh ticket, a second
+apart, up to ten times. A socket that answered "refused" is final at once. On
+2 October 2026 a `parley wait` in a Claude pane died with that refusal while
+the Mac slept and dark-woke every fifteen seconds; the check
+`checkTicketRetriedAfterNoAnswer` delays the first ticket past `nc`'s timeout.
+Both native socket bind paths share a serialized owner-only umask,
 restored before listening. `RelayTicketPolicy` says per pane whether a ticket is
 required, optional or unavailable, from what real panes were observed to do
 on 14 September 2026 (every vendor: Claude, Agy, Codex and Copilot each
