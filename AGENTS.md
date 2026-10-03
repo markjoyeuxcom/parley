@@ -2169,6 +2169,19 @@ take one window the person picks, captured once. The steps:
   picker, and how the bundled app behaves, are hand checks
   (`docs/test-scenarios.md` P1.7).
 
+**Files the person adds** (3 October 2026). Add Files takes PNG and JPEG
+images as well as text: the app reads, checks, holds and stores each as it
+does a window capture, and the part keeps the ordinary `.file` kind with an
+`image` (`ContextPackPart.personImageFile`), so every version decodes it. In
+an agent's draft it goes through the trusted capture kind `.imageFile`, whose
+one path only names the part; the core never opens it. Like a window
+capture it is the person's, fetched only by a pane it is sent to. Just before
+a pack is sent, `ContextPackFreshness` reads each text `.file` part's path
+again, off the main actor, the way it was captured. A changed, missing or
+unreadable file is named, and the person sends the captured version,
+captures the unedited ones again for review (their own pack only), or
+cancels. Edited parts are never replaced; Git Diff parts are not read again.
+
 Native **Delete Saved Context** (`/ui/context-reviews/delete`) permanently
 removes selected records, including `returnedPart`, from both the store and
 broker. Every selected revision is checked before any removal; waiting and
@@ -2403,6 +2416,14 @@ alter an existing model context.
   Automatic rule loading from that added directory remains unverified; do not
   claim uptake without the fresh/resumed-session check in RELEASING.md. No
   lifecycle adapter is installed because Agy has no verified per-launch path.
+  Agy asks before every command, Parley's included, unless the person's own
+  `permissions.allow` in `~/.gemini/antigravity-cli/settings.json` holds
+  `command("$PARLEY_COMMAND")`. The host launch review reads that file
+  (`AgyHostConfiguration`, through the same bounded regular-file reader as
+  Claude's settings, so a FIFO is refused), applies Agy's documented Deny >
+  Ask > Allow, says whether the entry is there, unknown when it cannot read
+  the file, and offers Copy Allow Entry (3 October 2026). Parley never
+  writes it; the recipe and its reasons stay in Help.
 - Copilot receives the canonical text as additional instructions through
   `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`. Applicable instructions are combined
   without a general precedence order. It permits only `shell(parley)` without an

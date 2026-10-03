@@ -1043,13 +1043,13 @@ struct StatusCenterView: View {
                                 .font(.system(size: 10, weight: .semibold))
                         }
                         Text(entry.symptom)
-                            .font(.system(size: 9))
+                            .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
+                        // Steps the person follows, at a size they can read.
                         ForEach(Array(entry.steps.enumerated()), id: \.offset) { step, text in
                             Text("\(step + 1). \(text)")
-                                .font(.system(size: 9))
-                                .foregroundStyle(.secondary)
+                                .font(.system(size: 11))
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
@@ -2013,9 +2013,10 @@ struct StatusCenterView: View {
             Text("\(review.pack.parts.count) source · \(review.pack.sourceByteCount.formatted()) UTF-8 bytes")
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(.secondary)
+            // A consequence the person acts on: readable, not 9-point grey
+            // (Codex's review of 3 October 2026).
             Text("Parley has not independently verified or forwarded this file. Review and edit the visible source before choosing whether to send it as a Context Pack.")
-                .font(.system(size: 9))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 11))
                 .fixedSize(horizontal: false, vertical: true)
             if review.state.needsHumanReview {
                 Button("Review Returned File…") {

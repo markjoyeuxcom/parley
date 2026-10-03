@@ -170,3 +170,28 @@ public enum AskManyComparisonDraft {
         return "\(source)\n\n---\n\nWrite an edited synthesis below. The attributed answers above remain unchanged.\n\nSynthesis:\n"
     }
 }
+
+/// How Compare lays out its answers in the space it has. Each answer used to
+/// be a fixed 330 by 390 point card in a horizontal scroller, so two long
+/// reviews were read through small separate scroll regions however large the
+/// window was (raised by Claude, Codex and Agy on 3 October 2026).
+public enum AskManyComparisonLayout {
+    /// The narrowest an answer column gets before the row scrolls instead.
+    public static let minimumColumnWidth = 300.0
+    public static let columnSpacing = 12.0
+
+    /// The width of each column, and whether the row must scroll because
+    /// even the minimum width does not fit.
+    public static func columns(available: Double, count: Int) -> (width: Double, scrolls: Bool) {
+        guard count > 0 else { return (minimumColumnWidth, false) }
+        let spacing = columnSpacing * Double(count - 1)
+        let shared = ((available - spacing) / Double(count)).rounded(.down)
+        return shared >= minimumColumnWidth ? (shared, false) : (minimumColumnWidth, true)
+    }
+
+    /// Whether the question is long enough to be cut at four lines, so the
+    /// view offers to show all of it.
+    public static func questionNeedsExpanding(_ question: String) -> Bool {
+        question.split(separator: "\n", omittingEmptySubsequences: false).count > 4 || question.count > 360
+    }
+}

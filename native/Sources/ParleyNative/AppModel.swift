@@ -6032,10 +6032,61 @@ final class AppModel: ObservableObject {
         contextPackDraft = draft
     }
 
+    /// Before a pack is sent, re-reads the text files it captured, off the
+    /// main actor (`ContextPackFreshness`). When one changed, went or no
+    /// longer reads, the person chooses: send the captured version, capture
+    /// the unedited ones again and review, or cancel. Nothing is replaced
+    /// without that choice, and an agent's draft is only warned about, since
+    /// its parts change through the core.
+    private func whenContextFilesAreCurrent(_ proceed: @escaping @MainActor () -> Void) {
+        guard let draft = contextPackDraft, let contextPackBuilder,
+              !ContextPackFreshness.checkable(draft.pack.parts).isEmpty else {
+            proceed()
+            return
+        }
+        guard !contextCaptureInFlight else { return }
+        let parts = draft.pack.parts
+        let draftID = draft.id
+        contextCaptureInFlight = true
+        Task { @MainActor [weak self] in
+            let items = await Task.detached(priority: .userInitiated) {
+                ContextPackFreshness.check(parts, builder: contextPackBuilder)
+            }.value
+            guard let self else { return }
+            self.contextCaptureInFlight = false
+            guard let current = self.contextPackDraft, current.id == draftID, current.pack.parts == parts else { return }
+            guard let summary = ContextPackFreshness.summary(items) else {
+                proceed()
+                return
+            }
+            let canRecapture = current.reviewID == nil
+                && items.contains { $0.state == .changed && !$0.edited && $0.fresh != nil }
+            let alert = NSAlert()
+            alert.messageText = "Files changed since they were added"
+            alert.informativeText = summary + "\n\nThe pack holds each file as it was when you added it."
+                + (canRecapture ? " Capture Again replaces the unedited ones with how they read now, for you to review before sending; your edited parts stay as they are." : "")
+            alert.addButton(withTitle: "Send Captured Version")
+            if canRecapture { alert.addButton(withTitle: "Capture Again") }
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                proceed()
+            case .alertSecondButtonReturn where canRecapture:
+                guard var latest = self.contextPackDraft, latest.id == draftID, latest.pack.parts == parts else { return }
+                latest.pack.parts = ContextPackFreshness.recaptured(parts, items: items)
+                self.updateContextPackMeasurement(&latest)
+                self.contextPackDraft = latest
+            default:
+                return
+            }
+        }
+    }
+
     func addContextFiles() {
         guard let draft = contextPackDraft else { return }
         let panel = NSOpenPanel()
-        panel.title = "Add explicit text files to \(draft.pack.name)"
+        panel.title = "Add files to \(draft.pack.name)"
+        panel.message = "Text files, or PNG and JPEG images of at most 10 MB."
         panel.prompt = "Add Files"
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
@@ -6043,22 +6094,86 @@ final class AppModel: ObservableObject {
         panel.directoryURL = URL(fileURLWithPath: draft.sourceFolder)
         guard panel.runModal() == .OK else { return }
 
-        perform {
-            if let reviewID = draft.reviewID {
-                captureTrustedContext(
-                    AgentContextTrustedCaptureRequest(
-                        reviewID: reviewID,
-                        kind: .files,
-                        paths: panel.urls.map(\.path)
-                    ),
-                    draftID: draft.id
-                )
-            } else {
-                guard let contextPackBuilder else { return }
-                let parts = try panel.urls.map { try contextPackBuilder.file(at: $0) }
-                try appendContextPackParts(parts, draftID: draft.id)
+        // Images go the way a window capture does; text as before.
+        let images = panel.urls.filter(Self.isImageFile)
+        let texts = panel.urls.filter { !Self.isImageFile($0) }
+        if !texts.isEmpty {
+            perform {
+                if let reviewID = draft.reviewID {
+                    captureTrustedContext(
+                        AgentContextTrustedCaptureRequest(
+                            reviewID: reviewID,
+                            kind: .files,
+                            paths: texts.map(\.path)
+                        ),
+                        draftID: draft.id
+                    )
+                } else {
+                    guard let contextPackBuilder else { return }
+                    let parts = try texts.map { try contextPackBuilder.file(at: $0) }
+                    try appendContextPackParts(parts, draftID: draft.id)
+                }
             }
         }
+        if !images.isEmpty {
+            addContextImageFiles(images, draftID: draft.id, reviewID: draft.reviewID)
+        }
+    }
+
+    /// PNG and JPEG by name; the bytes are checked by `ContextImageInspector`
+    /// before anything is kept, so a misnamed file is refused, not guessed.
+    private static func isImageFile(_ url: URL) -> Bool {
+        ["png", "jpg", "jpeg"].contains(url.pathExtension.lowercased())
+    }
+
+    /// The person's own image files (Codex's review of 3 October 2026: Add
+    /// Files took text only, though a pack can hold images). Each is read off
+    /// the main actor, checked, held and written as a window capture is, then
+    /// added to the person's pack or, through the core, to an agent's draft.
+    private func addContextImageFiles(_ urls: [URL], draftID: String, reviewID: String?) {
+        guard !contextCaptureInFlight else { return }
+        let store = contextImageStore
+        contextCaptureInFlight = true
+        Task { @MainActor [weak self] in
+            defer { self?.contextCaptureInFlight = false }
+            for url in urls {
+                do {
+                    let data = try await Task.detached(priority: .userInitiated) { try Self.readImageFile(url) }.value
+                    let image = try await Task.detached(priority: .userInitiated) { try ContextImageInspector.inspect(data) }.value
+                    guard let self, self.contextPackDraft?.id == draftID else { return }
+                    self.capturingImageDigest = image.sha256
+                    defer {
+                        self.capturingImageDigest = nil
+                        self.syncPersonImageHolds()
+                    }
+                    try self.holdPersonImagesOrThrow()
+                    try await Task.detached(priority: .userInitiated) { _ = try store.store(data) }.value
+                    if let reviewID {
+                        guard let relayClient = self.relayClient else {
+                            throw RelayUIError.message("The app-resident core is unavailable, so the image could not join the agent's draft.")
+                        }
+                        let request = AgentContextTrustedCaptureRequest(reviewID: reviewID, kind: .imageFile, paths: [url.path], image: image)
+                        let response = try await Task.detached(priority: .userInitiated) { try relayClient.captureTrustedContext(request) }.value
+                        try self.appendTrustedContextResponse(response, draftID: draftID)
+                    } else {
+                        try self.appendContextPackParts([.personImageFile(image, path: url.path)], draftID: draftID)
+                    }
+                } catch {
+                    NSAlert(error: RelayUIError.message("\(url.lastPathComponent): \(error.localizedDescription)")).runModal()
+                }
+            }
+        }
+    }
+
+    /// A regular file of at most the image bound, refused by its size before
+    /// it is read.
+    nonisolated private static func readImageFile(_ url: URL) throws -> Data {
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard values.isRegularFile == true else { throw RelayUIError.message("It is not a regular file.") }
+        guard let size = values.fileSize, size <= ContextImageInspector.maximumBytes else {
+            throw RelayUIError.message("It is larger than the 10 MB an image part may be.")
+        }
+        return try Data(contentsOf: url)
     }
 
     func addContextGitDiff() {
@@ -6330,6 +6445,10 @@ final class AppModel: ObservableObject {
             NSAlert(error: RelayUIError.message("Open a ready pane from another vendor before sending this context pack.")).runModal()
             return
         }
+        whenContextFilesAreCurrent { [weak self] in self?.chooseContextAskTarget(draft) }
+    }
+
+    private func chooseContextAskTarget(_ draft: ActiveContextPack) {
         requestPaneChoice(
             title: "Ask which vendor with this context?",
             message: "The exact pack visible behind this sheet will be submitted through Parley's attributed Ask path after one more confirmation.",
@@ -6561,6 +6680,10 @@ final class AppModel: ObservableObject {
             NSAlert(error: RelayUIError.message("This context pack needs a ready source pane and at least two other target panes.")).runModal()
             return
         }
+        whenContextFilesAreCurrent { [weak self] in self?.chooseContextCompareTargets() }
+    }
+
+    private func chooseContextCompareTargets() {
         requestPaneChoice(
             title: "Compare with which panes?",
             message: "Choose at least two distinct panes. Every selected pane receives the same attributed pack independently.",

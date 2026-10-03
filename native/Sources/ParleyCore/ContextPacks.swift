@@ -218,6 +218,22 @@ public struct ContextPackPart: Identifiable, Codable, Equatable, Sendable {
         )
     }
 
+    /// A PNG or JPEG file the person chose with Add Files. It keeps the
+    /// ordinary `.file` kind, which every version decodes; the image is what
+    /// marks it, as for the window capture. Like that capture, it is the
+    /// person's, never an agent's to fetch until the person sends it.
+    public static func personImageFile(_ image: ContextPackImage, path: String) -> ContextPackPart {
+        ContextPackPart(
+            source: ContextPackSource(
+                kind: .file,
+                label: URL(fileURLWithPath: path).lastPathComponent,
+                detail: "\(path) · \(image.format.label) · \(image.width) × \(image.height) pixels, selected by the person"
+            ),
+            capturedText: imageDescription(image),
+            image: image
+        )
+    }
+
     private static func imageDescription(_ image: ContextPackImage) -> String {
         """
         This part is an image (\(image.format.label), \(image.width) × \(image.height) pixels), not text. Parley keeps a copy.
@@ -559,7 +575,7 @@ public enum ContextPackError: LocalizedError, Equatable {
         case .artifactTooLarge:
             "That saved browser/tool artifact is too large to inspect safely. Select an artifact no larger than 25 MB."
         case .notText:
-            "Context packs can contain UTF-8 text only."
+            "That file is neither UTF-8 text nor a PNG or JPEG image. Context packs take text files and PNG or JPEG images of at most 10 MB."
         case let .invalidEvidence(detail):
             detail
         case let .commandFailed(detail):

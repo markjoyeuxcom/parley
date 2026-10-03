@@ -1116,6 +1116,21 @@ public final class RelayBroker: @unchecked Sendable {
                     label: "Window capture",
                     detail: "Captured by the person with the macOS window picker · \(image.width) × \(image.height) pixels"
                 )]
+            case .imageFile:
+                // The app read, checked and stored the bytes; the core never
+                // opens the path, which only names the part.
+                guard let image = request.image,
+                      request.paths.count == 1,
+                      request.paneID == nil,
+                      request.executablePath == nil,
+                      request.arguments.isEmpty,
+                      request.evidencePaneID == nil,
+                      request.sourceURL == nil,
+                      request.selectedText == nil else {
+                    throw BrokerFailure(status: 400, message: "invalid image file request")
+                }
+                if let refusal = personImagesRefusal([image]) { return refusal }
+                captured = [.personImageFile(image, path: request.paths[0])]
             case .browserScreenshot, .toolArtifact:
                 guard request.paths.count == 1,
                       request.paneID == nil,
