@@ -546,7 +546,8 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     text: comparison.text,
                     idempotencyKey: comparison.idempotencyKey,
                     preserveFormatting: comparison.preserveFormatting ?? false,
-                    origin: comparison.origin ?? .human
+                    origin: comparison.origin ?? .human,
+                    images: comparison.images ?? []
                 ), to: client)
             case "/ui/reviewed-busy-drafts":
                 guard controlAuthorized(request, client: client) else {

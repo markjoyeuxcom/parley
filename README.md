@@ -290,7 +290,10 @@ review. A pane you send the image to writes it to a file with
 `parley image <sha256> --to <file>`; naming the image in a message grants
 nothing. Your own context pack can also hold a window you pick with
 **Capture Window…**, which uses the macOS window picker: Parley captures only
-the window you choose, once, and shows it before anything is sent.
+the window you choose, once, and shows it before anything is sent. A
+capture can also go into an agent's draft awaiting your review, where it is
+saved with the draft. Your own pack holding one can be sent with Ask One Pane
+or Compare, or wait in the busy queue.
 
 `relay` submits immediately because that is the capability the person selected.
 `paste` is the explicit review-before-send route. Multiline content is passed

@@ -7,6 +7,9 @@ public enum RelayFileTransportError: LocalizedError {
     case runtime(String)
     /// A request field over its bound, so a caller can say which bound.
     case fieldTooLarge(String)
+    /// A pane that must present a ticket sent none: refused before anything
+    /// was read, so the shim may send the same request again (428).
+    case ticketRequired(String)
 
     public var errorDescription: String? {
         switch self {
@@ -16,6 +19,8 @@ public enum RelayFileTransportError: LocalizedError {
             "Parley agent transport: \(detail)"
         case let .fieldTooLarge(name):
             "Parley agent transport: request field \(name) is too large"
+        case let .ticketRequired(reason):
+            "Parley agent transport: a ticket is required for this pane and none was presented: \(reason)"
         }
     }
 }
@@ -409,12 +414,16 @@ public final class RelayFileTransport: @unchecked Sendable {
         do {
             request = try readRequest(from: directory, expectedToken: endpoint.lastPathComponent)
         } catch {
-            try? fileManager.removeItem(at: directory)
+            // The refusal is written before the request leaves processing: a
+            // shim that sees its request gone with no reply knows it was read
+            // and drops its staged body, so a 428 must already be there.
             try? writeResponse(
-                FileResponse(status: 400, body: error.localizedDescription),
+                FileResponse(status: { if case .ticketRequired = error as? RelayFileTransportError { return 428 } else { return 400 } }(),
+                             body: error.localizedDescription),
                 requestID: requestID,
                 endpoint: endpoint
             )
+            try? fileManager.removeItem(at: directory)
             return
         }
 
@@ -620,7 +629,7 @@ public final class RelayFileTransport: @unchecked Sendable {
             }
             attestation = .peerVerified
         } else if policy.requirement == .required {
-            throw RelayFileTransportError.runtime("a ticket is required for this pane and none was presented: \(policy.reason)")
+            throw RelayFileTransportError.ticketRequired(policy.reason)
         } else {
             attestation = .tokenOnly
         }

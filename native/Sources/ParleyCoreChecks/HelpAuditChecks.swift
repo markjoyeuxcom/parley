@@ -135,12 +135,15 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
         try helpAuditContains(team.searchableText, ["Tools", "provisioning", "Stop", "parley team status"])
         // A person-proposed run (ReviewedCommandRunCoordinator.propose) is documented beside agent requests.
         try helpAuditContains(runs.searchableText, ["Integrate…", "Proposed by you", "always waits for your approval", "creates no session trust", "no agent pane can recover"])
+        // A delivered handoff whose target never started a turn (2 October 2026).
+        try helpAuditContains(try helpAuditTopic("coordination").searchableText,
+            ["No turn-start report since delivery", "never from terminal text", "targetTurnStarted"])
         let context = try helpAuditTopic("context-packs")
         let commands = context.sections.flatMap(\.commands).map(\.command)
         try helpAuditRequire(commands.contains("parley context list"), "Missing context list example")
         try helpAuditRequire(commands.contains("parley context show <draft-id>"), "Missing context show example")
         try helpAuditContains(context.searchableText, ["PNG or JPEG image", "parley image <sha256> --to <file>", "Only the pane that staged the image, or a pane you sent a pack holding it",
-            "Capture Window…", "Parley never lists windows or captures anything you did not pick", "Ask One Pane only",
+            "Capture Window…", "Parley never lists windows or captures anything you did not pick", "Ask One Pane or Compare", "the agent whose draft it is cannot fetch it",
             "Waiting for Your Approval", "Saved Agent Drafts", "newest eight", "Discard All Editable Drafts",
             "never touches a waiting approval", "Agent-proposed context; not approved or sent", "stay unverified",
             "reading it there is a complete interaction",

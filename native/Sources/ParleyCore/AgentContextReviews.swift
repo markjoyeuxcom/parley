@@ -238,6 +238,9 @@ public enum AgentContextTrustedCaptureKind: String, Codable, Equatable, Sendable
     case browserSelection
     case browserScreenshot
     case toolArtifact
+    /// The person's own window capture, already held and written by the app
+    /// (`image`), added to an agent's draft.
+    case windowCapture
 }
 
 /// A control-token-authorized request for the app-resident core to capture a
@@ -253,6 +256,7 @@ public struct AgentContextTrustedCaptureRequest: Codable, Equatable, Sendable {
     public let evidencePaneID: String?
     public let sourceURL: String?
     public let selectedText: String?
+    public let image: ContextPackImage?
 
     public init(
         reviewID: String,
@@ -263,7 +267,8 @@ public struct AgentContextTrustedCaptureRequest: Codable, Equatable, Sendable {
         arguments: [String] = [],
         evidencePaneID: String? = nil,
         sourceURL: String? = nil,
-        selectedText: String? = nil
+        selectedText: String? = nil,
+        image: ContextPackImage? = nil
     ) {
         self.reviewID = reviewID
         self.kind = kind
@@ -274,6 +279,7 @@ public struct AgentContextTrustedCaptureRequest: Codable, Equatable, Sendable {
         self.evidencePaneID = evidencePaneID
         self.sourceURL = sourceURL
         self.selectedText = selectedText
+        self.image = image
     }
 }
 

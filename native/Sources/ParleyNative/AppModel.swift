@@ -3060,19 +3060,14 @@ final class AppModel: ObservableObject {
             && askManyComparisonRun?.isRunning != true
             && relayClient != nil
             && contextPackDraft?.reviewID == nil
-            && !contextPackHoldsImages
             && contextPackIsSendable
     }
 
-    /// Compare and the busy queue do not carry images yet: only one Ask's
-    /// target is granted a window capture (`deliveredImages`).
-    var contextPackHoldsImages: Bool {
-        contextPackDraft?.pack.parts.contains { $0.image != nil } ?? false
-    }
-
-    /// Only the person's own pack takes a window capture.
+    /// The person's own pack, or an agent's draft awaiting review, takes a
+    /// window capture.
     var canCaptureWindowIntoContextPack: Bool {
-        contextPackDraft.map { $0.reviewID == nil } ?? false && !contextPackCaptureRunning
+        guard let draft = contextPackDraft, !contextPackCaptureRunning else { return false }
+        return draft.reviewID == nil || draft.reviewState?.needsHumanReview == true
     }
 
     var contextPackRenderedByteCount: Int {
@@ -3183,6 +3178,12 @@ final class AppModel: ObservableObject {
     /// Owned-timestamp facts for one delegation: elapsed since delivery, the
     /// agent-declared note's age and the exact target pane's hook signal age.
     /// Nil for non-delegations and for records without a recorded delivered transition.
+    /// Delivered a minute ago or more and the target, which reports turns,
+    /// has not started one (advisory).
+    func handoffNotStarted(_ handoff: RelayHandoff, at now: Date) -> Bool {
+        HandoffStartProjection.notStarted(handoff, target: panes.first { $0.id == handoff.targetPaneID }, now: now)
+    }
+
     func delegationVisibility(for handoff: RelayHandoff, at now: Date) -> DelegationVisibility? {
         guard handoff.kind == .delegate else { return nil }
         let target = panes.first { $0.id == handoff.targetPaneID }
@@ -4446,7 +4447,8 @@ final class AppModel: ObservableObject {
         }
         guard let edited = editBoundedText(
             title: "Review and Send to \(draft.targetName)",
-            message: "This is a fresh human authorization. The exact edited text will be submitted as a tracked Ask from \(draft.sourceName). Parley never sends this merely because the target became idle.",
+            message: "This is a fresh human authorization. The exact edited text will be submitted as a tracked Ask from \(draft.sourceName). Parley never sends this merely because the target became idle."
+                + (draft.images.map { $0.isEmpty ? "" : " The \($0.count) image\($0.count == 1 ? "" : "s") queued with it go too, and only \(draft.targetName) may fetch \($0.count == 1 ? "it" : "them")." } ?? ""),
             text: draft.text,
             action: "Send Reviewed Ask",
             insertVisible: { "" }
@@ -6091,11 +6093,12 @@ final class AppModel: ObservableObject {
     /// The person's own window capture: the system window picker, then one
     /// still image of the window picked. The core holds the image before
     /// Parley's copy is written, as staging pins an agent's, and the part
-    /// joins the pack for review like any other source. An agent's draft
-    /// never takes one.
+    /// joins the pack for review like any other source. Added to an agent's
+    /// draft, the core saves it with the review.
     func captureWindowIntoContextPack() {
-        guard let draft = contextPackDraft, draft.reviewID == nil, !contextCaptureInFlight else { return }
+        guard let draft = contextPackDraft, canCaptureWindowIntoContextPack else { return }
         let draftID = draft.id
+        let reviewID = draft.reviewID
         let store = contextImageStore
         contextCaptureInFlight = true
         Task { @MainActor [weak self] in
@@ -6111,12 +6114,23 @@ final class AppModel: ObservableObject {
                 }
                 try self.holdPersonImagesOrThrow()
                 try await Task.detached(priority: .userInitiated) { _ = try store.store(captured.data) }.value
-                let time = Date().formatted(date: .omitted, time: .shortened)
-                try self.appendContextPackParts([.personWindowCapture(
-                    image,
-                    label: "Window captured at \(time)",
-                    detail: "Captured by the person with the macOS window picker · \(image.width) × \(image.height) pixels"
-                )], draftID: draftID)
+                if let reviewID {
+                    // An agent's draft is saved by the core, which adds the
+                    // capture only while the person still holds it.
+                    guard let relayClient = self.relayClient else {
+                        throw RelayUIError.message("The app-resident core is unavailable, so the capture could not join the agent's draft.")
+                    }
+                    let request = AgentContextTrustedCaptureRequest(reviewID: reviewID, kind: .windowCapture, image: image)
+                    let response = try await Task.detached(priority: .userInitiated) { try relayClient.captureTrustedContext(request) }.value
+                    try self.appendTrustedContextResponse(response, draftID: draftID)
+                } else {
+                    let time = Date().formatted(date: .omitted, time: .shortened)
+                    try self.appendContextPackParts([.personWindowCapture(
+                        image,
+                        label: "Window captured at \(time)",
+                        detail: "Captured by the person with the macOS window picker · \(image.width) × \(image.height) pixels"
+                    )], draftID: draftID)
+                }
             } catch {
                 NSAlert(error: error).runModal()
             }
@@ -6384,7 +6398,7 @@ final class AppModel: ObservableObject {
                 onUnanswered: { [weak self] failure in
                     self?.handleUnansweredAsk(
                         failure, text: rendered, from: source, to: target, preserveFormatting: true,
-                        allowsBusyQueue: images.isEmpty,
+                        images: images,
                         restore: { [weak self] in
                             // An empty pack opened since then is not a draft to protect.
                             guard let self, self.contextPackDraft.map({ $0.pack.parts.isEmpty }) ?? true else { return false }
@@ -6579,7 +6593,8 @@ final class AppModel: ObservableObject {
                     source: source,
                     targets: targets,
                     question: rendered,
-                    preserveFormatting: true
+                    preserveFormatting: true,
+                    images: draft.pack.parts.compactMap(\.image)
                 )
             }
         }
@@ -6619,9 +6634,19 @@ final class AppModel: ObservableObject {
         source: WorkbenchPane,
         targets: [WorkbenchPane],
         question: String,
-        preserveFormatting: Bool = false
+        preserveFormatting: Bool = false,
+        images: [ContextPackImage] = []
     ) {
         guard let relayClient else { return }
+        // As for one Ask: the images stay held until the comparison ends.
+        beginImageSend(images)
+        if !images.isEmpty {
+            do { try holdPersonImagesOrThrow(force: true) } catch {
+                endImageSend(images)
+                NSAlert(error: error).runModal()
+                return
+            }
+        }
         let run = AskManyComparisonRun(
             id: UUID().uuidString.lowercased(),
             sourcePaneID: source.id,
@@ -6646,6 +6671,7 @@ final class AppModel: ObservableObject {
 
         let targetPaneIDs = targets.map(\.id)
         Task { [weak self] in
+            defer { self?.endImageSend(images) }
             guard let self else { return }
             do {
                 let response = try await Task.detached(priority: .userInitiated) {
@@ -6654,7 +6680,8 @@ final class AppModel: ObservableObject {
                         targetPaneIDs: targetPaneIDs,
                         text: question,
                         idempotencyKey: run.id,
-                        preserveFormatting: preserveFormatting
+                        preserveFormatting: preserveFormatting,
+                        images: images
                     )
                 }.value
                 guard var current = self.askManyComparisonRun, current.id == run.id else { return }
@@ -8558,10 +8585,7 @@ final class AppModel: ObservableObject {
             )
             return .launched
         }
-        guard images.isEmpty else {
-            throw RelayUIError.message("\(target.displayName) already has tracked work. A pack with a window capture cannot wait in the busy queue yet, so it was kept open; send it once \(target.displayName) is free.")
-        }
-        return try offerBusyQueue(text, from: source, to: target, preserveFormatting: preserveFormatting) ? .queued : .cancelled
+        return try offerBusyQueue(text, from: source, to: target, preserveFormatting: preserveFormatting, images: images) ? .queued : .cancelled
     }
 
     /// Offers the local busy queue for a reviewed Ask to a target that
@@ -8570,7 +8594,8 @@ final class AppModel: ObservableObject {
         _ text: String,
         from source: WorkbenchPane,
         to target: WorkbenchPane,
-        preserveFormatting: Bool
+        preserveFormatting: Bool,
+        images: [ContextPackImage] = []
     ) throws -> Bool {
         let alert = NSAlert()
         alert.messageText = "\(target.displayName) Already Has Tracked Work"
@@ -8582,11 +8607,15 @@ final class AppModel: ObservableObject {
         guard let relayClient else {
             throw RelayUIError.message("The app-resident core is unavailable, so Parley cannot keep this draft safely.")
         }
+        // The core takes the images over from the person's hold; it keeps
+        // them with the queued draft and sends them with it.
+        if !images.isEmpty { try holdPersonImagesOrThrow(force: true) }
         _ = try relayClient.enqueueReviewedBusyDraft(ReviewedBusyDraftCreateRequest(
             sourcePaneID: source.id,
             targetPaneID: target.id,
             text: text,
-            preserveFormatting: preserveFormatting
+            preserveFormatting: preserveFormatting,
+            images: images
         ))
         return true
     }
@@ -8684,7 +8713,7 @@ final class AppModel: ObservableObject {
         from source: WorkbenchPane,
         to target: WorkbenchPane,
         preserveFormatting: Bool,
-        allowsBusyQueue: Bool = true,
+        images: [ContextPackImage] = [],
         restore: () -> Bool,
         notRestoredNote: String = "Another draft is open in its place, so this one was not reopened; copy its text to keep it."
     ) {
@@ -8696,9 +8725,9 @@ final class AppModel: ObservableObject {
             // needs reopening; declined, the draft comes back quietly because
             // the offer already said why it was not sent.
             var offeredQueue = false
-            if targetBusy && allowsBusyQueue {
+            if targetBusy {
                 do {
-                    if try offerBusyQueue(text, from: source, to: target, preserveFormatting: preserveFormatting) { return }
+                    if try offerBusyQueue(text, from: source, to: target, preserveFormatting: preserveFormatting, images: images) { return }
                     offeredQueue = true
                 } catch {
                     NSAlert(error: error).runModal()
