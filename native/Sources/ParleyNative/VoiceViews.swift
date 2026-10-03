@@ -90,7 +90,7 @@ struct VoiceDraftView: View {
     private var phaseLabel: String {
         switch voice.session.phase {
         case .preparing: "Preparing microphone…"
-        case .recording: "Recording · release to review"
+        case .recording: "Recording · click Stop to review"
         case .finishing: "Finishing transcript…"
         case .delivering: "Delivering reviewed text…"
         case .deliveryUncertain: "Check delivery in the pane"
