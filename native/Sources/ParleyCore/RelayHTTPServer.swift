@@ -515,6 +515,25 @@ public final class RelayHTTPServer: @unchecked Sendable {
                     idempotencyKey: changes.idempotencyKey,
                     inReplyToHandoffID: changes.inReplyToHandoffID
                 ), to: client)
+            case "/ui/delegate-again":
+                guard controlAuthorized(request, client: client) else {
+                    write(RelayTextResponse(status: 401, text: "bad control token"), to: client)
+                    return
+                }
+                guard let again = try? JSONDecoder().decode(
+                    RelayUIDelegateAgainRequest.self,
+                    from: request.body
+                ) else {
+                    write(RelayTextResponse(status: 400, text: "invalid native Delegate This Again request"), to: client)
+                    return
+                }
+                write(broker.handleDelegateAgainFromUI(
+                    sourcePaneID: again.sourcePaneID,
+                    targetPaneID: again.targetPaneID,
+                    text: again.text,
+                    idempotencyKey: again.idempotencyKey,
+                    repeatsHandoffID: again.repeatsHandoffID
+                ), to: client)
             case "/ui/handoff-review":
                 guard controlAuthorized(request, client: client) else {
                     write(RelayTextResponse(status: 401, text: "bad control token"), to: client)

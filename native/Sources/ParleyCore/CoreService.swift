@@ -431,6 +431,40 @@ public struct RelayCoreClient: Sendable {
         return RelayTextResponse(status: response.status, text: receipt.error ?? receipt.note ?? raw)
     }
 
+    /// Delegate This Again. Like Request Changes, the core returns once the
+    /// task has been delivered into the target pane, so this is a tracked
+    /// request that must not run on the main thread.
+    public func delegateAgainFromUI(
+        sourcePaneID: String,
+        targetPaneID: String,
+        text: String,
+        idempotencyKey: String,
+        repeatsHandoffID: String
+    ) throws -> RelayTextResponse {
+        let body = try JSONEncoder().encode(RelayUIDelegateAgainRequest(
+            sourcePaneID: sourcePaneID,
+            targetPaneID: targetPaneID,
+            text: text,
+            idempotencyKey: idempotencyKey,
+            repeatsHandoffID: repeatsHandoffID
+        ))
+        let response = try request(
+            method: "POST",
+            path: "/ui/delegate-again",
+            headers: [
+                "X-Parley-Control": controlToken,
+                "Content-Type": "application/json",
+            ],
+            body: body,
+            receiveTimeout: RelayCoreTransportLimits.trackedResponseTimeout
+        )
+        let raw = String(decoding: response.body, as: UTF8.self)
+        guard let receipt = try? JSONDecoder().decode(RelayResponseBody.self, from: response.body) else {
+            return RelayTextResponse(status: response.status, text: raw)
+        }
+        return RelayTextResponse(status: response.status, text: receipt.error ?? receipt.note ?? raw)
+    }
+
     public func updateHandoffReview(
         _ update: RelayHandoffReviewUpdate
     ) throws -> RelayTextResponse {

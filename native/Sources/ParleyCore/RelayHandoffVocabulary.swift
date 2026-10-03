@@ -166,6 +166,11 @@ public struct RelayHandoff: Identifiable, Codable, Equatable, Sendable {
     public let submitted: Bool
     public var inReplyToHandoffID: String? = nil
     public var relationship: RelayHandoffRelationship? = nil
+    /// The ended delegation this one sends again, set only by the native
+    /// Delegate This Again route. It is not review lineage: the original
+    /// need not have returned anything, and nothing about it changes. An
+    /// older Parley ignores the key.
+    public var repeatsHandoffID: String? = nil
     public var humanVerdict: RelayHandoffVerdict? = nil
     public var humanReviewNote: String? = nil
     public var reviewedAt: Date? = nil
