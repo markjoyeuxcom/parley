@@ -296,7 +296,14 @@ delegation-time Git facts attached in the second locked section of
 are flowing and backs off to 250 ms after ten quiet ticks
 (`TransportPollSchedule`), with a vnode watcher per inbox that wakes it at
 once on a write, so an idle app neither scans inboxes twenty times a second
-nor makes an agent wait on the backed-off timer.
+nor makes an agent wait on the backed-off timer. The check counts the ticks
+the watcher runs itself (`watcherTickCount`). That is ticks begun, not
+requests claimed: a request written in place is often claimed by the next
+fast tick the wake brings forward, which is the guarantee. It compares idle with active
+latency on the same run, never against a fixed bound. A CPU-starved CI VM
+made every request take about 120 ms, idle and active alike, and failed a
+fixed 100 ms bound; this was reproduced under `taskpolicy -b` on 3 October
+2026 (Prax 24e184f8).
 
 Liveness is the endpoint's `heartbeat` file, rewritten once a second, and it
 must survive sleep and clock changes (26 September 2026, 117580ad). On 23
@@ -1861,8 +1868,14 @@ reconciliation follow the pane wherever it is and pass false. `movePane`
 refuses while the pane's container is being prepared or stopped
 (`containerPreparations`), and while a person's action holds it
 (`holdAgainstMove`): `performAfterContainerStops` holds every pane it
-reviewed, synchronously after the confirmation, and releases them in a
-`defer` once its last step has run. The cleanup reservation alone ends when
+reviewed, synchronously after the confirmation, and releases them once its
+last step has run. Since 3 October 2026 that sequence is
+`ContainerStopSequence` (ParleyCore), over an environment `WorkbenchController`
+provides. Building one holds every pane. `run` tries every container, refuses
+the action when any stop failed or any pane changed or went away, runs it
+exactly once otherwise, and releases on every path. `ContainerStopSequenceChecks`
+drive it through a recording fake (Prax 8544b63f, from the team review of MR
+!135). The cleanup reservation alone ends when
 Docker returns, before that last step, and in a batch one pane's cleanup ends
 while another's still runs, so a move could land between a removed container
 and the step that ends its pane (the team review of the pane Stop and its

@@ -5056,26 +5056,15 @@ final class AppModel: ObservableObject {
             perform(operation)
             return
         }
-        let held = reviewed.map(\.id)
-        do { try controller.holdAgainstMove(held) } catch {
+        // Holds every reviewed pane now, synchronously after the person's
+        // confirmation; the sequence releases them when it ends.
+        let sequence: ContainerStopSequence
+        do { sequence = try ContainerStopSequence(reviewed: reviewed, environment: controller) } catch {
             NSAlert(error: error).runModal()
             return
         }
         Task {
-            defer { controller.releaseMoveHold(held) }
-            do {
-                var failures: [String] = []
-                for pane in reviewed where pane.containerConfiguration != nil {
-                    do { try await Task.detached(priority: .userInitiated) { try controller.prepareContainerStop(pane, requiringWorkspace: true) }.value }
-                    catch { failures.append("\(pane.displayName): \(error.localizedDescription)") }
-                }
-                if !failures.isEmpty { throw ContainerPaneError.refused(failures.joined(separator: "\n")) }
-                let current = try controller.listPanes()
-                guard reviewed.allSatisfy({ old in current.contains(where: {
-                    $0.id == old.id && $0.launchGeneration == old.launchGeneration && $0.cwd == old.cwd && $0.workspaceID == old.workspaceID
-                }) }) else { throw RelayUIError.message("The panes changed during container cleanup. Review the action again.") }
-                try operation()
-            } catch { NSAlert(error: error).runModal() }
+            do { try await sequence.run(operation) } catch { NSAlert(error: error).runModal() }
         }
     }
 
