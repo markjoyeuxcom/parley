@@ -2012,7 +2012,9 @@ Codex's review of MR !138 shaped most of what follows.
   when the store is full. Staging pins the digest before the copy is written
   and releases it once the review is in the broker's map, or staging failed
   (`pinImage`, `unpinImage`). The pin lock is held across a collection's
-  listing, so a copy whose review is still being saved is never taken. A
+  listing, so a copy whose review is still being saved is never taken.
+  Staging ends through `releaseStagedImage`, which also collects a copy
+  that no review ended up holding, such as a refused add's. A
   ten-minute age did this before review, and a long sleep or a forward clock
   step defeated it.
 - **Fetching:** agents run `parley image <sha256> --to <file>`, a pull
@@ -2078,10 +2080,11 @@ take one window the person picks, captured once. The steps:
   the send is launched, and a refused send restores it.
 - **Not yet:** Compare and the busy queue do not carry images, so a pack
   holding one refuses both.
-- **Core recovery:** a rebuilt core's start collects an unsent pack's
-  captures before the app can hold them again. The preview and the send
-  then say Parley no longer keeps them. A changed `relayClient` resets the
-  app's held set, so later captures are held.
+- **Core recovery:** AppModel builds the replacement core holding the open
+  pack's images (`retainingPersonImages`, the broker's `personImageHolds`).
+  Its start would otherwise collect an unsent capture, which Codex's review
+  of MR !139 found. A changed `relayClient` resets the app's held set and
+  holds again through the new core.
 - **Status Center:** a handoff shows its **SENT IMAGES**.
 - **Hand checks:** whether macOS asks for Screen Recording permission for the
   picker, and how the bundled app behaves, are hand checks

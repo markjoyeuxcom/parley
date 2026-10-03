@@ -422,8 +422,9 @@ final class AppModel: ObservableObject {
     private var relayClient: RelayCoreClient? {
         didSet {
             refreshGate.invalidate()
-            // A rebuilt core holds nothing for the person's pack yet. Its
-            // start already collected an unsent capture; later ones are held.
+            // A rebuilt core was built holding the person's pack's images
+            // (`retainingPersonImages`); hold them again through it all the
+            // same, so the app's record matches the core it now talks to.
             heldPersonImages = []
             syncPersonImageHolds()
         }
@@ -4020,7 +4021,8 @@ final class AppModel: ObservableObject {
                     transportDirectory: RelayFileTransport.runtimeDirectory(
                         applicationDirectory: controller.applicationDirectory
                     ),
-                    permissionProfiles: { [permissionProfileStore] in try permissionProfileStore.profiles() }
+                    permissionProfiles: { [permissionProfileStore] in try permissionProfileStore.profiles() },
+                    retainingPersonImages: wantedPersonImages
                 )
                 residentCore = core
                 relayClient = core.client

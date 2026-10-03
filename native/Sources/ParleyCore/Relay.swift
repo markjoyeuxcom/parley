@@ -586,6 +586,20 @@ public final class RelayBroker: @unchecked Sendable {
         imagePinLock.withLock { pinnedImageDigests[digest, default: 0] += 1 }
     }
 
+    /// A staging's end, whether its review was saved or not: the pin goes,
+    /// and a copy nothing else holds goes with it, rather than waiting for the
+    /// next collection (Codex's reviews of MR !138, M4, and !139). Callers run
+    /// this from a `defer`, after every path has released the broker lock.
+    private func releaseStagedImage(_ digest: String?) {
+        guard let digest else { return }
+        unpinImage(digest)
+        consultationCondition.lock()
+        if !contextReviewRecords.values.contains(where: { imageDigests(of: $0).contains(digest) }) {
+            collectUnreferencedImagesLocked()
+        }
+        consultationCondition.unlock()
+    }
+
     private func unpinImage(_ digest: String) {
         imagePinLock.withLock {
             let count = (pinnedImageDigests[digest] ?? 1) - 1
@@ -650,7 +664,8 @@ public final class RelayBroker: @unchecked Sendable {
         historyRetentionStore: CollaborationHistoryRetentionStore? = nil,
         contextReviewStore: AgentContextReviewStore? = nil,
         busyDraftStore: ReviewedBusyDraftStore? = nil,
-        contextImageStore: ContextImageStore? = nil
+        contextImageStore: ContextImageStore? = nil,
+        personImageHolds: Set<String> = []
     ) {
         self.credentials = credentials
         self.panes = panes
@@ -671,6 +686,10 @@ public final class RelayBroker: @unchecked Sendable {
         self.contextReviewStore = contextReviewStore
         self.busyDraftStore = busyDraftStore
         self.contextImageStore = contextImageStore
+        // The person's open pack outlives a core rebuilt by recovery, and this
+        // start collects every copy no saved record holds (Codex's review of
+        // MR !139): the app passes the pack's images before that happens.
+        self.personImageHolds = personImageHolds
 
         let terminalStates: Set<RelayHandoffState> = [.completed, .cancelled, .failed, .interrupted]
         var recovered = Dictionary(uniqueKeysWithValues: (handoffJournal?.handoffs() ?? []).map { ($0.id, $0) })
@@ -751,7 +770,7 @@ public final class RelayBroker: @unchecked Sendable {
             let name = suppliedName.trimmingCharacters(in: .whitespacesAndNewlines)
             guard name.count <= 80 else { throw BrokerFailure(status: 400, message: "context name is too long") }
             let staged = try agentFileDraftPart(sender: sender, suppliedPath: suppliedPath, content: content, holdingBrokerLock: false)
-            defer { staged.pinned.map(unpinImage) }
+            defer { releaseStagedImage(staged.pinned) }
             let pack = ContextPack(
                 name: name.isEmpty ? "\(sender.displayName) context" : name,
                 parts: [staged.part],
@@ -800,7 +819,7 @@ public final class RelayBroker: @unchecked Sendable {
             consultationCondition.unlock()
             guard editable else { throw BrokerFailure(status: 404, message: "no editable context draft named \(draftID)") }
             let staged = try agentFileDraftPart(sender: sender, suppliedPath: suppliedPath, content: content, holdingBrokerLock: false)
-            defer { staged.pinned.map(unpinImage) }
+            defer { releaseStagedImage(staged.pinned) }
             consultationCondition.lock()
             guard var review = contextReviewRecords[draftID],
                   review.sourcePaneID == sender.id,
@@ -2263,7 +2282,7 @@ public final class RelayBroker: @unchecked Sendable {
                 consultationCondition.unlock()
                 throw error
             }
-            defer { staged.pinned.map(unpinImage) }
+            defer { releaseStagedImage(staged.pinned) }
             let review = AgentContextReview(
                 sourcePaneID: sender.id,
                 sourcePaneName: sender.displayName,

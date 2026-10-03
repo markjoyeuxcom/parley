@@ -151,6 +151,14 @@ final class ImageBrokerFixture: @unchecked Sendable {
 
     deinit { try? FileManager.default.removeItem(at: directory) }
 
+    /// A second broker over the same stores, as core recovery builds one.
+    func rebuiltBroker(holding digests: Set<String> = []) throws -> RelayBroker {
+        RelayBroker(credentials: credentials, panes: { [] }, paste: { _, _ in }, submit: { _, _ in },
+            consultationTimeout: 3, handoffJournal: try RelayHandoffJournal(file: directory.appendingPathComponent("handoffs.jsonl")),
+            contextReviewStore: try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json")),
+            contextImageStore: images, personImageHolds: digests)
+    }
+
     func path(_ name: String) -> String { directory.appendingPathComponent(name).path }
 
     func review(from response: RelayTextResponse) throws -> AgentContextReview {
@@ -461,6 +469,34 @@ private func imageExpectValue<T>(_ value: T?, _ message: String) throws -> T {
             try String(contentsOf: sourcesRoot.appendingPathComponent($0), encoding: .utf8).contains("\nimport ScreenCaptureKit")
         }
         try imageExpect(capturing == ["ParleyNative/WindowCapture.swift"], "screen capture is imported outside the one person-driven file: \(capturing)")
+    }),
+    ("window capture: a rebuilt core keeps the open pack's images, and a refused add leaves no copy", {
+        // Core recovery builds a new broker whose start collects copies no
+        // saved record holds; the app passes the open pack's images to it
+        // (Codex's review of MR !139, medium).
+        let f = try ImageBrokerFixture()
+        let png = imageEvidenceFixture(width: 6, height: 6)
+        let image = try f.images.store(png)
+        _ = try f.rebuiltBroker(holding: [image.sha256])
+        try imageExpect(FileManager.default.fileExists(atPath: f.images.url(for: image).path),
+                        "a rebuilt core collected an image the person's open pack holds")
+        _ = try f.rebuiltBroker()
+        try imageExpect(!FileManager.default.fileExists(atPath: f.images.url(for: image).path),
+                        "a rebuilt core kept an image nothing holds")
+        // An add that passes the first check but is refused once staged (here
+        // a pack already at its part limit) takes its copy with it (Codex's
+        // review of MR !139, low, and !138 M4).
+        let drafted = f.broker.handleContextDraft(token: f.sourceToken, name: "Full", path: f.path("p0.md"), content: .text("part 0\n"))
+        let review = try f.review(from: drafted)
+        for index in 1..<ContextPackBuilder.maximumParts {
+            let added = f.broker.handleContextAdd(token: f.sourceToken, draftID: review.id, path: f.path("p\(index).md"), content: .text("part \(index)\n"))
+            try imageExpect(added.status == 200, "could not fill the pack: \(added.status) \(added.text)")
+        }
+        let extra = imageEvidenceFixture(width: 5, height: 7)
+        let refused = f.broker.handleContextAdd(token: f.sourceToken, draftID: review.id, path: f.path("x.png"), content: .image(extra))
+        let extraImage = try ContextImageInspector.inspect(extra)
+        try imageExpect(refused.status != 200 && !FileManager.default.fileExists(atPath: f.images.url(for: extraImage).path),
+                        "a refused add left its image copy behind: \(refused.status) \(refused.text)")
     }),
     ("window capture: the app holds an image before writing it and until its send ends, and never queues one", {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
