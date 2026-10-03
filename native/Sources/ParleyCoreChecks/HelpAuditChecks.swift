@@ -140,7 +140,7 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
         try helpAuditRequire(commands.contains("parley context list"), "Missing context list example")
         try helpAuditRequire(commands.contains("parley context show <draft-id>"), "Missing context show example")
         try helpAuditContains(context.searchableText, ["PNG or JPEG image", "parley image <sha256> --to <file>", "Only the pane that staged the image, or a pane you sent a pack holding it",
-            "Capture Window…", "Parley never lists windows or captures anything you did not pick", "Ask One Pane only",
+            "Capture Window…", "Parley never lists windows or captures anything you did not pick", "Ask One Pane or Compare", "the agent whose draft it is cannot fetch it",
             "Waiting for Your Approval", "Saved Agent Drafts", "newest eight", "Discard All Editable Drafts",
             "never touches a waiting approval", "Agent-proposed context; not approved or sent", "stay unverified",
             "reading it there is a complete interaction",

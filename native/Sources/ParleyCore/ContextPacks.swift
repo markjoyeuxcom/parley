@@ -61,6 +61,17 @@ public enum ContextPackSourceKind: String, CaseIterable, Codable, Equatable, Sen
     /// A window the person picked with the system window picker, captured
     /// by Parley itself.
     case windowCapture
+    /// A kind this version does not know, from a newer Parley's saved
+    /// review: decoded as this instead of failing the whole store.
+    case unrecognized
+
+    /// Unknown kinds decode as `.unrecognized`. Until 3 October 2026 an unknown
+    /// kind failed the whole saved review store, so a newer kind stopped an
+    /// older core loading saved context.
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = ContextPackSourceKind(rawValue: raw) ?? .unrecognized
+    }
 
     public var label: String {
         switch self {
@@ -79,6 +90,7 @@ public enum ContextPackSourceKind: String, CaseIterable, Codable, Equatable, Sen
         case .browserScreenshot: "Browser screenshot"
         case .toolArtifact: "Saved tool artifact"
         case .windowCapture: "Window capture"
+        case .unrecognized: "Unrecognised source"
         }
     }
 }
