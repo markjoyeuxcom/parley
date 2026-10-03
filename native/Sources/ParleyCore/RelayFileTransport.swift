@@ -340,7 +340,7 @@ public final class RelayFileTransport: @unchecked Sendable {
                 }
                 let claimed = processing.appendingPathComponent(requestID, isDirectory: true)
                 do {
-                    try fileManager.moveItem(at: candidate, to: claimed)
+                    try claim(candidate, to: claimed, endpoint: endpoint)
                 } catch {
                     lock.withLock { runningWorkers -= 1 }
                     continue
@@ -752,6 +752,9 @@ public final class RelayFileTransport: @unchecked Sendable {
         if fileManager.fileExists(atPath: directory.path) {
             try validateDirectory(directory)
         } else {
+            // A pane can remove its own outbox, as it can `processing` (see
+            // `claim`); prepare it as endpoint preparation does.
+            try Self.prepareDirectory(outbox, createParents: false, fileManager: fileManager)
             try fileManager.createDirectory(
                 at: directory,
                 withIntermediateDirectories: false,
@@ -797,6 +800,26 @@ public final class RelayFileTransport: @unchecked Sendable {
               metadata.st_uid == getuid(),
               metadata.st_mode & 0o077 == 0 else {
             throw RelayFileTransportError.runtime("invalid request directory")
+        }
+    }
+
+    /// Moves a ready request into `processing`. A pane can remove its own
+    /// endpoint's folders (a container writes there), and with `processing`
+    /// gone every claim failed while the heartbeat went on, so its commands
+    /// waited forever (Codex's review of 3 October 2026). A failed move
+    /// prepares `processing` as endpoint preparation does and tries once
+    /// more; anything else in its place still refuses, as before, until the
+    /// pane restarts.
+    private func claim(_ candidate: URL, to claimed: URL, endpoint: URL) throws {
+        do {
+            try fileManager.moveItem(at: candidate, to: claimed)
+        } catch {
+            try Self.prepareDirectory(
+                endpoint.appendingPathComponent("processing", isDirectory: true),
+                createParents: false,
+                fileManager: fileManager
+            )
+            try fileManager.moveItem(at: candidate, to: claimed)
         }
     }
 
