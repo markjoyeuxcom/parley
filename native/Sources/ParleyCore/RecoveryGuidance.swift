@@ -92,7 +92,7 @@ public enum RecoveryGuidanceProjection {
             symptom: "The terminal remains usable, but Parley disables cross-vendor commands for a pane launched with older shared instructions.",
             steps: [
                 "Finish or preserve anything you still need from the current CLI conversation.",
-                "Restart only the pane marked Protocol Stale; restarting deliberately ends that pane's current CLI process.",
+                "Restart only the pane marked RESTART FOR PROTOCOL; restarting deliberately ends that pane's current CLI process.",
                 "The replacement pane receives the current shared protocol automatically. Other panes keep running.",
             ]
         ),

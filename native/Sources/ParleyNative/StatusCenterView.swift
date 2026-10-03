@@ -1287,11 +1287,15 @@ struct StatusCenterView: View {
                             if model.isDismissed(handoff) {
                                 statusChip("DISMISSED", color: .secondary)
                             }
+                            if let badge = model.returnedFileReview(for: handoff)?.state.returnedFileBadge {
+                                statusChip(badge.label, color: badge.needsPerson ? .orange : .secondary)
+                            }
                         }
                     }
                     .accessibilityRepresentation {
                         Text(
                             "\(WorkbenchAccessibility.handoff(handoff)). \(model.isDismissed(handoff) ? "Dismissed" : "In Status Center")"
+                                + (model.returnedFileReview(for: handoff).map { ". \($0.state.returnedFileBadge.label.capitalized)" } ?? "")
                         )
                     }
 
@@ -1491,6 +1495,13 @@ struct StatusCenterView: View {
                     .disabled(!model.canFocus(handoff.sourcePaneID))
                 Button("Focus Target") { model.focus(handoff, target: true) }
                     .disabled(!model.canFocus(handoff.targetPaneID))
+                if let review = model.returnedFileReview(for: handoff), review.state.needsHumanReview {
+                    Button("Review Returned File…") {
+                        model.presentContextReview(review)
+                        openWindow(id: "main")
+                    }
+                    .help("Open the returned file as an editable Context Pack; nothing is sent automatically")
+                }
             }
             if (handoff.kind == .ask || handoff.kind == .delegate) && handoff.hasReturnedResult {
                 HStack {

@@ -1,4 +1,5 @@
 import ParleyCore
+import ParleyUI
 import SwiftUI
 
 struct CommandPaletteView: View {
@@ -7,6 +8,7 @@ struct CommandPaletteView: View {
     @FocusState private var searchFocused: Bool
     @State private var query = ""
     @State private var selectedID: String?
+    @State private var hoverGuard = KeyboardSelectionHoverGuard()
 
     /// Built once per render and passed down: reading a computed list about
     /// six times per render rebuilt every row each time, at many workspaces
@@ -94,15 +96,15 @@ struct CommandPaletteView: View {
         }
         .frame(width: 680, height: 500)
         .onAppear {
-            selectedID = currentCommands().first?.id
+            selectFirst()
             searchFocused = true
         }
         .onChange(of: query) { _, _ in
-            selectedID = currentCommands().first?.id
+            selectFirst()
         }
         // Command-Shift-O inside the palette changes what it lists.
         .onChange(of: model.commandPaletteScope) { _, _ in
-            selectedID = currentCommands().first?.id
+            selectFirst()
         }
         .onExitCommand(perform: close)
         .onKeyPress(.downArrow) {
@@ -156,7 +158,7 @@ struct CommandPaletteView: View {
             .accessibilityHint("Run this command")
         }
         .onHover { hovering in
-            if hovering { selectedID = command.id }
+            if hovering, hoverGuard.acceptsHover(pointer: NSEvent.mouseLocation) { selectedID = command.id }
         }
     }
 
@@ -168,6 +170,14 @@ struct CommandPaletteView: View {
         } ?? 0
         let next = min(max(current + offset, 0), commands.count - 1)
         selectedID = commands[next].id
+        hoverGuard.keyboardSelected(pointer: NSEvent.mouseLocation)
+    }
+
+    /// The top match, chosen by what was typed; rows that appear under a
+    /// resting pointer must not replace it.
+    private func selectFirst() {
+        selectedID = currentCommands().first?.id
+        hoverGuard.keyboardSelected(pointer: NSEvent.mouseLocation)
     }
 
     private func runSelected() {

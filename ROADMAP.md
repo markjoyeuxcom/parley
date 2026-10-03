@@ -608,7 +608,9 @@ then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.
 - [x] More than four independent panes without shared-input or focus collapse.
 - [x] Closing the main window keeps panes alive while the app remains running.
 - [x] Reopening the window returns to the same retained surfaces.
-- [x] Full quit and Stop Everything end exact pane processes and coordination.
+- [x] Confirmed full quit ends every pane process and the coordination core,
+  and an agent pane's own Stop… ends that pane alone. (Stop Everything was
+  removed in the 30 August 2026 native cutover.)
 - [x] Eight-pane real-Ghostty soak verifies input isolation, hidden-window
   continuity and exact PID teardown.
 - [x] Remove the external terminal multiplexer, old renderer, conversion path
@@ -643,10 +645,11 @@ then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.
 
 - [x] One canonical `AgentProtocol.text` and protocol version stamp.
 - [x] Vendor-specific injection mechanics without divergent wording.
-- [x] Current implementation: Seatbelt around host vendor process trees and
-  host Docker clients; reviewed mounts isolate container vendors. The planned
-  [vendor-managed host transition](#host-permissions-vendor-managed-execution)
-  replaces the host wrapper after native authorization protection is addressed.
+- [x] Host vendor CLIs run under their own sandboxes and prompts, without a
+  Parley outer wrapper, since v0.1.30 (the
+  [vendor-managed host transition](#host-permissions-vendor-managed-execution)).
+  Seatbelt remains around the host Docker client; reviewed mounts isolate
+  container vendors.
 - [x] Capability-named relay endpoints and exact endpoint/token authentication.
 - [x] No raw control capability, credentials or broad private runtime exposed to
   an adjacent agent pane.
@@ -756,8 +759,13 @@ then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.
 
 ### Coordination recovery
 
-- [ ] Add explicit UI recovery for a damaged app-resident control endpoint
-  without touching healthy terminal surfaces.
+- [x] Add explicit UI recovery for a damaged app-resident control endpoint
+  without touching healthy terminal surfaces. Status Center > Recovery >
+  Reconnect rebuilds the core while every pane keeps running, when the UI
+  socket reports it unavailable. A pane whose own endpoint lost its
+  `processing` or `outbox` folder is repaired by the transport itself (3
+  October 2026); anything else a pane does to its own endpoint still needs
+  that pane restarted.
 - [ ] Add fault injection between delivery, receipt persistence and terminal
   teardown for every Ask and Delegate terminal state.
 - [ ] Preserve clear "delivery occurred; do not resend" guidance on all
@@ -767,7 +775,10 @@ then 14, then 15. Items 11, 13, 14 and 15 change no agent-facing protocol.
 
 - [ ] Improve side-by-side comparison review while retaining exact source pane
   attribution.
-- [ ] Add clearer role/lead collision previews for workspace moves.
+- [x] Add clearer role/lead collision previews for workspace moves. A Move
+  to Workspace destination that would refuse the pane's role or lead mark is
+  shown disabled with the reason (3 October 2026); the move still checks
+  everything again when chosen.
 - [ ] Expand context reliability checks for repository changes between preview
   and submission.
 - [ ] Continue adding vendor adapters only when their official CLIs preserve
