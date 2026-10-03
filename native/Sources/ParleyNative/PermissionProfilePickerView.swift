@@ -125,7 +125,9 @@ struct PermissionProfilePickerView: View {
             }
             .padding(16)
         }
-        .frame(width: 610, height: 660)
+        // The middle scrolls, so the review may be shorter than its ideal on
+        // a small display and wider or taller for larger text.
+        .frame(minWidth: 610, idealWidth: 610, maxWidth: 900, minHeight: 440, idealHeight: 660, maxHeight: .infinity)
         .disabled(model.applyingPanePermissions)
         .interactiveDismissDisabled()
         .sheet(item: $editingProfile) { profile in
@@ -790,7 +792,7 @@ private struct CustomPermissionProfileEditorView: View {
             }
             .padding(16)
         }
-        .frame(width: 610, height: 700)
+        .frame(minWidth: 610, idealWidth: 610, maxWidth: 900, minHeight: 440, idealHeight: 700, maxHeight: .infinity)
         .interactiveDismissDisabled()
     }
 

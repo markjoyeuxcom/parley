@@ -345,7 +345,13 @@ a broker that comes back must not act on a request the agent was told had
 failed. What a shim killed part-way leaves, the transport removes (a request
 with no `ready` after 30 seconds of awake time, a reply after ten minutes,
 the whole endpoint when its pane restarts); the script's top-level `EXIT`
-trap never did anything and is gone. Each heartbeat's content is the
+trap never did anything and is gone. A pane can remove its own endpoint's
+folders (a container writes there): with `processing` gone every claim used
+to fail while the heartbeat went on, so the pane's commands waited forever and
+Reconnect, which checks only the UI socket, could not help. A failed claim
+now prepares `processing` again and a reply prepares `outbox` (Codex's review
+of 3 October 2026); anything else in their place still refuses until the pane
+restarts. Each heartbeat's content is the
 transport instance, new on every `start()`: a restart (core recovery)
 discards the requests shims are still waiting on, and a request leaves the
 filesystem while it is processed, so a shim that sees a different instance
@@ -699,7 +705,10 @@ configuration is persistent user or workspace state. Agents must never invoke
 Immediate Relay is intentional. `paste` is review-before-send. Targets resolve
 by exact pane id, explicit role, or vendor only when unique. Refuse ambiguous,
 missing, same-pane, shell and busy targets. Permit same-vendor routing only
-between distinct panes. Allow at most one unanswered consultation or active
+between distinct panes. The toolbar's Ask and Review menus stay enabled when
+nothing can be asked and show `AskAvailability.unavailableReason`; until 3
+October 2026 they disabled themselves, so the one line saying why could not be
+read, and it said another vendor was needed. Allow at most one unanswered consultation or active
 delegation per target.
 
 A person's reviewed Ask (composer, their own context pack, Review) keeps

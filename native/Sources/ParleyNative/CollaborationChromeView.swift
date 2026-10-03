@@ -234,7 +234,9 @@ struct CollaborationDockView: View {
                         value: WorkbenchChromeProjection.connectionLabel(model.connectionState),
                         color: ChromeColor.connection(model.connectionState)
                     )
-                    fact(icon: "bolt.horizontal", label: "Protocol", value: AgentProtocol.version, color: .secondary)
+                    let protocolFact = WorkbenchChromeProjection.protocolLabel(panes: model.panes)
+                    fact(icon: "bolt.horizontal", label: "Protocol", value: protocolFact.value,
+                         color: protocolFact.needsRestart ? .orange : .secondary)
                     fact(icon: "rectangle.split.3x1", label: "Retained panes", value: "\(model.visiblePanes.count)", color: .secondary)
                     Divider().padding(.top, 10)
                     sectionTitle("Recent")

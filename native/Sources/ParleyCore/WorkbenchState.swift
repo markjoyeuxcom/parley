@@ -148,4 +148,13 @@ public enum WorkbenchChromeProjection {
             "Terminal unavailable"
         }
     }
+
+    /// The dock's protocol fact: the version this build gives new panes, and
+    /// how many running agent panes still carry an older one. The version
+    /// alone said nothing a person could act on.
+    public static func protocolLabel(panes: [WorkbenchPane]) -> (value: String, needsRestart: Bool) {
+        let stale = AgentProtocol.stalePaneIDs(in: panes).count
+        guard stale > 0 else { return (AgentProtocol.version, false) }
+        return ("\(AgentProtocol.version) · \(stale) need\(stale == 1 ? "s" : "") restart", true)
+    }
 }

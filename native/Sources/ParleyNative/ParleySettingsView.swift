@@ -63,7 +63,9 @@ struct ParleySettingsView: View {
             }
             .padding(.top, 8)
         }
-        .frame(width: 680, height: 590)
+        // Flexible, so larger text or a long section can grow the window
+        // rather than clip; the minimum is the size it always had.
+        .frame(minWidth: 680, idealWidth: 680, maxWidth: 1000, minHeight: 590, idealHeight: 590, maxHeight: .infinity)
     }
 }
 
