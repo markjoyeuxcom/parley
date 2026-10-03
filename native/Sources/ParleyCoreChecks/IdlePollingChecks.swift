@@ -119,7 +119,7 @@ let idlePollingChecks: [(String, () throws -> Void)] = [
         Thread.sleep(forTimeInterval: 1.0)
         try pollExpect(!FileManager.default.fileExists(atPath: abandoned.path), "the abandoned request directory was not discarded after its age limit")
     }),
-    ("idle polling: an idle transport answers a request through its inbox watcher, not its backed-off timer", {
+    ("idle polling: an idle transport is woken by its inbox watcher, not left on its backed-off timer", {
         let directory = URL(fileURLWithPath: "/tmp/parley-wake-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -167,8 +167,11 @@ let idlePollingChecks: [(String, () throws -> Void)] = [
             idle.append(try directRequest())
         }
         try pollExpect(transport.watcherWakeCount >= wakesBefore + 5, "the inbox watcher did not wake the transport for each idle request (\(transport.watcherWakeCount - wakesBefore) wakes)")
-        // Each wake ran a tick itself rather than leaving the request to the
-        // backed-off timer: the wiring, counted, not timed.
+        // Each wake ran a tick itself and returned the transport to its fast
+        // cadence: the wiring, counted, not timed. A request written in place
+        // is often claimed by the next fast tick rather than the watcher's own,
+        // which is the point: no idle request waits on the backed-off timer
+        // (Codex's review of MR !143 on what this counts).
         try pollExpect(transport.watcherTickCount >= watcherTicksBefore + 5, "the inbox watcher woke but did not run a tick for each idle request (\(transport.watcherTickCount - watcherTicksBefore) ticks)")
         // The diagnostic counters are wired: each claimed request made a tick active.
         try pollExpect(transport.activeTickCount >= 5, "the transport counted \(transport.activeTickCount) active ticks for five claimed requests")

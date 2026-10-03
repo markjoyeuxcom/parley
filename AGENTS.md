@@ -297,7 +297,9 @@ are flowing and backs off to 250 ms after ten quiet ticks
 (`TransportPollSchedule`), with a vnode watcher per inbox that wakes it at
 once on a write, so an idle app neither scans inboxes twenty times a second
 nor makes an agent wait on the backed-off timer. The check counts the ticks
-the watcher runs itself (`watcherTickCount`). It compares idle with active
+the watcher runs itself (`watcherTickCount`). That is ticks begun, not
+requests claimed: a request written in place is often claimed by the next
+fast tick the wake brings forward, which is the guarantee. It compares idle with active
 latency on the same run, never against a fixed bound. A CPU-starved CI VM
 made every request take about 120 ms, idle and active alike, and failed a
 fixed 100 ms bound; this was reproduced under `taskpolicy -b` on 3 October

@@ -26,6 +26,7 @@ private final class FakeContainerStops: ContainerStopEnvironment, @unchecked Sen
     var refuseHold = false
     var failingStops: Set<String> = []
     var listed: [WorkbenchPane] = []
+    var listError: Error?
 
     private func record(_ entry: String) { lock.withLock { log.append(entry) } }
 
@@ -43,13 +44,14 @@ private final class FakeContainerStops: ContainerStopEnvironment, @unchecked Sen
 
     func listPanes() throws -> [WorkbenchPane] {
         record("list")
+        if let listError { throw listError }
         return listed
     }
 }
 
-private func sequencePane(_ id: String, container: Bool, generation: Int = 1, workspace: String = "w") -> WorkbenchPane {
+private func sequencePane(_ id: String, container: Bool, generation: Int = 1, workspace: String = "w", folder: String? = nil) -> WorkbenchPane {
     WorkbenchPane(
-        id: id, kind: container ? .codex : .shell, customName: id, terminalTitle: "", cwd: "/private/tmp/\(id)",
+        id: id, kind: container ? .codex : .shell, customName: id, terminalTitle: "", cwd: folder ?? "/private/tmp/\(id)",
         currentCommand: "", isActive: false, workspaceID: workspace, launchGeneration: generation,
         containerConfiguration: container ? ContainerConfiguration(
             dockerExecutable: "/usr/local/bin/docker", daemonEndpoint: "unix:///var/run/docker.sock", daemonID: "daemon",
@@ -102,20 +104,31 @@ private func sequencePane(_ id: String, container: Bool, generation: Int = 1, wo
     }),
     ("container stop sequence: a pane that changed during cleanup refuses the action", {
         let reviewed = [sequencePane("a", container: true), sequencePane("b", container: false)]
-        for changed in [sequencePane("b", container: false, generation: 2), sequencePane("b", container: false, workspace: "elsewhere")] {
+        // A new generation, another workspace, another folder, or no pane at
+        // all: each refuses with the panes-changed error (not a harness
+        // timeout) and releases after the listing (Codex's review of MR !143).
+        let changes: [(String, [WorkbenchPane])] = [
+            ("generation", [reviewed[0], sequencePane("b", container: false, generation: 2)]),
+            ("workspace", [reviewed[0], sequencePane("b", container: false, workspace: "elsewhere")]),
+            ("folder", [reviewed[0], sequencePane("b", container: false, folder: "/private/tmp/elsewhere")]),
+            ("vanished", [reviewed[0]]),
+        ]
+        for (change, listed) in changes {
             let fake = FakeContainerStops()
-            fake.listed = [reviewed[0], changed]
+            fake.listed = listed
             let runs = RunCount()
             let error = runSequence(try ContainerStopSequence(reviewed: reviewed, environment: fake)) { runs.value += 1 }
-            try sequenceExpect(runs.value == 0 && error != nil && fake.calls.last == "release a,b",
-                               "a changed pane did not refuse the action and release: \(runs.value), \(fake.calls)")
+            let refused: Bool = { if case .panesChanged? = error as? ContainerStopSequence.Failure { return true } else { return false } }()
+            try sequenceExpect(runs.value == 0 && refused && fake.calls == ["hold a,b", "stop a workspace:true", "list", "release a,b"],
+                               "a \(change) change did not refuse the action and release: \(runs.value), \(String(describing: error)), \(fake.calls)")
         }
-        // A pane that is gone refuses too.
-        let fake = FakeContainerStops()
-        fake.listed = [reviewed[0]]
+        // A listing that fails refuses and releases too.
+        let failing = FakeContainerStops()
+        failing.listError = ContainerPaneError.refused("listing failed")
         let runs = RunCount()
-        _ = runSequence(try ContainerStopSequence(reviewed: reviewed, environment: fake)) { runs.value += 1 }
-        try sequenceExpect(runs.value == 0, "a pane that vanished did not refuse the action")
+        let error = runSequence(try ContainerStopSequence(reviewed: reviewed, environment: failing)) { runs.value += 1 }
+        try sequenceExpect(runs.value == 0 && error?.localizedDescription == "listing failed" && failing.calls.last == "release a,b",
+                           "a failed listing ran the action or kept the hold: \(runs.value), \(String(describing: error)), \(failing.calls)")
     }),
     ("container stop sequence: a refused hold does nothing, and a failing action still releases", {
         let panes = [sequencePane("a", container: true)]
