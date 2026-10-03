@@ -133,7 +133,10 @@ public final class RelayFileTransport: @unchecked Sendable {
     public var currentPollInterval: DispatchTimeInterval { lock.withLock { schedule.interval } }
     /// How many times an inbox watcher woke the transport (diagnostics and checks).
     public var watcherWakeCount: Int { lock.withLock { wakes } }
+    /// Ticks the inbox watcher ran itself, rather than the timer.
+    public var watcherTickCount: Int { lock.withLock { watcherTicks } }
     private var wakes = 0
+    private var watcherTicks = 0
     /// Ticks that claimed or held back work, the part of those held back
     /// because every request thread was busy, and ticks kept on the fast
     /// cadence by a request still being written (diagnostics and checks).
@@ -262,11 +265,12 @@ public final class RelayFileTransport: @unchecked Sendable {
         _ = workers.wait(timeout: .now() + 2)
     }
 
-    private func serviceTick() {
+    private func serviceTick(fromWatcher: Bool = false) {
         // A stopped transport writes nothing, whatever event arrives late.
         guard lock.withLock({ () -> Bool in
             guard timer != nil else { return false }
             ticks += 1
+            if fromWatcher { watcherTicks += 1 }
             return true
         }) else { return }
         let now = clocks.wall()
@@ -391,7 +395,7 @@ public final class RelayFileTransport: @unchecked Sendable {
                         self.schedule.wake()
                         self.rescheduleLocked()
                     }
-                    self.serviceTick()
+                    self.serviceTick(fromWatcher: true)
                 }
                 watcher.setCancelHandler { close(descriptor) }
                 watcher.resume()

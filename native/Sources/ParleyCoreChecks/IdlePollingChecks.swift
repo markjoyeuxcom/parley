@@ -160,12 +160,16 @@ let idlePollingChecks: [(String, () throws -> Void)] = [
         }
         try waitUntilIdle(transport)
         let wakesBefore = transport.watcherWakeCount
+        let watcherTicksBefore = transport.watcherTickCount
         var idle: [Double] = []
         for _ in 0..<5 {
             try waitUntilIdle(transport) // back to idle between requests
             idle.append(try directRequest())
         }
         try pollExpect(transport.watcherWakeCount >= wakesBefore + 5, "the inbox watcher did not wake the transport for each idle request (\(transport.watcherWakeCount - wakesBefore) wakes)")
+        // Each wake ran a tick itself rather than leaving the request to the
+        // backed-off timer: the wiring, counted, not timed.
+        try pollExpect(transport.watcherTickCount >= watcherTicksBefore + 5, "the inbox watcher woke but did not run a tick for each idle request (\(transport.watcherTickCount - watcherTicksBefore) ticks)")
         // The diagnostic counters are wired: each claimed request made a tick active.
         try pollExpect(transport.activeTickCount >= 5, "the transport counted \(transport.activeTickCount) active ticks for five claimed requests")
         try pollExpect(transport.saturatedTickCount == 0, "the transport counted \(transport.saturatedTickCount) saturated ticks for five requests one at a time")
@@ -180,8 +184,12 @@ let idlePollingChecks: [(String, () throws -> Void)] = [
         let shimMs = Double(DispatchTime.now().uptimeNanoseconds - shimStarted) / 1_000_000
         try pollExpect(shimResult.status == 0, "whoami failed through the transport: \(shimResult.stderrText)")
         print(String(format: "  transport latency, ready to reply: idle median %.1f ms (watcher), active median %.1f ms; one shim round trip %.0f ms", idleMedian, activeMedian, shimMs))
-        // A backed-off timer alone would average 125 ms and reach 250 ms.
-        try pollExpect(idleMedian < 100, "an idle transport made a request wait on its backed-off poll (median \(idleMedian) ms)")
-        try pollExpect(idle.max()! < 250, "an idle request waited a full backed-off cadence (max \(idle.max()!) ms)")
+        // A backed-off timer alone would add about 125 ms on average to an
+        // idle request. Measured against requests to the already active
+        // transport on the same run, not a fixed bound: a CPU-starved CI
+        // VM made every request take ~120 ms, idle and active alike, and a
+        // fixed 100 ms bound failed there (reproduced under taskpolicy -b, 3
+        // October 2026; idle 113-127 ms, active 115-127 ms).
+        try pollExpect(idleMedian < activeMedian + 60, "an idle transport made a request wait on its backed-off poll (idle median \(idleMedian) ms, active \(activeMedian) ms)")
     }),
 ]
