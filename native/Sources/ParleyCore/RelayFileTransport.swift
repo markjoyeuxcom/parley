@@ -340,7 +340,7 @@ public final class RelayFileTransport: @unchecked Sendable {
                 }
                 let claimed = processing.appendingPathComponent(requestID, isDirectory: true)
                 do {
-                    try fileManager.moveItem(at: candidate, to: claimed)
+                    try claim(requestID, endpoint: endpoint)
                 } catch {
                     lock.withLock { runningWorkers -= 1 }
                     continue
@@ -748,10 +748,23 @@ public final class RelayFileTransport: @unchecked Sendable {
 
     private func responseDirectory(requestID: String, endpoint: URL) throws -> URL {
         let outbox = endpoint.appendingPathComponent("outbox", isDirectory: true)
+        var outboxMetadata = stat()
         let directory = outbox.appendingPathComponent(requestID, isDirectory: true)
         if fileManager.fileExists(atPath: directory.path) {
             try validateDirectory(directory)
         } else {
+            // A pane can remove its own outbox, as it can `processing` (see
+            // `claim`). `mkdir` makes a missing one without following a
+            // link, and a link or anything else in its place is refused
+            // before a reply goes under it. The reply's own files are still
+            // written by path after this check, so a container that swaps
+            // its outbox in that moment can misdirect its own reply.
+            if lstat(outbox.path, &outboxMetadata) != 0, errno == ENOENT { _ = mkdir(outbox.path, 0o700) }
+            guard lstat(outbox.path, &outboxMetadata) == 0,
+                  outboxMetadata.st_mode & S_IFMT == S_IFDIR,
+                  outboxMetadata.st_uid == getuid() else {
+                throw RelayFileTransportError.runtime("invalid outbox")
+            }
             try fileManager.createDirectory(
                 at: directory,
                 withIntermediateDirectories: false,
@@ -798,6 +811,52 @@ public final class RelayFileTransport: @unchecked Sendable {
               metadata.st_mode & 0o077 == 0 else {
             throw RelayFileTransportError.runtime("invalid request directory")
         }
+    }
+
+    /// Moves a ready request from `inbox` into `processing` by descriptors.
+    /// A pane can change its own endpoint's folders (a container writes
+    /// there). With `processing` gone every claim used to fail while the
+    /// heartbeat went on, so its commands waited forever (Codex's review of 3
+    /// October 2026); a missing one is made again with `mkdir`, which never
+    /// follows a link and needs no `chmod` by path. Both folders are then
+    /// opened without following a link and checked as directories this user
+    /// owns, and `renameat` moves the request between those descriptors, so a
+    /// link in either place, set up before or swapped in during the claim,
+    /// is refused rather than followed (Codex's review of MR !144). It used
+    /// to be a path move that followed one.
+    private func claim(_ requestID: String, endpoint: URL) throws {
+        let processing = endpoint.appendingPathComponent("processing", isDirectory: true)
+        let inbox = endpoint.appendingPathComponent("inbox", isDirectory: true)
+        var processingDescriptor = Self.openOwnedDirectory(processing)
+        if processingDescriptor < 0, errno == ENOENT {
+            _ = mkdir(processing.path, 0o700)
+            processingDescriptor = Self.openOwnedDirectory(processing)
+        }
+        guard processingDescriptor >= 0 else { throw RelayFileTransportError.runtime("cannot open the processing folder") }
+        defer { close(processingDescriptor) }
+        let inboxDescriptor = Self.openOwnedDirectory(inbox)
+        guard inboxDescriptor >= 0 else { throw RelayFileTransportError.runtime("cannot open the inbox") }
+        defer { close(inboxDescriptor) }
+        guard renameat(inboxDescriptor, requestID, processingDescriptor, requestID) == 0 else {
+            throw RelayFileTransportError.runtime("cannot claim the request")
+        }
+    }
+
+    /// A directory opened without following a link and confirmed, on the
+    /// descriptor, to be a directory this user owns; -1 otherwise, with errno
+    /// ENOENT only when nothing is there.
+    private static func openOwnedDirectory(_ directory: URL) -> Int32 {
+        let descriptor = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { return -1 }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0,
+              metadata.st_mode & S_IFMT == S_IFDIR,
+              metadata.st_uid == getuid() else {
+            close(descriptor)
+            errno = ENOTDIR
+            return -1
+        }
+        return descriptor
     }
 
     /// Entry by entry: something a pane left that cannot be removed (a

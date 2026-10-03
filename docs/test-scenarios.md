@@ -41,11 +41,14 @@ For **each** of Claude, Codex, Agy, Copilot:
 2. Ask it something trivial that makes it use a tool, and approve the prompt.
    The vendor's own permission prompt must appear and behave normally.
 3. Ask it `parley whoami`. Identity, vendor and protocol version are right.
-4. Ask what Parley protocol version it received. It should say 32.
-5. End the session from inside the CLI (`/exit`, or Control-D at its prompt).
-   The pane shows the process as exited; there is no Parley "stop" for a host
-   pane. Then use the pane menu's **Resume** item. Confirm the vendor's own
-   picker appears and the session continues on its terms.
+4. Ask what Parley protocol version it received. It should match the
+   Protocol line under Runtime in the Collaboration Dock, with no panes
+   counted as needing a restart.
+5. End the session from inside the CLI (`/exit`, or Control-D at its prompt);
+   the pane shows the process as exited. Do it once more with the pane menu's
+   **Stop…** instead; the pane reads stopped. Each time, use the pane menu's
+   **Resume** item, confirm the vendor's own picker appears and the session
+   continues on its terms.
 6. Repeat step 3 after resume.
 
 **Fail:** a vendor can't start, the protocol is missing after resume, or Parley

@@ -42,6 +42,11 @@ private struct TransportFixture {
     /// Writes one request the way the shim does and returns its reply marker.
     func post(_ command: String, token: String, item: String = "", body: String = "") throws -> URL {
         let endpoint = try RelayFileTransport.prepareEndpoint(runtimeDirectory: transportDirectory, paneToken: token)
+        return try post(command, token: token, into: endpoint, item: item, body: body)
+    }
+
+    /// The same, into an endpoint as it is, without preparing it again.
+    func post(_ command: String, token: String, into endpoint: URL, item: String = "", body: String = "") throws -> URL {
         let id = UUID().uuidString.lowercased()
         let request = endpoint.appendingPathComponent("inbox", isDirectory: true).appendingPathComponent(id, isDirectory: true)
         try FileManager.default.createDirectory(at: request, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
@@ -268,7 +273,56 @@ func checkShortRequestBurstsAreBoundedInThreads() throws {
     try waitExpect(tight.maximumWorkerThreadLimit == 9, "a thread limit at or below the blocking limit was accepted: \(tight.maximumWorkerThreadLimit)")
 }
 
+/// Codex's review of 3 October 2026: with an endpoint's `processing` folder
+/// gone, every claim failed and the request stayed in the inbox, retried each
+/// tick while the heartbeat kept advancing, so the pane's `parley` commands
+/// waited forever and Reconnect, which checks only the UI socket, could not
+/// help. A missing outbox lost every reply the same way. Each is prepared
+/// again where it is needed, as endpoint preparation does.
+func checkMissingExchangeFoldersAreRecreated() throws {
+    let fixture = try TransportFixture("processing")
+    defer { fixture.cleanup() }
+    let broker = RelayBroker(credentials: fixture.credentials, panes: { [fixture.lead, fixture.worker] },
+                             paste: { _, _ in }, submit: { _, _ in }, livenessPollInterval: 0.05)
+    let transport = RelayFileTransport(broker: broker, credentials: fixture.credentials, runtimeDirectory: fixture.transportDirectory)
+    let endpoint = try RelayFileTransport.prepareEndpoint(runtimeDirectory: fixture.transportDirectory, paneToken: fixture.leadToken)
+    try transport.start()
+    defer { transport.stop() }
+
+    for folder in ["processing", "outbox"] {
+        try FileManager.default.removeItem(at: endpoint.appendingPathComponent(folder, isDirectory: true))
+        let response = try fixture.post("whoami", token: fixture.leadToken, into: endpoint)
+        try waitExpect(eventually(within: 3) { TransportFixture.replied(response) },
+                       "a request was never answered once the endpoint's \(folder) folder was gone")
+        try waitExpect(TransportFixture.status(response) == 200,
+                       "whoami after a missing \(folder) folder answered \(String(describing: TransportFixture.status(response)))")
+    }
+
+    // Codex's review of MR !144: a link in either place must be refused,
+    // never followed. The repair used to chmod by path, and the claim moved
+    // the request through a stable link into wherever it pointed.
+    let elsewhere = fixture.directory.appendingPathComponent("host-folder", isDirectory: true)
+    try FileManager.default.createDirectory(at: elsewhere, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o755])
+    func elsewhereUntouched() throws -> Bool {
+        let mode = (try FileManager.default.attributesOfItem(atPath: elsewhere.path)[.posixPermissions] as? NSNumber)?.intValue
+        let entries = try FileManager.default.contentsOfDirectory(atPath: elsewhere.path)
+        return mode == 0o755 && entries.isEmpty
+    }
+    for folder in ["processing", "outbox"] {
+        let path = endpoint.appendingPathComponent(folder, isDirectory: true)
+        try FileManager.default.removeItem(at: path)
+        try FileManager.default.createSymbolicLink(at: path, withDestinationURL: elsewhere)
+        let response = try fixture.post("whoami", token: fixture.leadToken, into: endpoint)
+        usleep(1_000_000)
+        try waitExpect(!TransportFixture.replied(response), "a reply was written through a \(folder) link")
+        try waitExpect(try elsewhereUntouched(), "a \(folder) link led the transport to change the folder it points to")
+        try FileManager.default.removeItem(at: path)
+        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+    }
+}
+
 @MainActor let boundedWaitChecks: [(String, () throws -> Void)] = [
+    ("a missing processing or outbox folder is recreated", checkMissingExchangeFoldersAreRecreated),
     ("ask-many does not need the shared pool", checkAskManyDoesNotNeedTheSharedPool),
     ("short request bursts are bounded in threads", checkShortRequestBurstsAreBoundedInThreads),
     ("parked waits never starve a done", checkParkedWaitsNeverStarveADone),

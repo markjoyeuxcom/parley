@@ -2934,22 +2934,13 @@ final class AppModel: ObservableObject {
     }
 
     var askTargets: [WorkbenchPane] {
-        guard let source = activePane,
-              source.kind.isAgent,
-              source.isStarted,
-              !source.isDead,
-              source.relayEnabled,
-              source.hasCurrentProtocol,
-              source.inputAvailable else { return [] }
-        return panes.filter {
-            $0.kind.isAgent
-                && $0.id != source.id
-                && $0.isStarted
-                && !$0.isDead
-                && $0.relayEnabled
-                && $0.hasCurrentProtocol
-                && $0.inputAvailable
-        }
+        AskAvailability.targets(source: activePane, panes: panes)
+    }
+
+    /// Why the selected pane cannot ask anyone, shown inside the Ask and
+    /// Review menus; nil when it can.
+    var askUnavailableReason: String? {
+        AskAvailability.unavailableReason(source: activePane, panes: panes)
     }
 
     var canCompareAskMany: Bool {
@@ -3057,11 +3048,34 @@ final class AppModel: ObservableObject {
     }
 
     var canCompareContextPack: Bool {
-        contextPackAskTargets.count >= 2
-            && askManyComparisonRun?.isRunning != true
-            && relayClient != nil
-            && contextPackDraft?.reviewID == nil
-            && contextPackIsSendable
+        contextPackDraft != nil && contextPackCompareBlockedReason == nil
+    }
+
+    /// The first unmet condition for Ask One Pane, shown under the buttons.
+    var contextPackAskBlockedReason: String? {
+        contextPackSendInputs.map(ContextPackSendReadiness.askBlockedReason)
+            ?? "There is no open pack."
+    }
+
+    /// The first unmet condition for Compare Panes.
+    var contextPackCompareBlockedReason: String? {
+        contextPackSendInputs.map(ContextPackSendReadiness.compareBlockedReason)
+            ?? "There is no open pack."
+    }
+
+    private var contextPackSendInputs: ContextPackSendReadiness.Inputs? {
+        guard let draft = contextPackDraft else { return nil }
+        return ContextPackSendReadiness.Inputs(
+            captureRunning: contextPackCaptureRunning,
+            sourceReady: contextPackSourcePane != nil,
+            hasParts: !draft.pack.parts.isEmpty,
+            hasNote: !draft.pack.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            withinLimits: draft.isValid,
+            targetCount: contextPackAskTargets.count,
+            isAgentDraft: draft.reviewID != nil,
+            comparisonRunning: askManyComparisonRun?.isRunning == true,
+            coreAvailable: relayClient != nil
+        )
     }
 
     /// The person's own pack, or an agent's draft awaiting review, takes a
@@ -6394,7 +6408,7 @@ final class AppModel: ObservableObject {
     func askWithContextPack() {
         guard let draft = contextPackDraft else { return }
         guard !contextPackAskTargets.isEmpty else {
-            NSAlert(error: RelayUIError.message("Open a ready pane from another vendor before sending this context pack.")).runModal()
+            NSAlert(error: RelayUIError.message("Open another ready agent pane before sending this context pack.")).runModal()
             return
         }
         requestPaneChoice(

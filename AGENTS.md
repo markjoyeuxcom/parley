@@ -345,7 +345,19 @@ a broker that comes back must not act on a request the agent was told had
 failed. What a shim killed part-way leaves, the transport removes (a request
 with no `ready` after 30 seconds of awake time, a reply after ten minutes,
 the whole endpoint when its pane restarts); the script's top-level `EXIT`
-trap never did anything and is gone. Each heartbeat's content is the
+trap never did anything and is gone. A pane can remove its own endpoint's
+folders (a container writes there): with `processing` gone every claim used
+to fail while the heartbeat went on, so the pane's commands waited forever and
+Reconnect, which checks only the UI socket, could not help (Codex's review of
+3 October 2026). A missing `processing` or `outbox` is made again with
+`mkdir`, which never follows a link; nothing is `chmod`ed by path. A claim
+opens `inbox` and `processing` without following a link, checks each is a
+directory this user owns, and moves the request with `renameat` between
+those descriptors, so a link there, stable or swapped in, is refused; it used
+to be a path move that followed one (Codex's review of MR !144). A reply is
+made only under an `outbox` that `lstat` shows is such a directory. Its files
+are still written by path after that check, so a container that swaps its
+own outbox in that moment can misdirect its own reply. Each heartbeat's content is the
 transport instance, new on every `start()`: a restart (core recovery)
 discards the requests shims are still waiting on, and a request leaves the
 filesystem while it is processed, so a shim that sees a different instance
@@ -709,7 +721,10 @@ configuration is persistent user or workspace state. Agents must never invoke
 Immediate Relay is intentional. `paste` is review-before-send. Targets resolve
 by exact pane id, explicit role, or vendor only when unique. Refuse ambiguous,
 missing, same-pane, shell and busy targets. Permit same-vendor routing only
-between distinct panes. Allow at most one unanswered consultation or active
+between distinct panes. The toolbar's Ask and Review menus stay enabled when
+nothing can be asked and show `AskAvailability.unavailableReason`; until 3
+October 2026 they disabled themselves, so the one line saying why could not be
+read, and it said another vendor was needed. Allow at most one unanswered consultation or active
 delegation per target.
 
 A person's reviewed Ask (composer, their own context pack, Review) keeps
