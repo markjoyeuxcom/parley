@@ -146,6 +146,7 @@ final class ImageBrokerFixture: @unchecked Sendable {
         broker = RelayBroker(credentials: credentials, panes: { panes }, paste: { _, _ in }, submit: { _, _ in },
             consultationTimeout: 3, handoffJournal: try RelayHandoffJournal(file: directory.appendingPathComponent("handoffs.jsonl")),
             contextReviewStore: try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json")),
+            busyDraftStore: try ReviewedBusyDraftStore(file: directory.appendingPathComponent("busy-drafts.json")),
             contextImageStore: withImages ? images : nil)
     }
 
@@ -156,6 +157,7 @@ final class ImageBrokerFixture: @unchecked Sendable {
         RelayBroker(credentials: credentials, panes: { [] }, paste: { _, _ in }, submit: { _, _ in },
             consultationTimeout: 3, handoffJournal: try RelayHandoffJournal(file: directory.appendingPathComponent("handoffs.jsonl")),
             contextReviewStore: try AgentContextReviewStore(file: directory.appendingPathComponent("context-reviews.json")),
+            busyDraftStore: try ReviewedBusyDraftStore(file: directory.appendingPathComponent("busy-drafts.json")),
             contextImageStore: images, personImageHolds: digests)
     }
 
@@ -461,9 +463,30 @@ private func imageExpectValue<T>(_ value: T?, _ message: String) throws -> T {
     ("window capture: only the native Ask route can record an image on a handoff, and only one file captures the screen", {
         let sourcesRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let relay = try String(contentsOf: sourcesRoot.appendingPathComponent("ParleyCore/Relay.swift"), encoding: .utf8)
-        let passes = relay.components(separatedBy: "deliveredImages: images").count - 1
-        try imageExpect(passes == 1 && relay.contains("deliveredImages: [ContextPackImage] = []"),
-                        "images reach handleAsk from somewhere other than handleAskFromUI (\(passes) call sites)")
+        // Every call that hands images to handleAsk sits in a native route: the
+        // person's Ask, each child of the person's Compare, and the explicit
+        // send of the person's queued draft. Compare's shared handleAskMany
+        // receives images only from handleAskManyFromUI.
+        func enclosingFunction(_ position: String.Index) -> String {
+            let before = relay[..<position]
+            guard let found = before.range(of: "func ", options: .backwards) else { return "" }
+            return String(relay[found.upperBound...].prefix { $0 != "(" })
+        }
+        var sites: [String] = []
+        var search = relay.startIndex..<relay.endIndex
+        while let found = relay.range(of: "deliveredImages: ", range: search) {
+            search = found.upperBound..<relay.endIndex
+            if !relay[found.upperBound...].hasPrefix("[ContextPackImage]") { sites.append(enclosingFunction(found.lowerBound)) }
+        }
+        try imageExpect(Set(sites) == ["handleAskFromUI", "handleAskMany", "sendReviewedBusyAskFromUI"] && sites.count == 3,
+                        "images reach handleAsk from somewhere other than the native routes: \(sites)")
+        var compareSites: [String] = []
+        search = relay.startIndex..<relay.endIndex
+        while let found = relay.range(of: "images: images\n", range: search) {
+            search = found.upperBound..<relay.endIndex
+            compareSites.append(enclosingFunction(found.lowerBound))
+        }
+        try imageExpect(compareSites == ["handleAskManyFromUI"], "Compare's shared path receives images from somewhere else: \(compareSites)")
         let sources = try FileManager.default.subpathsOfDirectory(atPath: sourcesRoot.path).filter { $0.hasSuffix(".swift") }
         let capturing = try sources.filter {
             try String(contentsOf: sourcesRoot.appendingPathComponent($0), encoding: .utf8).contains("\nimport ScreenCaptureKit")
@@ -498,7 +521,125 @@ private func imageExpectValue<T>(_ value: T?, _ message: String) throws -> T {
         try imageExpect(refused.status != 200 && !FileManager.default.fileExists(atPath: f.images.url(for: extraImage).path),
                         "a refused add left its image copy behind: \(refused.status) \(refused.text)")
     }),
-    ("window capture: the app holds an image before writing it and until its send ends, and never queues one", {
+    ("window capture: Compare grants a held image to each of its targets and no one else", {
+        let f = try ImageBrokerFixture()
+        let png = imageEvidenceFixture(width: 7, height: 5)
+        let image = try ContextImageInspector.inspect(png)
+        _ = f.broker.holdPersonImages([image.sha256])
+        _ = try f.images.store(png)
+        let unheld = try f.images.store(imageEvidenceFixture(width: 4, height: 9))
+        let refused = f.broker.handleAskManyFromUI(sourcePaneID: "source", targetPaneIDs: ["target", "other"], text: "look",
+                                                   idempotencyKey: "compare-unheld", preserveFormatting: true, images: [unheld])
+        try imageExpect(refused.status == 409 && f.broker.handoffs().isEmpty, "Compare sent an image the person does not hold: \(refused.status)")
+        // Nobody answers; each child Ask times out after three seconds.
+        _ = f.broker.handleAskManyFromUI(sourcePaneID: "source", targetPaneIDs: ["target", "other"], text: "look at \(image.sha256)",
+                                         idempotencyKey: "compare-images", preserveFormatting: true, images: [image])
+        try imageExpect(f.broker.handoffs().filter { $0.deliveredImages == [image] }.count == 2, "each compared Ask did not record the image")
+        for (token, name) in [(f.targetToken, "first target"), (f.otherToken, "second target")] {
+            try imageExpect(f.broker.handleImageFetch(token: token, digest: image.sha256).status == 200, "the \(name) of a Compare could not fetch the image")
+        }
+        try imageExpect(f.broker.handleImageFetch(token: f.sourceToken, digest: image.sha256).status == 403, "the Compare's source fetched the person's image")
+    }),
+    ("window capture: a pack with an image waits in the busy queue holding it, and the explicit send grants it", {
+        let f = try ImageBrokerFixture()
+        let png = imageEvidenceFixture(width: 8, height: 4)
+        let image = try ContextImageInspector.inspect(png)
+        _ = f.broker.holdPersonImages([image.sha256])
+        _ = try f.images.store(png)
+        // The target is busy with a delegation from the source.
+        let delegated = f.broker.handleDelegate(token: f.sourceToken, target: "Reviewer", text: "Work on this")
+        try imageExpect(delegated.status == 200, "could not make the target busy: \(delegated.body)")
+        let unheld = try f.images.store(imageEvidenceFixture(width: 9, height: 2))
+        let refusedQueue = f.broker.enqueueReviewedBusyAskFromUI(ReviewedBusyDraftCreateRequest(
+            sourcePaneID: "source", targetPaneID: "target", text: "look", preserveFormatting: true, images: [unheld]))
+        try imageExpect(refusedQueue.status == 409, "the busy queue kept an image the person does not hold: \(refusedQueue.status)")
+        let queued = f.broker.enqueueReviewedBusyAskFromUI(ReviewedBusyDraftCreateRequest(
+            sourcePaneID: "source", targetPaneID: "target", text: "look at \(image.sha256)", preserveFormatting: true, images: [image]))
+        try imageExpect(queued.status == 201, "the busy queue refused a pack with an image: \(queued.status) \(queued.text)")
+        let draft = try JSONDecoder().decode(ReviewedBusyDraft.self, from: Data(queued.text.utf8))
+        try imageExpect(draft.images == [image], "the queued draft does not keep its image")
+        // The pack is gone from the app; the queued draft alone keeps the copy.
+        _ = f.broker.holdPersonImages([])
+        try imageExpect(FileManager.default.fileExists(atPath: f.images.url(for: image).path), "a queued draft's image was collected")
+        try imageExpect(f.broker.handleImageFetch(token: f.targetToken, digest: image.sha256).status == 403, "a queued image was granted before it was sent")
+        // The target finishes; the person sends the queued draft.
+        _ = f.broker.handleDelegationResult(token: f.targetToken, handoffID: "current", text: "done", succeeded: true)
+        let current = try imageExpectValue(f.broker.reviewedBusyDrafts().first { $0.id == draft.id }, "the queued draft vanished")
+        _ = f.broker.sendReviewedBusyAskFromUI(ReviewedBusyDraftSendRequest(draftID: current.id, expectedUpdatedAt: current.updatedAt,
+                                                                             text: current.text, preserveFormatting: true))
+        try imageExpect(f.broker.handoffs().contains { $0.kind == .ask && $0.deliveredImages == [image] }
+                        && f.broker.handleImageFetch(token: f.targetToken, digest: image.sha256).status == 200,
+                        "the explicit send did not deliver the queued image to its target")
+    }),
+    ("window capture: a capture added to an agent's draft is the person's, fetched only by the pane it is sent to", {
+        let f = try ImageBrokerFixture()
+        let drafted = f.broker.handleContextDraft(token: f.sourceToken, name: "Notes", path: f.path("n.md"), content: .text("notes\n"))
+        let review = try f.review(from: drafted)
+        let png = imageEvidenceFixture(width: 6, height: 9)
+        let image = try ContextImageInspector.inspect(png)
+        let unheld = try f.images.store(png)
+        let refused = f.broker.captureTrustedContext(AgentContextTrustedCaptureRequest(reviewID: review.id, kind: .windowCapture, image: unheld))
+        try imageExpect(refused.status == 409, "a capture the person does not hold joined an agent's draft: \(refused.status) \(refused.text)")
+        _ = f.broker.holdPersonImages([image.sha256])
+        let added = f.broker.captureTrustedContext(AgentContextTrustedCaptureRequest(reviewID: review.id, kind: .windowCapture, image: image))
+        try imageExpect(added.status == 200, "the person's capture could not join the agent's draft: \(added.status) \(added.text)")
+        let withCapture = try imageExpectValue(f.broker.contextReviews().first { $0.id == review.id }, "the draft vanished")
+        try imageExpect(withCapture.pack.parts.contains { $0.source.kind == .windowCapture && $0.image == image }, "the draft does not hold the capture")
+        // The agent owns the draft but did not stage the capture.
+        _ = f.broker.holdPersonImages([])
+        try imageExpect(f.broker.handleImageFetch(token: f.sourceToken, digest: image.sha256).status == 403,
+                        "the agent whose draft the person added a capture to fetched it")
+        _ = f.broker.completeContextDraft(AgentContextReviewApproval(reviewID: withCapture.id, expectedUpdatedAt: withCapture.updatedAt,
+                                                                     targetPaneID: "target", pack: withCapture.pack))
+        try imageExpect(f.broker.handleImageFetch(token: f.targetToken, digest: image.sha256).status == 200,
+                        "the pane the draft was sent to could not fetch the capture")
+    }),
+    ("window capture: a queued draft whose image copy is damaged is refused before it leaves the queue", {
+        // Codex's review of MR !142 (M1): the copy check ran after the draft
+        // was marked dispatching, so a failed restore left it stuck.
+        let f = try ImageBrokerFixture()
+        let png = imageEvidenceFixture(width: 5, height: 8)
+        let image = try ContextImageInspector.inspect(png)
+        _ = f.broker.holdPersonImages([image.sha256])
+        _ = try f.images.store(png)
+        _ = f.broker.handleDelegate(token: f.sourceToken, target: "Reviewer", text: "Work on this")
+        let queued = f.broker.enqueueReviewedBusyAskFromUI(ReviewedBusyDraftCreateRequest(
+            sourcePaneID: "source", targetPaneID: "target", text: "look", preserveFormatting: true, images: [image]))
+        try imageExpect(queued.status == 201, "could not queue: \(queued.text)")
+        _ = f.broker.handleDelegationResult(token: f.targetToken, handoffID: "current", text: "done", succeeded: true)
+        // Damage the copy: it no longer hashes to its name.
+        try Data("damaged".utf8).write(to: f.images.url(for: image))
+        let before = try imageExpectValue(f.broker.reviewedBusyDrafts().first, "the queued draft vanished")
+        let refused = f.broker.sendReviewedBusyAskFromUI(ReviewedBusyDraftSendRequest(draftID: before.id, expectedUpdatedAt: before.updatedAt,
+                                                                                    text: before.text, preserveFormatting: true))
+        let after = try imageExpectValue(f.broker.reviewedBusyDrafts().first, "the queued draft vanished")
+        try imageExpect(refused.status == 409 && after.state == .queued && after.updatedAt == before.updatedAt
+                        && f.broker.handoffs().allSatisfy { $0.kind != .ask },
+                        "a damaged image changed the queued draft or was sent: \(refused.status) \(after.state)")
+    }),
+    ("window capture: an unknown source kind is written back as it was read", {
+        // Codex's review of MR !142 (L1): saving rewrote it as "unrecognized".
+        let part = ContextPackPart(source: ContextPackSource(kind: .file, label: "a", detail: "b"), capturedText: "c")
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(part)) as! [String: Any]
+        var source = json["source"] as! [String: Any]
+        source["kind"] = "somethingNewer"
+        json["source"] = source
+        let decoded = try JSONDecoder().decode(ContextPackPart.self, from: JSONSerialization.data(withJSONObject: json))
+        let again = try JSONSerialization.jsonObject(with: JSONEncoder().encode(decoded)) as! [String: Any]
+        try imageExpect(((again["source"] as? [String: Any])?["kind"] as? String) == "somethingNewer",
+                        "an unknown source kind was not written back as read: \(String(describing: (again["source"] as? [String: Any])?["kind"]))")
+    }),
+    ("window capture: a source kind this version does not know decodes as unrecognised instead of failing the store", {
+        let part = ContextPackPart(source: ContextPackSource(kind: .file, label: "a", detail: "b"), capturedText: "c")
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(part)) as! [String: Any]
+        var source = json["source"] as! [String: Any]
+        source["kind"] = "somethingNewer"
+        json["source"] = source
+        let decoded = try JSONDecoder().decode(ContextPackPart.self, from: JSONSerialization.data(withJSONObject: json))
+        try imageExpect(decoded.source.kind == .unrecognized && decoded.typeLabel == "Unrecognised source",
+                        "an unknown source kind did not decode as unrecognised: \(decoded.source.kind)")
+    }),
+    ("window capture: the app holds an image before writing it, until each send ends, and as it queues one", {
         let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("ParleyNative/AppModel.swift")
         let reader = SwiftSourceReader(try String(contentsOf: url, encoding: .utf8))
@@ -522,15 +663,26 @@ private func imageExpectValue<T>(_ value: T?, _ message: String) throws -> T {
               let taskBody = reader.balanced(at: reader.text.index(before: task.upperBound)) else {
             throw NSError(domain: "ImageEvidence", code: 5, userInfo: [NSLocalizedDescriptionKey: "launchTrackedAsk has no tracked task"])
         }
-        try imageExpect(before("beginImageSend(images)", "Task { [weak self] in", in: launch)
-                        && taskBody.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("[weak self] in\n            defer { self?.endImageSend(images) }")
-                        && taskBody.contains("images: images"),
-                        "a send does not hold its images from before it starts until it ends, or does not send them")
-        try imageExpect(before("guard images.isEmpty else", "offerBusyQueue(", in: try body("private func submitOrOfferBusyQueue(")),
-                        "a pack with an image can be offered the busy queue")
-        try imageExpect(try body("private func handleUnansweredAsk(").contains("if targetBusy && allowsBusyQueue {")
-                        && (try body("private func askWithContextPack(target: WorkbenchPane)")).contains("allowsBusyQueue: images.isEmpty"),
-                        "a refused Ask with an image can be offered the busy queue")
+        func heldThroughTask(_ function: Substring, _ name: String) throws {
+            guard let task = function.range(of: "Task {"),
+                  let taskBody = reader.balanced(at: reader.text.index(before: task.upperBound)) else {
+                throw NSError(domain: "ImageEvidence", code: 5, userInfo: [NSLocalizedDescriptionKey: "\(name) has no tracked task"])
+            }
+            try imageExpect(before("beginImageSend(images)", "Task {", in: function)
+                            && taskBody.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("[weak self] in\n            defer { self?.endImageSend(images) }")
+                            && taskBody.contains("images: images"),
+                            "\(name) does not hold its images from before it starts until it ends, or does not send them")
+        }
+        try heldThroughTask(launch, "an Ask")
+        try heldThroughTask(try body("private func launchAskMany("), "a Compare")
+        // Queued, the core takes the images over: they are held when it does.
+        let queue = try body("private func offerBusyQueue(")
+        try imageExpect(before("holdPersonImagesOrThrow(force: true)", "enqueueReviewedBusyDraft(", in: queue) && queue.contains("images: images"),
+                        "a pack is queued without its images, or before the core holds them")
+        try imageExpect(try body("private func submitOrOfferBusyQueue(").contains("preserveFormatting: preserveFormatting, images: images) ? .queued")
+                        && (try body("private func handleUnansweredAsk(")).contains("preserveFormatting: preserveFormatting, images: images) { return }")
+                        && (try body("private func askWithContextPack(target: WorkbenchPane)")).contains("images: images,"),
+                        "the busy queue is offered without the pack's images")
         try imageExpect(reader.text.contains("var contextPackDraft: ActiveContextPack? {\n        didSet { syncPersonImageHolds() }"),
                         "a change to the person's pack does not update what the core holds")
     }),

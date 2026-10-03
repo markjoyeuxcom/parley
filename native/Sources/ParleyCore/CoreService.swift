@@ -456,7 +456,8 @@ public struct RelayCoreClient: Sendable {
         text: String,
         idempotencyKey: String,
         preserveFormatting: Bool = false,
-        origin: RelayTransitionOrigin = .human
+        origin: RelayTransitionOrigin = .human,
+        images: [ContextPackImage] = []
     ) throws -> RelayAskManyUIResponse {
         let body = try JSONEncoder().encode(RelayUIAskManyRequest(
             sourcePaneID: sourcePaneID,
@@ -464,7 +465,8 @@ public struct RelayCoreClient: Sendable {
             text: text,
             idempotencyKey: idempotencyKey,
             preserveFormatting: preserveFormatting,
-            origin: origin
+            origin: origin,
+            images: images
         ))
         let response = try request(
             method: "POST",

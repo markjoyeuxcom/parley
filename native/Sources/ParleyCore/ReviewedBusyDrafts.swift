@@ -25,6 +25,9 @@ public struct ReviewedBusyDraft: Identifiable, Codable, Equatable, Sendable {
     public let targetWorkspaceName: String?
     public var text: String
     public var preserveFormatting: Bool
+    /// Images from the person's pack, kept while the draft waits and sent
+    /// with it (`deliveredImages`). Absent in records written before images.
+    public var images: [ContextPackImage]? = nil
     public var state: ReviewedBusyDraftState
     public let origin: RelayTransitionOrigin
     public let createdAt: Date
@@ -77,17 +80,20 @@ public struct ReviewedBusyDraftCreateRequest: Codable, Equatable, Sendable {
     public let targetPaneID: String
     public let text: String
     public let preserveFormatting: Bool
+    public let images: [ContextPackImage]?
 
     public init(
         sourcePaneID: String,
         targetPaneID: String,
         text: String,
-        preserveFormatting: Bool = false
+        preserveFormatting: Bool = false,
+        images: [ContextPackImage] = []
     ) {
         self.sourcePaneID = sourcePaneID
         self.targetPaneID = targetPaneID
         self.text = text
         self.preserveFormatting = preserveFormatting
+        self.images = images.isEmpty ? nil : images
     }
 }
 

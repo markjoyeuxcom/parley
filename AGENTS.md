@@ -2067,7 +2067,24 @@ Codex's review of MR !138 shaped most of what follows.
 - **Who may fetch:** the broker (`handleImageFetch`) serves an image only to
   the pane that staged it, to the pane a person approved sending a pack
   holding it to, or to the target of an Ask that delivered it from the
-  person's own pack (`deliveredImages`, below). That pane is the review's `requestedTargetPaneID`, with the
+  person's own pack (`deliveredImages`, below). "Staged" means an
+  `agentFileDraft` part of the pane's own review. A person's window capture
+  added to an agent's draft is not the agent's to fetch. A queued draft's
+  image is found but not granted (403).
+- **Queue downgrade:** images held only by a queued draft rely on a collector
+  that knows queued drafts. The image store first ships in the same release
+  as that knowledge (v0.1.65 at the earliest; v0.1.64 has no image store or
+  collector at all). So no released version deletes them. A build from
+  between !139 and !142 would, which Codex's review of !142 found (M2).
+- **Unknown source kinds:** they decode as `.unrecognized` (3 October 2026).
+  The original string is kept (`ContextPackSource.unrecognizedKind`) and
+  written back when the review is saved again, so a newer Parley gets its
+  own kind back.
+  Strict decoding failed the whole saved review store, so a newer kind
+  stopped an older core loading saved context. v0.1.64 and earlier still
+  decode strictly. Moving back to one after saving a window capture in an
+  agent's draft stops that version's core loading `context-reviews.json`
+  until the review is deleted. That pane is the review's `requestedTargetPaneID`, with the
   review approved or completed and the image in its sent pack. Naming a
   digest in a message grants nothing. Until review, any handoff whose text or
   result held the digest granted it. A returned file named by its digest
@@ -2097,10 +2114,14 @@ take one window the person picks, captured once. The steps:
   check pins that.
 - **Encoding:** the capture is PNG, or JPEG when the PNG would pass 10 MB,
   and it is refused if neither fits.
-- **Who can start one:** no agent route starts a capture, and an agent's
-  draft never takes one.
+- **Who can start one:** no agent route starts a capture. The person may add
+  one to an agent's draft awaiting review (`AgentContextTrustedCaptureKind
+  .windowCapture`, 3 October 2026). The core adds it only while the person
+  holds it, and saves it with the review.
 - **The part:** it is `ContextPackSourceKind.windowCapture` with an `image`.
-  It is never saved, because the person's pack is never saved.
+  In the person's own pack it is never saved, because that pack is never
+  saved. Added to an agent's draft, it is saved with that review until the
+  review is resolved and deleted or pruned.
 - **Holding:** the core has no record of the person's pack, so the app tells
   it which images the pack holds (`/ui/context-images/hold`,
   `holdPersonImages`; a set replaced each time, memory-only). It does that
@@ -2115,8 +2136,16 @@ take one window the person picks, captured once. The steps:
 - **During a send:** the app holds the send's images from before it starts
   until it ends (`beginImageSend`, `endImageSend`). The pack is cleared as
   the send is launched, and a refused send restores it.
-- **Not yet:** Compare and the busy queue do not carry images, so a pack
-  holding one refuses both.
+- **Compare and the busy queue** carry the person's own pack's images (3
+  October 2026). An agent's draft is sent through its review route, not these:
+  - **Compare:** each child Ask of the person's Compare records them
+    (`RelayUIAskManyRequest.images`).
+  - **Busy queue:** a queued draft keeps them (`ReviewedBusyDraft.images`),
+    and collection keeps a queued draft's images. Its explicit send attaches
+    them as `deliveredImages` after checking each copy is intact. Cancelling
+    the draft releases them.
+  - **Native routes only:** a check finds every call that hands images to
+    `handleAsk` and requires it to sit in a native route.
 - **Core recovery:** AppModel builds the replacement core holding the open
   pack's images (`retainingPersonImages`, the broker's `personImageHolds`).
   Its start would otherwise collect an unsent capture, which Codex's review

@@ -145,15 +145,22 @@ Use the packaged app: the window picker and macOS's own consent need a bundle.
    not pick, or the picker stays active (its menu-bar indicator remains)
    after the capture.
 4. Cancel the picker once: nothing is added and no error appears.
-5. With the capture in the pack, **Compare** is unavailable. Send it with
-   **Ask One Pane** to an agent pane: the target fetches the image with the
-   command in the pack, and Status Center shows the Ask with **SENT IMAGES**.
-   **Fail:** the target cannot fetch it, or another pane can.
-6. Ask One Pane to a pane that already has tracked work: Parley says the pack
-   cannot wait in the busy queue and keeps it open.
-7. Remove a capture from an unsent pack, or close the pack unsent, then
-   **Clear history** for an Ask that sent one: the image is gone (a fetch
-   says Parley no longer keeps it).
+5. Send the pack with **Ask One Pane** to an agent pane: the target fetches
+   the image with the command in the pack, and Status Center shows the Ask
+   with **SENT IMAGES**. Then **Compare** a pack with a capture across two
+   panes: each fetches it.
+   **Fail:** a target cannot fetch it, or another pane can.
+6. Ask One Pane to a pane that already has tracked work and keep the draft in
+   the busy queue. Once the target is free, Review and Send it: the sheet
+   says the image goes too, and the target fetches it.
+6a. Open an agent's draft and choose **Capture Window…**: the capture joins
+   the draft. Run `parley image <sha256> --to x.png` in that agent's own
+   pane: it is refused. Send the draft to another pane: that pane fetches it.
+7. Remove a capture from your own unsent pack, or discard the pack (closing
+   its sheet only hides it), then **Clear history** for an Ask that sent
+   one: the image is gone (a fetch says Parley no longer keeps it). A
+   capture in an agent's draft stays until that draft is sent or its saved
+   context is deleted.
 
 ---
 

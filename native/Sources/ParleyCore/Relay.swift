@@ -563,9 +563,23 @@ public final class RelayBroker: @unchecked Sendable {
         guard let contextImageStore else { return }
         let referenced = Set(contextReviewRecords.values.flatMap(imageDigests))
             .union(handoffRecords.values.flatMap { ($0.deliveredImages ?? []).map(\.sha256) })
+            .union((busyDraftStore?.drafts() ?? []).flatMap { ($0.images ?? []).map(\.sha256) })
         imagePinLock.withLock {
             _ = contextImageStore.removeAll(except: referenced.union(pinnedImageDigests.keys).union(personImageHolds))
         }
+    }
+
+    /// Only images the person's own pack holds, whose copy is intact, may be
+    /// sent or queued as the person's, or added to an agent's draft: the
+    /// native routes can then grant an agent's staged image to no one.
+    private func personImagesRefusal(_ images: [ContextPackImage]) -> RelayTextResponse? {
+        guard !images.isEmpty else { return nil }
+        guard let contextImageStore else { return RelayTextResponse(status: 503, text: "image storage is unavailable") }
+        let held = imagePinLock.withLock { personImageHolds }
+        for image in images where !held.contains(image.sha256) || (try? contextImageStore.data(for: image)) == nil {
+            return RelayTextResponse(status: 409, text: "an image in the pack is no longer kept, or is not the person's own; nothing was sent")
+        }
+        return nil
     }
 
     /// After handoffs leave memory: a copy only they held goes too.
@@ -874,8 +888,16 @@ public final class RelayBroker: @unchecked Sendable {
         let sentByPerson = handoffRecords.values.filter { ($0.deliveredImages ?? []).contains { $0.sha256 == digest } }
         let reviewed: [ContextPackImage] = holding.flatMap { ($0.pack.parts + [$0.returnedPart].compactMap { $0 }).compactMap(\.image) }
         let sent: [ContextPackImage] = sentByPerson.flatMap { $0.deliveredImages ?? [] }
-        let image = (reviewed + sent).first { $0.sha256 == digest }
-        let staged = holding.contains { $0.sourcePaneID == sender.id }
+        // A queued draft keeps its images but grants nothing until it is sent.
+        let queued: [ContextPackImage] = (busyDraftStore?.drafts() ?? []).flatMap { $0.images ?? [] }
+        let image = (reviewed + sent + queued).first { $0.sha256 == digest }
+        // Staged: an image this pane put in its own draft, never the person's
+        // capture added to that draft (`.windowCapture`).
+        let staged = holding.contains { review in
+            review.sourcePaneID == sender.id
+                && (review.pack.parts + [review.returnedPart].compactMap { $0 })
+                    .contains { $0.image?.sha256 == digest && $0.source.kind == .agentFileDraft }
+        }
         // The person sent this pane a pack holding it: approval records the
         // target, and only a review approved or delivered counts.
         let delivered = holding.contains { review in
@@ -1076,6 +1098,23 @@ public final class RelayBroker: @unchecked Sendable {
                     from: evidencePane(),
                     url: sourceURL,
                     text: selectedText
+                )]
+            case .windowCapture:
+                guard let image = request.image,
+                      request.paths.isEmpty,
+                      request.paneID == nil,
+                      request.executablePath == nil,
+                      request.arguments.isEmpty,
+                      request.evidencePaneID == nil,
+                      request.sourceURL == nil,
+                      request.selectedText == nil else {
+                    throw BrokerFailure(status: 400, message: "invalid window capture request")
+                }
+                if let refusal = personImagesRefusal([image]) { return refusal }
+                captured = [.personWindowCapture(
+                    image,
+                    label: "Window capture",
+                    detail: "Captured by the person with the macOS window picker · \(image.width) × \(image.height) pixels"
                 )]
             case .browserScreenshot, .toolArtifact:
                 guard request.paths.count == 1,
@@ -3116,7 +3155,8 @@ public final class RelayBroker: @unchecked Sendable {
         idempotencyKey suppliedIdempotencyKey: String?,
         humanInitiated: Bool,
         preserveFormatting: Bool,
-        transitionOrigin: RelayTransitionOrigin?
+        transitionOrigin: RelayTransitionOrigin?,
+        images: [ContextPackImage] = []
     ) -> RelayTextResponse {
         let cleaned = preserveFormatting
             ? ContextPackText.normalize(text)
@@ -3181,7 +3221,8 @@ public final class RelayBroker: @unchecked Sendable {
                     idempotencyKey: childKey,
                     humanInitiated: humanInitiated,
                     preserveFormatting: preserveFormatting,
-                    transitionOrigin: transitionOrigin
+                    transitionOrigin: transitionOrigin,
+                    deliveredImages: images
                 )
                 consultationCondition.lock()
                 let handoffID = idempotencyRecords[
@@ -3231,7 +3272,8 @@ public final class RelayBroker: @unchecked Sendable {
         text: String,
         idempotencyKey: String? = nil,
         preserveFormatting: Bool = false,
-        origin: RelayTransitionOrigin = .human
+        origin: RelayTransitionOrigin = .human,
+        images: [ContextPackImage] = []
     ) -> RelayTextResponse {
         let livePanes: [WorkbenchPane]
         do {
@@ -3242,6 +3284,7 @@ public final class RelayBroker: @unchecked Sendable {
         guard let source = livePanes.first(where: { $0.id == sourcePaneID }), source.kind.isAgent else {
             return RelayTextResponse(status: 400, text: "unknown source agent pane")
         }
+        if let refusal = personImagesRefusal(images) { return refusal }
         guard targetPaneIDs.count >= 2 else {
             return RelayTextResponse(status: 400, text: "native comparison needs at least two selected panes")
         }
@@ -3258,7 +3301,8 @@ public final class RelayBroker: @unchecked Sendable {
             idempotencyKey: idempotencyKey,
             humanInitiated: true,
             preserveFormatting: preserveFormatting,
-            transitionOrigin: origin
+            transitionOrigin: origin,
+            images: images
         )
     }
 
@@ -3364,17 +3408,7 @@ public final class RelayBroker: @unchecked Sendable {
         guard let source = livePanes.first(where: { $0.id == sourcePaneID }), source.kind.isAgent else {
             return RelayTextResponse(status: 400, text: "unknown source agent pane")
         }
-        // Only images the person's own pack holds, whose copy is intact, go
-        // with the Ask: this route can grant an agent's staged image to no one.
-        if !images.isEmpty {
-            guard let contextImageStore else { return RelayTextResponse(status: 503, text: "image storage is unavailable") }
-            let held = imagePinLock.withLock { personImageHolds }
-            for image in images {
-                guard held.contains(image.sha256), (try? contextImageStore.data(for: image)) != nil else {
-                    return RelayTextResponse(status: 409, text: "an image in the pack is no longer kept, or is not the person's own; nothing was sent")
-                }
-            }
-        }
+        if let refusal = personImagesRefusal(images) { return refusal }
         let sourceToken: String
         do {
             sourceToken = try credentials.token(for: source.id)
@@ -3453,6 +3487,8 @@ public final class RelayBroker: @unchecked Sendable {
         guard normalized.utf8.count <= ContextPackBuilder.defaultMaximumRenderedBytes else {
             return RelayTextResponse(status: 413, text: "reviewed draft is too large to queue")
         }
+        let images = request.images ?? []
+        if let refusal = personImagesRefusal(images) { return refusal }
 
         consultationCondition.lock()
         let targetIsBusy = targetHasTrackedWorkLocked(target.id)
@@ -3465,7 +3501,7 @@ public final class RelayBroker: @unchecked Sendable {
         }
 
         let now = Date()
-        let draft = ReviewedBusyDraft(
+        var draft = ReviewedBusyDraft(
             sourcePaneID: source.id,
             sourceName: source.displayName,
             sourceKind: source.kind,
@@ -3482,6 +3518,7 @@ public final class RelayBroker: @unchecked Sendable {
             updatedAt: now,
             detail: "Held because \(target.displayName) already had tracked work. Becoming idle will not send it."
         )
+        if !images.isEmpty { draft.images = images }
         do {
             try busyDraftStore.record(draft)
             noteChange()
@@ -3519,6 +3556,14 @@ public final class RelayBroker: @unchecked Sendable {
             return RelayTextResponse(status: error.status, text: error.message)
         } catch {
             return RelayTextResponse(status: 409, text: error.localizedDescription)
+        }
+
+        // The queued draft has kept its images; each copy must still be intact.
+        // Checked before the draft leaves the queue, so a refusal changes
+        // nothing (Codex's review of MR !142: checked after, a failed restore
+        // left it dispatching while the reply said queued).
+        if let images = existing.images, images.contains(where: { image in (try? contextImageStore?.data(for: image)) == nil }) {
+            return RelayTextResponse(status: 409, text: "an image in the queued draft is no longer kept, so nothing was sent; the draft remains queued")
         }
 
         let normalized = request.preserveFormatting
@@ -3565,6 +3610,7 @@ public final class RelayBroker: @unchecked Sendable {
             consultationCondition.unlock()
         }
 
+        let images = dispatching.images ?? []
         var submitted = false
         let response = handleAsk(
             token: sourceToken,
@@ -3576,7 +3622,8 @@ public final class RelayBroker: @unchecked Sendable {
             onSubmitted: {
                 submitted = true
                 try? busyDraftStore.remove(id: dispatching.id)
-            }
+            },
+            deliveredImages: images
         )
         if !submitted {
             try? busyDraftStore.restoreQueued(
@@ -3608,6 +3655,7 @@ public final class RelayBroker: @unchecked Sendable {
         }
         do {
             try busyDraftStore.remove(id: draftID)
+            if !(draft.images ?? []).isEmpty { collectUnreferencedImagesLocked() }
             noteChangeLocked()
             consultationCondition.unlock()
             return RelayTextResponse(

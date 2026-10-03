@@ -108,7 +108,7 @@ struct ContextPackView: View {
             Button("Capture Window…", systemImage: "macwindow") { model.captureWindowIntoContextPack() }
                 .disabled(!model.canCaptureWindowIntoContextPack)
                 .help(model.contextPackIsAgentProposed
-                    ? "A window capture goes in your own context pack, never an agent's draft"
+                    ? "Pick one window to add to this draft; the capture stays yours, so the agent cannot fetch it, only the pane you send the draft to"
                     : "Pick one window with the macOS window picker; Parley captures it once and shows it here before anything is sent")
             Menu("More Sources", systemImage: "plus") {
                 Button("Add Browser/Tool Evidence…", systemImage: "globe") {
@@ -394,6 +394,7 @@ struct ContextPackView: View {
         case .browserScreenshot: "photo"
         case .toolArtifact: "doc.badge.gearshape"
         case .windowCapture: "macwindow"
+        case .unrecognized: "questionmark.square.dashed"
         }
     }
 }
