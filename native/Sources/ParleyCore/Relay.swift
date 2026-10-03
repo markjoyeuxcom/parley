@@ -3527,6 +3527,14 @@ public final class RelayBroker: @unchecked Sendable {
             return RelayTextResponse(status: 409, text: error.localizedDescription)
         }
 
+        // The queued draft has kept its images; each copy must still be intact.
+        // Checked before the draft leaves the queue, so a refusal changes
+        // nothing (Codex's review of MR !142: checked after, a failed restore
+        // left it dispatching while the reply said queued).
+        if let images = existing.images, images.contains(where: { image in (try? contextImageStore?.data(for: image)) == nil }) {
+            return RelayTextResponse(status: 409, text: "an image in the queued draft is no longer kept, so nothing was sent; the draft remains queued")
+        }
+
         let normalized = request.preserveFormatting
             ? ContextPackText.normalize(request.text)
             : RelayText.clean(request.text)
@@ -3571,13 +3579,7 @@ public final class RelayBroker: @unchecked Sendable {
             consultationCondition.unlock()
         }
 
-        // The queued draft has kept its images; each copy must still be intact.
         let images = dispatching.images ?? []
-        if !images.isEmpty, images.contains(where: { image in (try? contextImageStore?.data(for: image)) == nil }) {
-            try? busyDraftStore.restoreQueued(id: dispatching.id, detail: "An image in this draft is no longer kept; it was not sent.")
-            noteChange()
-            return RelayTextResponse(status: 409, text: "an image in the queued draft is no longer kept, so nothing was sent; the draft remains queued")
-        }
         var submitted = false
         let response = handleAsk(
             token: sourceToken,

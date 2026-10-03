@@ -6098,8 +6098,8 @@ final class AppModel: ObservableObject {
     /// The person's own window capture: the system window picker, then one
     /// still image of the window picked. The core holds the image before
     /// Parley's copy is written, as staging pins an agent's, and the part
-    /// joins the pack for review like any other source. An agent's draft
-    /// never takes one.
+    /// joins the pack for review like any other source. Added to an agent's
+    /// draft, the core saves it with the review.
     func captureWindowIntoContextPack() {
         guard let draft = contextPackDraft, canCaptureWindowIntoContextPack else { return }
         let draftID = draft.id

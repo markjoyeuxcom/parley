@@ -101,6 +101,10 @@ public struct ContextPackSource: Codable, Equatable, Sendable {
     public let detail: String
     public let referenceID: String?
     public let vendorEvidence: VendorToolEvidenceProvenance?
+    /// The kind exactly as a newer Parley wrote it, when this one reads it as
+    /// `.unrecognized`: saving writes it back, so the newer Parley gets its
+    /// own kind again (Codex's review of MR !142). Never encoded itself.
+    public let unrecognizedKind: String?
 
     public init(
         kind: ContextPackSourceKind,
@@ -114,6 +118,36 @@ public struct ContextPackSource: Codable, Equatable, Sendable {
         self.detail = detail
         self.referenceID = referenceID
         self.vendorEvidence = vendorEvidence
+        unrecognizedKind = nil
+    }
+
+    private enum CodingKeys: String, CodingKey { case kind, label, detail, referenceID, vendorEvidence }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let raw = try values.decode(String.self, forKey: .kind)
+        if let known = ContextPackSourceKind(rawValue: raw), known != .unrecognized {
+            kind = known
+            unrecognizedKind = nil
+        } else {
+            kind = .unrecognized
+            unrecognizedKind = raw
+        }
+        label = try values.decode(String.self, forKey: .label)
+        detail = try values.decode(String.self, forKey: .detail)
+        referenceID = try values.decodeIfPresent(String.self, forKey: .referenceID)
+        vendorEvidence = try values.decodeIfPresent(VendorToolEvidenceProvenance.self, forKey: .vendorEvidence)
+    }
+
+    /// Byte for byte what the synthesized encoding wrote, but for an
+    /// unrecognised kind written back as read.
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(kind == .unrecognized ? (unrecognizedKind ?? kind.rawValue) : kind.rawValue, forKey: .kind)
+        try values.encode(label, forKey: .label)
+        try values.encode(detail, forKey: .detail)
+        try values.encodeIfPresent(referenceID, forKey: .referenceID)
+        try values.encodeIfPresent(vendorEvidence, forKey: .vendorEvidence)
     }
 }
 
@@ -174,7 +208,8 @@ public struct ContextPackPart: Identifiable, Codable, Equatable, Sendable {
     }
 
     /// A window the person picked and Parley captured, described the same
-    /// way. It is only ever in the person's own pack, which is never saved.
+    /// way. In the person's own pack it is never saved; added to an agent's
+    /// draft, it is saved with that review.
     public static func personWindowCapture(_ image: ContextPackImage, label: String, detail: String) -> ContextPackPart {
         ContextPackPart(
             source: ContextPackSource(kind: .windowCapture, label: label, detail: detail),

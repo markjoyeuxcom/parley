@@ -2037,7 +2037,15 @@ Codex's review of MR !138 shaped most of what follows.
   `agentFileDraft` part of the pane's own review. A person's window capture
   added to an agent's draft is not the agent's to fetch. A queued draft's
   image is found but not granted (403).
+- **Queue downgrade:** images held only by a queued draft rely on a collector
+  that knows queued drafts. The image store first ships in the same release
+  as that knowledge (v0.1.65 at the earliest; v0.1.64 has no image store or
+  collector at all). So no released version deletes them. A build from
+  between !139 and !142 would, which Codex's review of !142 found (M2).
 - **Unknown source kinds:** they decode as `.unrecognized` (3 October 2026).
+  The original string is kept (`ContextPackSource.unrecognizedKind`) and
+  written back when the review is saved again, so a newer Parley gets its
+  own kind back.
   Strict decoding failed the whole saved review store, so a newer kind
   stopped an older core loading saved context. v0.1.64 and earlier still
   decode strictly. Moving back to one after saving a window capture in an
@@ -2077,7 +2085,9 @@ take one window the person picks, captured once. The steps:
   .windowCapture`, 3 October 2026). The core adds it only while the person
   holds it, and saves it with the review.
 - **The part:** it is `ContextPackSourceKind.windowCapture` with an `image`.
-  It is never saved, because the person's pack is never saved.
+  In the person's own pack it is never saved, because that pack is never
+  saved. Added to an agent's draft, it is saved with that review until the
+  review is resolved and deleted or pruned.
 - **Holding:** the core has no record of the person's pack, so the app tells
   it which images the pack holds (`/ui/context-images/hold`,
   `holdPersonImages`; a set replaced each time, memory-only). It does that
@@ -2092,7 +2102,8 @@ take one window the person picks, captured once. The steps:
 - **During a send:** the app holds the send's images from before it starts
   until it ends (`beginImageSend`, `endImageSend`). The pack is cleared as
   the send is launched, and a refused send restores it.
-- **Compare and the busy queue** carry the pack's images (3 October 2026):
+- **Compare and the busy queue** carry the person's own pack's images (3
+  October 2026). An agent's draft is sent through its review route, not these:
   - **Compare:** each child Ask of the person's Compare records them
     (`RelayUIAskManyRequest.images`).
   - **Busy queue:** a queued draft keeps them (`ReviewedBusyDraft.images`),

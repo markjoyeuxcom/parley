@@ -156,9 +156,11 @@ Use the packaged app: the window picker and macOS's own consent need a bundle.
 6a. Open an agent's draft and choose **Capture Window…**: the capture joins
    the draft. Run `parley image <sha256> --to x.png` in that agent's own
    pane: it is refused. Send the draft to another pane: that pane fetches it.
-7. Remove a capture from an unsent pack, or close the pack unsent, then
-   **Clear history** for an Ask that sent one: the image is gone (a fetch
-   says Parley no longer keeps it).
+7. Remove a capture from your own unsent pack, or discard the pack (closing
+   its sheet only hides it), then **Clear history** for an Ask that sent
+   one: the image is gone (a fetch says Parley no longer keeps it). A
+   capture in an agent's draft stays until that draft is sent or its saved
+   context is deleted.
 
 ---
 

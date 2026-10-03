@@ -594,6 +594,41 @@ private func imageExpectValue<T>(_ value: T?, _ message: String) throws -> T {
         try imageExpect(f.broker.handleImageFetch(token: f.targetToken, digest: image.sha256).status == 200,
                         "the pane the draft was sent to could not fetch the capture")
     }),
+    ("window capture: a queued draft whose image copy is damaged is refused before it leaves the queue", {
+        // Codex's review of MR !142 (M1): the copy check ran after the draft
+        // was marked dispatching, so a failed restore left it stuck.
+        let f = try ImageBrokerFixture()
+        let png = imageEvidenceFixture(width: 5, height: 8)
+        let image = try ContextImageInspector.inspect(png)
+        _ = f.broker.holdPersonImages([image.sha256])
+        _ = try f.images.store(png)
+        _ = f.broker.handleDelegate(token: f.sourceToken, target: "Reviewer", text: "Work on this")
+        let queued = f.broker.enqueueReviewedBusyAskFromUI(ReviewedBusyDraftCreateRequest(
+            sourcePaneID: "source", targetPaneID: "target", text: "look", preserveFormatting: true, images: [image]))
+        try imageExpect(queued.status == 201, "could not queue: \(queued.text)")
+        _ = f.broker.handleDelegationResult(token: f.targetToken, handoffID: "current", text: "done", succeeded: true)
+        // Damage the copy: it no longer hashes to its name.
+        try Data("damaged".utf8).write(to: f.images.url(for: image))
+        let before = try imageExpectValue(f.broker.reviewedBusyDrafts().first, "the queued draft vanished")
+        let refused = f.broker.sendReviewedBusyAskFromUI(ReviewedBusyDraftSendRequest(draftID: before.id, expectedUpdatedAt: before.updatedAt,
+                                                                                    text: before.text, preserveFormatting: true))
+        let after = try imageExpectValue(f.broker.reviewedBusyDrafts().first, "the queued draft vanished")
+        try imageExpect(refused.status == 409 && after.state == .queued && after.updatedAt == before.updatedAt
+                        && f.broker.handoffs().allSatisfy { $0.kind != .ask },
+                        "a damaged image changed the queued draft or was sent: \(refused.status) \(after.state)")
+    }),
+    ("window capture: an unknown source kind is written back as it was read", {
+        // Codex's review of MR !142 (L1): saving rewrote it as "unrecognized".
+        let part = ContextPackPart(source: ContextPackSource(kind: .file, label: "a", detail: "b"), capturedText: "c")
+        var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(part)) as! [String: Any]
+        var source = json["source"] as! [String: Any]
+        source["kind"] = "somethingNewer"
+        json["source"] = source
+        let decoded = try JSONDecoder().decode(ContextPackPart.self, from: JSONSerialization.data(withJSONObject: json))
+        let again = try JSONSerialization.jsonObject(with: JSONEncoder().encode(decoded)) as! [String: Any]
+        try imageExpect(((again["source"] as? [String: Any])?["kind"] as? String) == "somethingNewer",
+                        "an unknown source kind was not written back as read: \(String(describing: (again["source"] as? [String: Any])?["kind"]))")
+    }),
     ("window capture: a source kind this version does not know decodes as unrecognised instead of failing the store", {
         let part = ContextPackPart(source: ContextPackSource(kind: .file, label: "a", detail: "b"), capturedText: "c")
         var json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(part)) as! [String: Any]
