@@ -330,6 +330,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var betaFeedbackExporting = false
     @Published private(set) var diagnosticsExporting = false
     @Published private(set) var repeatingAskHandoffID: String?
+    @Published private(set) var repeatingDelegateHandoffID: String?
     @Published private(set) var sendingReviewedBusyDraftID: String?
     @Published private(set) var submittingHandoffComposer = false
     /// One pending pane choice presented as a native sheet instead of a
@@ -2933,22 +2934,13 @@ final class AppModel: ObservableObject {
     }
 
     var askTargets: [WorkbenchPane] {
-        guard let source = activePane,
-              source.kind.isAgent,
-              source.isStarted,
-              !source.isDead,
-              source.relayEnabled,
-              source.hasCurrentProtocol,
-              source.inputAvailable else { return [] }
-        return panes.filter {
-            $0.kind.isAgent
-                && $0.id != source.id
-                && $0.isStarted
-                && !$0.isDead
-                && $0.relayEnabled
-                && $0.hasCurrentProtocol
-                && $0.inputAvailable
-        }
+        AskAvailability.targets(source: activePane, panes: panes)
+    }
+
+    /// Why the selected pane cannot ask anyone, shown inside the Ask and
+    /// Review menus; nil when it can.
+    var askUnavailableReason: String? {
+        AskAvailability.unavailableReason(source: activePane, panes: panes)
     }
 
     var canCompareAskMany: Bool {
@@ -3056,11 +3048,34 @@ final class AppModel: ObservableObject {
     }
 
     var canCompareContextPack: Bool {
-        contextPackAskTargets.count >= 2
-            && askManyComparisonRun?.isRunning != true
-            && relayClient != nil
-            && contextPackDraft?.reviewID == nil
-            && contextPackIsSendable
+        contextPackDraft != nil && contextPackCompareBlockedReason == nil
+    }
+
+    /// The first unmet condition for Ask One Pane, shown under the buttons.
+    var contextPackAskBlockedReason: String? {
+        contextPackSendInputs.map(ContextPackSendReadiness.askBlockedReason)
+            ?? "There is no open pack."
+    }
+
+    /// The first unmet condition for Compare Panes.
+    var contextPackCompareBlockedReason: String? {
+        contextPackSendInputs.map(ContextPackSendReadiness.compareBlockedReason)
+            ?? "There is no open pack."
+    }
+
+    private var contextPackSendInputs: ContextPackSendReadiness.Inputs? {
+        guard let draft = contextPackDraft else { return nil }
+        return ContextPackSendReadiness.Inputs(
+            captureRunning: contextPackCaptureRunning,
+            sourceReady: contextPackSourcePane != nil,
+            hasParts: !draft.pack.parts.isEmpty,
+            hasNote: !draft.pack.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            withinLimits: draft.isValid,
+            targetCount: contextPackAskTargets.count,
+            isAgentDraft: draft.reviewID != nil,
+            comparisonRunning: askManyComparisonRun?.isRunning == true,
+            coreAvailable: relayClient != nil
+        )
     }
 
     /// The person's own pack, or an agent's draft awaiting review, takes a
@@ -4724,6 +4739,72 @@ final class AppModel: ObservableObject {
                 }
             } catch {
                 self.repeatingAskHandoffID = nil
+                self.refreshStatusCenterQuietly()
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
+    func canDelegateAgain(_ handoff: RelayHandoff) -> Bool {
+        repeatingDelegateHandoffID == nil
+            && relayClient != nil
+            && CollaborationHistoryRepeat.delegateRoute(for: handoff, panes: panes) != nil
+    }
+
+    /// Delegate This Again (3 October 2026, after a delivered delegation that
+    /// never arrived could only be cancelled). The person reviews the whole
+    /// task and is told the target may already have it: cancelling tracking
+    /// never stops the target's CLI. A busy target is refused, never queued.
+    func delegateAgain(_ handoff: RelayHandoff) {
+        guard repeatingDelegateHandoffID == nil,
+              let route = CollaborationHistoryRepeat.delegateRoute(for: handoff, panes: panes),
+              let source = panes.first(where: { $0.id == route.sourcePaneID }),
+              let target = panes.first(where: { $0.id == route.targetPaneID }),
+              let relayClient else {
+            NSAlert(error: RelayUIError.message(
+                "This delegation cannot be sent again on its original route. It must have ended, and both original panes must still be running, relay-ready and on Parley's current protocol."
+            )).runModal()
+            return
+        }
+        guard !handoffReviewTargetIsBusy(target) else {
+            NSAlert(error: RelayUIError.message(
+                "\(target.displayName) already has tracked work. Finish or cancel that work first; a repeated delegation is never queued."
+            )).runModal()
+            return
+        }
+        guard let edited = editRelay(
+            title: "Delegate to \(target.displayName) Again",
+            message: "Look at \(target.displayName)'s pane first. Cancelling tracking did not stop its CLI: if it received this task, it may still be working on it, and sending it again gives it the same task twice. This creates a new tracked delegation from \(source.displayName); the original record stays as it is.",
+            text: handoff.text,
+            action: "Delegate Again",
+            insertVisible: { [weak self] in
+                guard let self, let controller = self.controller else { return "" }
+                return try controller.capturePane(source.id)
+            }
+        ) else { return }
+
+        let freshIdentity = UUID().uuidString.lowercased()
+        let repeatedID = handoff.id
+        repeatingDelegateHandoffID = repeatedID
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let response = try await Task.detached(priority: .userInitiated) {
+                    try relayClient.delegateAgainFromUI(
+                        sourcePaneID: route.sourcePaneID,
+                        targetPaneID: route.targetPaneID,
+                        text: edited,
+                        idempotencyKey: freshIdentity,
+                        repeatsHandoffID: repeatedID
+                    )
+                }.value
+                self.repeatingDelegateHandoffID = nil
+                self.refreshStatusCenterQuietly()
+                guard response.status == 200 else {
+                    throw RelayUIError.message(response.text)
+                }
+            } catch {
+                self.repeatingDelegateHandoffID = nil
                 self.refreshStatusCenterQuietly()
                 NSAlert(error: error).runModal()
             }
@@ -6455,7 +6536,7 @@ final class AppModel: ObservableObject {
     func askWithContextPack() {
         guard let draft = contextPackDraft else { return }
         guard !contextPackAskTargets.isEmpty else {
-            NSAlert(error: RelayUIError.message("Open a ready pane from another vendor before sending this context pack.")).runModal()
+            NSAlert(error: RelayUIError.message("Open another ready agent pane before sending this context pack.")).runModal()
             return
         }
         whenContextFilesAreCurrent { [weak self] in self?.chooseContextAskTarget(draft) }

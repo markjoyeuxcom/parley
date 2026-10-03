@@ -312,6 +312,14 @@ struct ContextPackView: View {
                     Text("The original source pane is no longer ready; the draft remains viewable but cannot be sent.")
                         .font(.caption)
                         .foregroundStyle(.red)
+                } else if let reason = model.contextPackAskBlockedReason {
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if !model.contextPackIsAgentProposed, let reason = model.contextPackCompareBlockedReason {
+                    Text("Compare: \(reason)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             Spacer()
@@ -328,13 +336,13 @@ struct ContextPackView: View {
             Button(
                 model.contextPackDraft?.reviewState == .awaitingReview ? "Approve and Ask…" : "Ask One Pane…"
             ) { model.askWithContextPack() }
-                .disabled(!model.contextPackIsSendable || model.contextPackAskTargets.isEmpty)
-                .help("Choose one target pane, then confirm before the attributed pack is submitted")
+                .disabled(model.contextPackAskBlockedReason != nil)
+                .help(model.contextPackAskBlockedReason ?? "Choose one target pane, then confirm before the attributed pack is submitted")
                 .accessibilityHint("Opens a pane choice followed by a confirmation")
             Button("Compare Panes…") { model.compareWithContextPack() }
                 .keyboardShortcut(.defaultAction)
                 .disabled(!model.canCompareContextPack)
-                .help("Send the same pack to at least two panes independently and compare their answers")
+                .help(model.contextPackCompareBlockedReason ?? "Send the same pack to at least two panes independently and compare their answers")
                 .accessibilityHint("Opens a pane choice followed by a confirmation")
         }
         .padding(14)

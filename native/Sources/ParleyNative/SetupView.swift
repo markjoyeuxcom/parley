@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SetupView: View {
     @ObservedObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         VStack(spacing: 0) {
@@ -159,6 +160,14 @@ struct SetupView: View {
                 .disabled(model.runtimeReadinessChecking)
                 .accessibilityHint("Repeat the quota-free local readiness checks")
             Spacer()
+            // Readiness used to end at Continue with nothing linking it to a
+            // first collaboration (Codex's review of 3 October 2026).
+            Button("Show Me How") {
+                model.completeEnvironmentCheck()
+                model.requestHelp(topicID: "start")
+                openWindow(id: "help")
+            }
+            .accessibilityHint("Close setup and open Help at Start here: open two agent panes and ask one a question")
             Button("Continue") { model.completeEnvironmentCheck() }
                 .keyboardShortcut(.defaultAction)
                 .accessibilityHint("Close setup and use Parley")

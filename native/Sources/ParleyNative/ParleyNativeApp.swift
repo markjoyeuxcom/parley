@@ -452,6 +452,19 @@ struct ParleyNativeApp: App {
                     .keyboardShortcut(KeyEquivalent(PaneCreationShortcut.key(for: .shell)!), modifiers: [.command, .option])
                 Button("New Copilot Pane") { model.create(.copilot, direction: .horizontal) }
                     .keyboardShortcut(KeyEquivalent(PaneCreationShortcut.key(for: .copilot)!), modifiers: [.command, .option])
+                // The items above split beside; the toolbar's Pane menu also
+                // offered below and another folder, and this menu did not.
+                Menu("Split Below") {
+                    Button("New Agent Pane Below…") { model.createAgent(direction: .vertical) }
+                    Button("New Shell Pane Below") { model.create(.shell, direction: .vertical) }
+                }
+                Menu("In Another Folder") {
+                    Button("New Agent Pane Beside…") { model.createInChosenFolder(model.lastAgentVendor, direction: .horizontal) }
+                    Button("New Agent Pane Below…") { model.createInChosenFolder(model.lastAgentVendor, direction: .vertical) }
+                    Divider()
+                    Button("New Shell Pane Beside…") { model.createInChosenFolder(.shell, direction: .horizontal) }
+                    Button("New Shell Pane Below…") { model.createInChosenFolder(.shell, direction: .vertical) }
+                }
                 Divider()
                 Button(model.quickRelayTarget.map { "Ask \($0.displayName) with Selection…" } ?? "Ask Last Target with Selection…") {
                     model.quickRelaySelection()

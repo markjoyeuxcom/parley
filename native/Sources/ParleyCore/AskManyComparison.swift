@@ -81,6 +81,29 @@ public struct RelayUIRequestChangesRequest: Codable, Equatable, Sendable {
     }
 }
 
+/// Delegate This Again: one ended delegation sent again on its own route.
+public struct RelayUIDelegateAgainRequest: Codable, Equatable, Sendable {
+    public let sourcePaneID: String
+    public let targetPaneID: String
+    public let text: String
+    public let idempotencyKey: String
+    public let repeatsHandoffID: String
+
+    public init(
+        sourcePaneID: String,
+        targetPaneID: String,
+        text: String,
+        idempotencyKey: String,
+        repeatsHandoffID: String
+    ) {
+        self.sourcePaneID = sourcePaneID
+        self.targetPaneID = targetPaneID
+        self.text = text
+        self.idempotencyKey = idempotencyKey
+        self.repeatsHandoffID = repeatsHandoffID
+    }
+}
+
 public struct RelayUIAskManyRequest: Codable, Equatable, Sendable {
     public let sourcePaneID: String
     public let targetPaneIDs: [String]

@@ -17,6 +17,25 @@ public enum AgentContextReviewState: String, Codable, Equatable, Sendable {
     public var needsHumanReview: Bool {
         self == .draft || self == .awaitingReview
     }
+
+    /// The chip a completed delegation shows beside its own state for the
+    /// file it returned with `parley done --file`. A delegation reads
+    /// COMPLETED as soon as the file is staged, and the file waiting for the
+    /// person was further down the inspector, easy to miss (Codex's review
+    /// of 3 October 2026). What happened to the review is a separate fact,
+    /// and the labels claim no more than its state records (Codex's review
+    /// of MR !144): approval may leave the original part out of the pack it
+    /// sends, and a review fails or is interrupted when an Ask sending it
+    /// never got an answer, which is not proof that nothing was delivered.
+    public var returnedFileBadge: (label: String, needsPerson: Bool) {
+        switch self {
+        case .draft, .awaitingReview: ("FILE AWAITING REVIEW", true)
+        case .approved: ("FILE REVIEW APPROVED", false)
+        case .completed: ("REVIEWED PACK SENT", false)
+        case .rejected, .discarded: ("FILE NOT SENT", false)
+        case .failed, .interrupted: ("FILE SEND UNCONFIRMED", true)
+        }
+    }
 }
 
 /// A pane-authored context proposal. Its source identity comes from the pane

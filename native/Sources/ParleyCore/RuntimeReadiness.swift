@@ -179,7 +179,7 @@ public final class RuntimeReadinessChecker: @unchecked Sendable {
                 "Agent coordination protocol",
                 .attention,
                 "\(stale.count) running agent pane\(stale.count == 1 ? " has" : "s have") an older protocol.",
-                recovery: "Restart only the panes marked Protocol Stale when you are ready to end those conversations."
+                recovery: "Restart only the panes marked RESTART FOR PROTOCOL when you are ready to end those conversations."
             )
         }
         return local(

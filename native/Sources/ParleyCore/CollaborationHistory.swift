@@ -156,6 +156,7 @@ public enum CollaborationHistoryProjection {
             handoff.retryDisposition?.rawValue ?? "",
             handoff.inReplyToHandoffID ?? "",
             handoff.relationship?.rawValue ?? "",
+            handoff.repeatsHandoffID ?? "",
             handoff.humanVerdict?.rawValue ?? "",
             handoff.humanReviewNote ?? "",
             handoff.reviewedAt.map(String.init(describing:)) ?? "",
@@ -203,6 +204,32 @@ public enum CollaborationHistoryRepeat {
               target.inputAvailable else { return nil }
         return RepeatAskRoute(sourcePaneID: source.id, targetPaneID: target.id)
     }
+
+    /// Delegate This Again: one ended delegation sent again on its original
+    /// route, both panes still relay-ready. An active one must have its
+    /// tracking cancelled first, because cancelling never stops the target's
+    /// CLI and the person should decide, having looked, that it did not
+    /// receive the task (2 October 2026: a delivered delegation that never
+    /// arrived could only be cancelled).
+    public static func delegateRoute(
+        for handoff: RelayHandoff,
+        panes: [WorkbenchPane]
+    ) -> RepeatAskRoute? {
+        guard handoff.kind == .delegate,
+              handoff.submitted,
+              !handoff.state.isActive,
+              let source = panes.first(where: { $0.id == handoff.sourcePaneID }),
+              let target = panes.first(where: { $0.id == handoff.targetPaneID }),
+              source.id != target.id,
+              isRelayReadyAgent(source),
+              isRelayReadyAgent(target) else { return nil }
+        return RepeatAskRoute(sourcePaneID: source.id, targetPaneID: target.id)
+    }
+
+    private static func isRelayReadyAgent(_ pane: WorkbenchPane) -> Bool {
+        pane.kind.isAgent && pane.isStarted && !pane.isDead && pane.relayEnabled
+            && pane.hasCurrentProtocol && pane.inputAvailable
+    }
 }
 
 public enum CollaborationHistoryMarkdown {
@@ -246,6 +273,9 @@ public enum CollaborationHistoryMarkdown {
             }
             if let relationship = handoff.relationship {
                 lines.append("- Relationship: \(relationship.rawValue)")
+            }
+            if let repeatedID = handoff.repeatsHandoffID {
+                lines.append("- Repeats: `\(inlineCode(repeatedID))`")
             }
             if HandoffThreadProjection.members(containing: handoff.id, in: handoffs).count > 1 {
                 let thread = HandoffThreadProjection.thread(containing: handoff.id, in: handoffs)

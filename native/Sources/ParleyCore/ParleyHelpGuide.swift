@@ -69,28 +69,6 @@ public struct ParleyHelpTopic: Identifiable, Equatable, Sendable {
 public enum ParleyHelpGuide {
     public static let topics: [ParleyHelpTopic] = [
         ParleyHelpTopic(
-            id: "voice",
-            title: "Voice input and read-aloud",
-            summary: "Dictate an editable draft for a named pane or handoff, and explicitly read selected text or returned results.",
-            symbol: "mic",
-            sections: [
-                ParleyHelpSection(id: "voice-dictation", title: "Dictate, review, then deliver", paragraphs: [
-                    "Select a running agent pane and click Dictate to start recording, then click it again (it reads Stop) to review. Holding Control-Shift-Space in the main window also records until you release it. Stop Recording and Discard are also available. Recording stops when the main window loses focus and after 60 seconds.",
-                    "The editable transcript shows the pane, vendor and workspace. Paste inserts text without Enter; Send pastes then presses Enter. Neither is automatic. Changing the selected pane never redirects a draft: use Use Active Pane explicitly. A closed, moved, restarted or changed pane is refused. If delivery is interrupted, inspect the destination before copying or discarding the draft.",
-                    "Handoff Draft > Ask or Delegate opens an explicit destination picker and the ordinary editable composer. Sending uses the existing correlated handoff and history. Voice never approves a vendor permission prompt, and Copilot still needs its folder-trust confirmation.",
-                ]),
-                ParleyHelpSection(id: "voice-setup", title: "Language, consent and local models", paragraphs: [
-                    "Settings > Voice offers English (United Kingdom) and English (United States). On supported macOS 26 Macs, use Download Speech Model before recording. The model download needs a network connection; recognition stays local. On older or unsupported Macs, Voice requires macOS to report local dictation support. There is no cloud fallback.",
-                    "The packaged Parley app asks for microphone access when recording starts. The older speech backend also asks for Speech Recognition consent. A released or interrupted hold cannot start recording after consent returns; start another recording once permission is granted. Manage access in System Settings > Privacy & Security. Missing assets, unavailable input and denial leave a message you can recover from.",
-                    "Parley saves no raw audio. Transcripts are limited to 8,000 characters and held in memory until delivered, discarded or the app quits. Dictate again to add to the reviewed text. Explicit handoffs use ordinary history retention; text sent to a vendor follows that CLI's handling. Only language and read-aloud preferences persist separately for Production and Development.",
-                ]),
-                ParleyHelpSection(id: "voice-playback", title: "Read only what you select", paragraphs: [
-                    "Read-aloud is off by default. Enable it in Settings > Voice, then choose Voice > Read Selection for a real terminal selection or Read Result on a returned Ask/Delegate in Status Center. Nothing is read automatically, and Parley never narrates live terminal output.",
-                    "The queue holds three items of up to 8,000 characters each. Remove a queued item or use Stop and Clear Queue in the voice panel, Voice menu or settings. Stop playback before recording; capture and playback cannot overlap. Spoken text never triggers navigation, permissions or commands.",
-                ]),
-            ]
-        ),
-        ParleyHelpTopic(
             id: "start",
             title: "Start here",
             summary: "Use several subscription CLIs in one native workbench and move work between vendors without copy and paste.",
@@ -113,10 +91,12 @@ public enum ParleyHelpGuide {
                     id: "start-first-flow",
                     title: "A useful first workflow",
                     items: [
-                        "Open one Claude pane and one Codex, Agy or Copilot pane in the same workspace.",
-                        "Work normally in either CLI. Use Ask when you want a correlated answer returned to the current agent turn.",
-                        "Mark one agent as Workspace Lead and run Plan Review when you want that agent to judge another vendor's advice and continue.",
-                        "Open Status Center when you need the durable history, a pending answer, retry guidance or cancellation controls.",
+                        "Choose Workspace > Open Folder… and pick a project, or stay in this workspace.",
+                        "Choose Pane > New Agent Pane… (Option-Command-N). The review asks which vendor and what it may do; read What is carried, then Start. Nothing runs until you do.",
+                        "Open a second agent pane the same way. Any vendor works, including a second pane of the same one.",
+                        "Select the first pane, choose Ask in the toolbar and pick the second pane. Type a question and press Command-Return; nothing is sent before that.",
+                        "When the answer arrives, Status Center opens on it. Passing it on to another pane is your choice, with its own preview.",
+                        "Later: give longer work to Delegate, mark a Workspace Lead and try Recipes such as Plan Review.",
                     ]
                 ),
             ]
@@ -136,7 +116,7 @@ public enum ParleyHelpGuide {
                     ],
                     items: [
                         "Attach zero, one or several folders for opening and search. Attachment order is presentation metadata; attaching, moving or removing one never changes a pane or grants filesystem permission.",
-                        "The toolbar's Pane menu offers Shell and Agent. A shell opens at once; Agent opens the permission review, whose Vendor row is where you choose Claude Code, Codex, Agy or Copilot, preselected with the last vendor you started. Pane > New Agent Pane… (Option-Command-N) does the same, and the New Claude, Codex, Agy and Copilot Pane items (Option-Command-1, 2, 3 and 5) open that review with their vendor preselected; New Shell Pane is Option-Command-4.",
+                        "The toolbar's Pane menu offers Shell and Agent. A shell opens at once; Agent opens the permission review, whose Vendor row is where you choose Claude Code, Codex, Agy or Copilot, preselected with the last vendor you started. Pane > New Agent Pane… (Option-Command-N) does the same, and the New Claude, Codex, Agy and Copilot Pane items (Option-Command-1, 2, 3 and 5) open that review with their vendor preselected; New Shell Pane is Option-Command-4. Those items split beside the active pane; the Pane menu's Split Below and In Another Folder submenus open an agent or shell below it or in a folder you choose.",
                         "Split Right and Split Below use the optional New Pane Folder. When it is clear, shells follow the active pane and a new agent asks for an explicit working folder.",
                         "When the active pane has moved elsewhere, Split Right Here and Split Below Here explicitly use that pane's current folder.",
                         "Changing the New Pane Folder does not move or restart running panes.",
@@ -415,7 +395,7 @@ public enum ParleyHelpGuide {
                         "The receiving agent must report a terminal result through Parley; merely printing the result in its pane does not complete the tracking relationship.",
                         "A substantial UTF-8 result may be returned with `parley done <id> --file <path>`. The file must stay inside the target pane's working folder. Parley completes the delegation only after a bounded, agent-provided Context Pack draft is durable; it does not forward the file automatically.",
                         "Status Center and the Collaboration dock show three owned facts for each active or recently returned delegation: time since the recorded delivery, the age of the latest agent-declared progress note, and the age of the target pane's last authenticated hook signal. After ten minutes without a note or signal the row states No explicit update for 10 minutes as information only; nothing is inferred from silence.",
-                        "For a target whose vendor reports turns to Parley (Claude, Codex, and Copilot when its plugin hook runs), Status Center also says No turn-start report since delivery when an Ask or Delegate was delivered a minute ago or more and the target has not reported starting a turn. That comes from the vendor's own turn-start hook, never from terminal text, and it is advisory: the target may still be finishing an earlier turn, its report may have failed, or the text may not have arrived. Check that pane before sending it again. For a delegation, the sending agent sees the same fact in parley status as targetTurnStarted.",
+                        "For a target whose vendor reports turns to Parley (Claude, Codex, and Copilot when its plugin hook runs), Status Center also says No turn-start report since delivery when an Ask or Delegate was delivered a minute ago or more and the target has not reported starting a turn. That comes from the vendor's own turn-start hook, never from terminal text, and it is advisory: the target may still be finishing an earlier turn, its report may have failed, or the text may not have arrived. Check that pane before sending it again; if the text never arrived, cancel the tracking and use Ask This Again or Delegate This Again. For a delegation, the sending agent sees the same fact in parley status as targetTurnStarted.",
                         "Each delegation also records bounded Git facts about the target pane's working folder at delegation and again at done or fail: the HEAD revision, the branch or detached state, and up to 200 dirty paths, read with one fixed-argument git status and never file contents or diffs. The inspector and the Markdown export show N paths changed since delegated under the label shared worktree: not attribution, because other panes and the person edit the same tree. A non-Git folder records nothing, and a missing folder or failed read is informational only. A container pane's delegations record Git facts not captured instead: its container can change that repository's Git configuration, so Parley runs no Git there on an agent's report. Every Git read Parley makes turns the repository's filters and diff drivers off and runs Git unable to start another program.",
                         "A returned file may follow the completion-evidence convention: plain Markdown with the ATX headings ## Implemented, ## Tested (each command and the outcome you observed) and ## Unable to test (with the reason), in any order. Status Center shows those sections as one COMPLETION EVIDENCE block labelled AGENT-DECLARED; unknown headings are ignored, the first occurrence of a duplicate heading wins, an empty recognised heading is shown as declaring nothing, and a file without the headings is shown exactly as before. Parley never runs a command to check a claim and stores no new schema. Copy the template below into the returned file:",
                     ],
@@ -664,6 +644,28 @@ public enum ParleyHelpGuide {
                         "Closing the main window keeps app-resident panes running and coordination alive. Quitting ends those processes; auxiliary window closure does not.",
                     ]
                 ),
+            ]
+        ),
+        ParleyHelpTopic(
+            id: "voice",
+            title: "Voice input and read-aloud",
+            summary: "Dictate an editable draft for a named pane or handoff, and explicitly read selected text or returned results.",
+            symbol: "mic",
+            sections: [
+                ParleyHelpSection(id: "voice-dictation", title: "Dictate, review, then deliver", paragraphs: [
+                    "Select a running agent pane and click Dictate to start recording, then click it again (it reads Stop) to review. Holding Control-Shift-Space in the main window also records until you release it. Stop Recording and Discard are also available. Recording stops when the main window loses focus and after 60 seconds.",
+                    "The editable transcript shows the pane, vendor and workspace. Paste inserts text without Enter; Send pastes then presses Enter. Neither is automatic. Changing the selected pane never redirects a draft: use Use Active Pane explicitly. A closed, moved, restarted or changed pane is refused. If delivery is interrupted, inspect the destination before copying or discarding the draft.",
+                    "Handoff Draft > Ask or Delegate opens an explicit destination picker and the ordinary editable composer. Sending uses the existing correlated handoff and history. Voice never approves a vendor permission prompt, and Copilot still needs its folder-trust confirmation.",
+                ]),
+                ParleyHelpSection(id: "voice-setup", title: "Language, consent and local models", paragraphs: [
+                    "Settings > Voice offers English (United Kingdom) and English (United States). On supported macOS 26 Macs, use Download Speech Model before recording. The model download needs a network connection; recognition stays local. On older or unsupported Macs, Voice requires macOS to report local dictation support. There is no cloud fallback.",
+                    "The packaged Parley app asks for microphone access when recording starts. The older speech backend also asks for Speech Recognition consent. A released or interrupted hold cannot start recording after consent returns; start another recording once permission is granted. Manage access in System Settings > Privacy & Security. Missing assets, unavailable input and denial leave a message you can recover from.",
+                    "Parley saves no raw audio. Transcripts are limited to 8,000 characters and held in memory until delivered, discarded or the app quits. Dictate again to add to the reviewed text. Explicit handoffs use ordinary history retention; text sent to a vendor follows that CLI's handling. Only language and read-aloud preferences persist separately for Production and Development.",
+                ]),
+                ParleyHelpSection(id: "voice-playback", title: "Read only what you select", paragraphs: [
+                    "Read-aloud is off by default. Enable it in Settings > Voice, then choose Voice > Read Selection for a real terminal selection or Read Result on a returned Ask/Delegate in Status Center. Nothing is read automatically, and Parley never narrates live terminal output.",
+                    "The queue holds three items of up to 8,000 characters each. Remove a queued item or use Stop and Clear Queue in the voice panel, Voice menu or settings. Stop playback before recording; capture and playback cannot overlap. Spoken text never triggers navigation, permissions or commands.",
+                ]),
             ]
         ),
         ParleyHelpTopic(
@@ -956,6 +958,7 @@ public enum ParleyHelpGuide {
                         "The Markdown export deliberately contains complete question, instruction and returned-result bodies plus identities and delivery receipts. Review it before sharing; it is different from Parley's privacy-bounded diagnostics export.",
                         "Ask This Again is available only after an Ask has ended and its original cross-vendor source and target panes are still running, relay-ready and on the current protocol.",
                         "Repeating always opens the recorded question in an editable preview. Ask Again creates a fresh tracked handoff identity and leaves the historical record unchanged; Parley never silently replays it.",
+                        "Delegate This Again does the same for a delegation that has ended, on its original source and target panes. A delegation that was delivered but never arrived is still active: look at the target pane, use Cancel Tracking, then Delegate This Again. Cancelling never stops the target's CLI, so the preview warns that a target that did receive the task would get it twice. The new delegation shows SENT AGAIN with a link to the original, and a busy target is refused rather than queued.",
                     ]
                 ),
                 ParleyHelpSection(

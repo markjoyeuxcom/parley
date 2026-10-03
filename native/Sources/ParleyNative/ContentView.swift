@@ -882,7 +882,17 @@ struct ContentView: View {
             let byID = Dictionary(destinations.map { ($0.workspaceID, $0) }, uniquingKeysWith: { first, _ in first })
             let layout = WorkspaceDestinationMenu.layout(destinations: destinations.map(\.workspaceID), sections: model.workspaceSidebarSections)
             func moves(_ ids: [String]) -> [ToolbarMenuItem] {
-                ids.compactMap { byID[$0] }.map { workspace in .action(workspace.name) { model.movePane(pane, to: workspace) } }
+                ids.compactMap { byID[$0] }.map { workspace in
+                    // A destination that would refuse this pane's role or lead
+                    // says so here; choosing it still runs the full check.
+                    if let note = PaneMobilityPolicy.destinationConflictNote(
+                        pane: pane, targetWorkspaceID: workspace.workspaceID, panes: model.panes
+                    ) {
+                        return .action("\(workspace.name) (\(note))", isEnabled: false,
+                                       help: "Clear the role or lead mark first, or choose another workspace") {}
+                    }
+                    return .action(workspace.name) { model.movePane(pane, to: workspace) }
+                }
             }
             var destinationItems = moves(layout.shortcuts)
             let rest = layout.groups.map { ToolbarMenuItem.submenu($0.name, items: moves($0.workspaces)) }
@@ -1290,7 +1300,7 @@ struct ContentView: View {
             ]
         }
         if model.askTargets.isEmpty {
-            items.append(.message("Focus an agent pane with another vendor open"))
+            items.append(.message(model.askUnavailableReason ?? "No agent pane can be asked right now."))
         } else {
             if !model.localAskTargets.isEmpty {
                 items.append(.heading("This Workspace"))
@@ -1317,8 +1327,7 @@ struct ContentView: View {
         }
         return ToolbarActionMenu(
             title: "Ask", systemImage: "arrow.turn.up.right",
-            isEnabled: !model.askTargets.isEmpty || model.askManyComparisonRun != nil,
-            accessibilityLabel: "Ask another vendor",
+            accessibilityLabel: "Ask another agent",
             accessibilityValue: "\(model.askTargets.count) available target\(model.askTargets.count == 1 ? "" : "s")",
             accessibilityHint: "Choose another agent pane for a correlated question",
             items: items
@@ -1328,14 +1337,15 @@ struct ContentView: View {
     private var reviewMenu: ToolbarActionMenu {
         ToolbarActionMenu(
             title: "Review", systemImage: "doc.text.magnifyingglass",
-            isEnabled: !model.askTargets.isEmpty,
-            accessibilityLabel: "Review with another vendor",
-            help: "Preview repository changes or a selected file, then ask another vendor to review it",
-            accessibilityHint: "Preview current changes, a plan, or a file before asking another vendor",
-            items: [
-                .submenu("Current Changes", items: reviewTargetItems { model.reviewChanges(with: $0) }),
-                .submenu("Plan or File…", items: reviewTargetItems { model.reviewFile(with: $0) })
-            ]
+            accessibilityLabel: "Review with another agent",
+            help: "Preview repository changes or a selected file, then ask another agent pane to review it",
+            accessibilityHint: "Preview current changes, a plan, or a file before asking another agent pane",
+            items: model.askTargets.isEmpty
+                ? [.message(model.askUnavailableReason ?? "No agent pane can be asked right now.")]
+                : [
+                    .submenu("Current Changes", items: reviewTargetItems { model.reviewChanges(with: $0) }),
+                    .submenu("Plan or File…", items: reviewTargetItems { model.reviewFile(with: $0) })
+                ]
         )
     }
 
@@ -1900,7 +1910,7 @@ struct ContentView: View {
         case .empty, .running: nil
         case .stopped: ("Stopped", .secondary)
         case let .exited(status): (status.map { "Exited \($0)" } ?? "Exited", .red)
-        case .protocolStale: ("Protocol stale", .orange)
+        case .protocolStale: ("Restart for protocol", .orange)
         case .relayUnavailable: ("Relay off", .orange)
         }
     }
@@ -1938,7 +1948,9 @@ struct ContentView: View {
             } actions: {
                 HStack {
                     Button("New Shell") { model.create(.shell, direction: .horizontal) }
+                    // Return opens the agent review, which starts nothing by itself.
                     Button("New Agent…") { model.createAgent(direction: .horizontal) }
+                        .keyboardShortcut(.defaultAction)
                 }
             }
         } else if !model.nativePaneSurfaces.isEmpty {
@@ -2407,7 +2419,7 @@ private struct PaneRow: View {
         switch WorkbenchStateProjection.pane(pane) {
         case .stopped: return ("Stopped", .secondary, .process)
         case let .exited(status): return (status.map { "Exited \($0)" } ?? "Exited", .red, .process)
-        case .protocolStale: return ("Protocol stale", .orange, .process)
+        case .protocolStale: return ("Restart for protocol", .orange, .process)
         case .relayUnavailable: return ("Relay off", .orange, .process)
         case .empty, .running: break
         }

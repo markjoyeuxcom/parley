@@ -36,6 +36,16 @@ public enum HandoffStartProjection {
     }
 
     public static let title = "No turn-start report since delivery"
+
+    /// What the person can do once they have looked and the text did not
+    /// arrive. A delegation could only be cancelled until 3 October 2026.
+    public static func recovery(kind: RelayHandoffKind) -> String? {
+        switch kind {
+        case .delegate: "If it never arrived, use Cancel Tracking, then Delegate This Again."
+        case .ask: "If it never arrived, use Cancel Wait, then Ask This Again."
+        default: nil
+        }
+    }
     public static func detail(targetName: String) -> String {
         "\(targetName) has not reported starting a turn since this was delivered. It may still be finishing an earlier turn, its report may have failed, or the text may not have arrived. Check that pane before sending it again."
     }

@@ -87,4 +87,26 @@ public enum PaneMobilityPolicy {
             blockers: blockers
         )
     }
+
+    /// What a Move to Workspace item says when that destination would refuse
+    /// the pane for its role or lead mark, so the refusal is visible before
+    /// the choice rather than after it. Active handoffs are the pane's own
+    /// state, not the destination's, and the move still checks everything
+    /// again when chosen. Nil when neither collides.
+    public static func destinationConflictNote(
+        pane: WorkbenchPane,
+        targetWorkspaceID: String,
+        panes: [WorkbenchPane]
+    ) -> String? {
+        let notes = assess(action: .move, pane: pane, targetWorkspaceID: targetWorkspaceID, panes: panes, activeHandoffCount: 0)
+            .blockers
+            .compactMap { blocker -> String? in
+                switch blocker {
+                case let .roleConflict(role): "@\(role) is taken there"
+                case .leadConflict: "already has a lead"
+                case .sameWorkspace, .activeHandoffs: nil
+                }
+            }
+        return notes.isEmpty ? nil : notes.joined(separator: ", ")
+    }
 }
