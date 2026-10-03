@@ -139,9 +139,15 @@ func checkStaleProtocolHasOneName() throws {
 /// the file waiting for the person sat further down.
 func checkReturnedFileStateIsBesideTheHandoffState() throws {
     try frictionExpect(AgentContextReviewState.draft.returnedFileBadge == ("FILE AWAITING REVIEW", true), "a staged return is not marked as waiting")
-    try frictionExpect(AgentContextReviewState.completed.returnedFileBadge == ("FILE SENT", false), "a sent return is not marked sent")
+    try frictionExpect(AgentContextReviewState.completed.returnedFileBadge == ("REVIEWED PACK SENT", false), "a sent review is not marked sent")
     try frictionExpect(AgentContextReviewState.rejected.returnedFileBadge.label == "FILE NOT SENT", "a declined return is not marked")
-    try frictionExpect(AgentContextReviewState.failed.returnedFileBadge.needsPerson, "a failed send does not ask for the person")
+    // A review fails when its Ask got no answer, which does not prove the
+    // pack was never delivered (Codex's review of MR !144).
+    for state in [AgentContextReviewState.failed, .interrupted] {
+        try frictionExpect(state.returnedFileBadge == ("FILE SEND UNCONFIRMED", true), "\(state) claims more than it knows")
+    }
+    try frictionExpect(![AgentContextReviewState.draft, .awaitingReview, .approved, .rejected, .discarded, .completed, .failed, .interrupted].map(\.returnedFileBadge.label).contains { $0.contains("FAILED") || $0 == "FILE SENT" },
+                       "a badge asserts a delivery the review state does not record")
     let status = try nativeSource("ParleyNative", "StatusCenterView.swift").text
     try frictionExpect(status.contains("state.returnedFileBadge"), "Status Center's header no longer shows the returned file's state")
     try frictionExpect(status.contains("Button(\"Review Returned File…\")"), "the Review action is gone")
