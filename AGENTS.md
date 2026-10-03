@@ -614,7 +614,23 @@ a different source identity.
 - `parley done <id|current> --file <path>` completes a delegation only after
   a contained, bounded UTF-8 file is durably staged as an agent-provided draft
   for explicit human review. It never forwards the file automatically.
-- `parley status` returns the caller's initiated work as JSON.
+- `parley status` returns the caller's initiated work as JSON. Each
+  delegation carries `targetTurnStarted` (protocol 34, 3 October 2026):
+  - true once the target's authenticated turn-start hook arrived after the
+    handoff was created (`RelayHandoff.targetTurnStartedAt`, stamped by
+    `handleVendorSignal`);
+  - false while it has not, for a target that reported any hook this run;
+  - nil otherwise: Agy has no hooks, and Copilot's run only when its plugin
+    does.
+
+  Status Center shows "Delivered, no turn started" (`HandoffStartProjection`,
+  advisory) for an Ask or Delegate a minute or more after delivery. The
+  stamp's bound is creation, not delivery, because the hook can arrive before
+  the delivered transition is recorded. On 2 October 2026 a delegation was
+  delivered (paste and Enter succeeded), and Codex's own session record shows
+  it never arrived. The cause lies inside the vendor's terminal UI, which
+  Parley must not read; the protocol tells the sending agent to ask the
+  person, never to resend.
 - `parley wait <id|current>` waits for one exact result.
 
 Relay requests never run on the shared dispatch pool (22 September 2026, H2

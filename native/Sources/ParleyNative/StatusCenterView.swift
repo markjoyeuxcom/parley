@@ -1307,6 +1307,13 @@ struct StatusCenterView: View {
                     if let images = handoff.deliveredImages, !images.isEmpty {
                         sentImagesSection(images)
                     }
+                    if handoff.kind == .ask || handoff.kind == .delegate {
+                        liveClock { date in
+                            if model.handoffNotStarted(handoff, at: date) {
+                                notStartedSection(handoff)
+                            }
+                        }
+                    }
                     if handoff.kind == .delegate {
                         liveClock { date in
                             if let facts = model.delegationVisibility(for: handoff, at: date) {
@@ -1672,6 +1679,27 @@ struct StatusCenterView: View {
         }
     }
 
+
+    /// Advisory, from the target's authenticated turn-start hook: delivered a
+    /// minute ago or more and no turn has begun (`HandoffStartProjection`).
+    private func notStartedSection(_ handoff: RelayHandoff) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                Label(HandoffStartProjection.title, systemImage: "exclamationmark.bubble")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.orange)
+                statusChip("ADVISORY · VENDOR HOOK", color: .secondary)
+            }
+            Text(HandoffStartProjection.detail(targetName: handoff.targetName))
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.07))
+        .clipShape(RoundedRectangle(cornerRadius: 5))
+    }
 
     /// The window captures the person sent with this Ask, which its target
     /// may fetch while Parley keeps this record.

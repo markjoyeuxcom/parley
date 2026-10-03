@@ -452,10 +452,14 @@ public struct RelayDelegationStatus: Identifiable, Codable, Equatable, Sendable 
     public let resultContextReviewID: String?
     public let inReplyToHandoffID: String?
     public let relationship: RelayHandoffRelationship?
+    /// Whether the target reported starting a turn since delivery: false
+    /// for a minute or more means the text may not have arrived, so the
+    /// person checks that pane; nil when the target reports no hooks.
+    public let targetTurnStarted: Bool?
     public let createdAt: Date
     public let updatedAt: Date
 
-    fileprivate init(handoff: RelayHandoff) {
+    fileprivate init(handoff: RelayHandoff, target: WorkbenchPane?) {
         id = handoff.id
         sourcePaneID = handoff.sourcePaneID
         sourceName = handoff.sourceName
@@ -469,6 +473,7 @@ public struct RelayDelegationStatus: Identifiable, Codable, Equatable, Sendable 
         resultContextReviewID = handoff.resultContextReviewID
         inReplyToHandoffID = handoff.inReplyToHandoffID
         relationship = handoff.relationship
+        targetTurnStarted = HandoffStartProjection.turnStarted(handoff, target: target)
         createdAt = handoff.transitions.first?.occurredAt ?? handoff.updatedAt
         updatedAt = handoff.updatedAt
     }
@@ -2452,6 +2457,7 @@ public final class RelayBroker: @unchecked Sendable {
                 transientVendorEventRecords[event.id] = event
                 pruneTransientVendorEventsLocked()
             }
+            if signal == .turnStarted { stampTargetTurnStartedLocked(paneID: sender.id, at: occurredAt) }
             noteChangeLocked()
             consultationCondition.unlock()
             return RelayTextResponse(status: 200, text: "")
@@ -2462,6 +2468,22 @@ public final class RelayBroker: @unchecked Sendable {
                 status: 500,
                 text: "Parley could not record the vendor lifecycle signal: \(error.localizedDescription)"
             )
+        }
+    }
+
+    /// The target's turn began: every active Ask or Delegate to it created
+    /// before that moment and not yet stamped records it. Creation, not
+    /// delivery, is the bound, because the vendor's hook can arrive before
+    /// Parley records the delivered transition.
+    private func stampTargetTurnStartedLocked(paneID: String, at occurredAt: Date) {
+        let active: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
+        for (id, var handoff) in handoffRecords
+        where handoff.targetPaneID == paneID && (handoff.kind == .ask || handoff.kind == .delegate)
+            && active.contains(handoff.state) && handoff.targetTurnStartedAt == nil
+            && (handoff.transitions.first?.occurredAt ?? .distantFuture) <= occurredAt {
+            handoff.targetTurnStartedAt = occurredAt
+            handoffRecords[id] = handoff
+            handoffJournal?.record(handoff)
         }
     }
 
@@ -2588,11 +2610,12 @@ public final class RelayBroker: @unchecked Sendable {
         catch let error as BrokerFailure { return RelayTextResponse(status: error.status, text: error.message) }
         catch { return RelayTextResponse(status: 409, text: error.localizedDescription) }
         reconcileDelegations()
+        let livePanes = (try? panes()) ?? []
         consultationCondition.lock()
         let statuses = handoffRecords.values
             .filter { $0.kind == .delegate && $0.sourcePaneID == sourceID }
             .sorted { $0.updatedAt > $1.updatedAt }
-            .map(RelayDelegationStatus.init)
+            .map { handoff in RelayDelegationStatus(handoff: handoff, target: livePanes.first { $0.id == handoff.targetPaneID }) }
         consultationCondition.unlock()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]

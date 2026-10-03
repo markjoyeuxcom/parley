@@ -80,6 +80,11 @@ public enum AgentProtocol {
       answer from the same source pane generation; `current` resolves only when
       exactly one active delegation exists. Cancel only your own active tracking
       with `parley cancel <id>`; this never interrupts the target CLI.
+      For a target whose vendor reports turns to Parley, `parley status` says
+      whether it has started a turn since delivery (`targetTurnStarted`). Still
+      false a minute or more after delivery means the text may not have
+      arrived: ask the person to check that pane, and do not send the work
+      again yourself.
     - For a noninteractive test command requiring a human Shell's permissions,
       use `parley request-run --cwd <absolute-folder> -- <absolute-executable> [args...]`.
       The canonical folder must be inside this pane's working folder. Arguments

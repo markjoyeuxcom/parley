@@ -3183,6 +3183,12 @@ final class AppModel: ObservableObject {
     /// Owned-timestamp facts for one delegation: elapsed since delivery, the
     /// agent-declared note's age and the exact target pane's hook signal age.
     /// Nil for non-delegations and for records without a recorded delivered transition.
+    /// Delivered a minute ago or more and the target, which reports turns,
+    /// has not started one (advisory).
+    func handoffNotStarted(_ handoff: RelayHandoff, at now: Date) -> Bool {
+        HandoffStartProjection.notStarted(handoff, target: panes.first { $0.id == handoff.targetPaneID }, now: now)
+    }
+
     func delegationVisibility(for handoff: RelayHandoff, at now: Date) -> DelegationVisibility? {
         guard handoff.kind == .delegate else { return nil }
         let target = panes.first { $0.id == handoff.targetPaneID }
