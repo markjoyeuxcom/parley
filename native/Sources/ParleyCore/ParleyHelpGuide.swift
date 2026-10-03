@@ -75,7 +75,7 @@ public enum ParleyHelpGuide {
             symbol: "mic",
             sections: [
                 ParleyHelpSection(id: "voice-dictation", title: "Dictate, review, then deliver", paragraphs: [
-                    "Select a running agent pane and hold Dictate or Control-Shift-Space in the main window. Release to review. Keyboard or VoiceOver activation of the button toggles recording; Stop Recording and Discard are also available. Recording stops when the main window loses focus and after 60 seconds.",
+                    "Select a running agent pane and click Dictate to start recording, then click it again (it reads Stop) to review. Holding Control-Shift-Space in the main window also records until you release it. Stop Recording and Discard are also available. Recording stops when the main window loses focus and after 60 seconds.",
                     "The editable transcript shows the pane, vendor and workspace. Paste inserts text without Enter; Send pastes then presses Enter. Neither is automatic. Changing the selected pane never redirects a draft: use Use Active Pane explicitly. A closed, moved, restarted or changed pane is refused. If delivery is interrupted, inspect the destination before copying or discarding the draft.",
                     "Handoff Draft > Ask or Delegate opens an explicit destination picker and the ordinary editable composer. Sending uses the existing correlated handoff and history. Voice never approves a vendor permission prompt, and Copilot still needs its folder-trust confirmation.",
                 ]),
