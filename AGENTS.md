@@ -92,11 +92,20 @@ npm test
 npm run build
 npm run dev
 npm run test:soak -- --rounds 25
+npm run test:vm
 ```
 
 The root npm scripts are a dependency-free runner around
 `scripts/run-native-swift.mjs`. Do not run `npm install` at the repository root.
 The helper chooses a compatible installed macOS SDK and writable Swift caches.
+
+`npm run test:vm` (`scripts/test-vm.mjs`) runs the pipeline's own sequence
+inside a local Tart macOS VM named `parley-dev`, cloned once from the image
+`.gitlab-ci.yml` pins. The checks open real Ghostty surfaces, menus and
+windows, which on the desktop land on the person's screen and fail when they
+touch the Mac or the display sleeps; the VM has a display of its own. Prefer
+it for a full run, and for the screen-touching checks in particular. Pass npm
+arguments through: `npm run test:vm -- run test:checks -- --only "pane menu"`.
 
 Normal launch must never restart a surviving in-app pane. Panes live inside
 the app, so at launch every agent pane is a stopped placeholder; there is no
@@ -789,7 +798,9 @@ release runbook: beta release and production preparation on GitLab".
   `RelayFileTransport.runtimeDirectory`.
 - The checks binary has a prohibited activation policy, so a window-state step
   waits, bounded, for the fact it needs and reports the window's facts when
-  the bound passes; never a fixed delay.
+  the bound passes; never a fixed delay. Run such checks through `npm run
+  test:vm` rather than on the desktop: input or a sleeping display during a
+  run is interference, not a regression.
 - Default checks never launch a vendor CLI, spend quota, touch unrelated
   processes or need the network. `--host-vendor-spike <codex>` and the Docker
   checks are explicit. CI runs on the self-hosted Tart `macos` runner, which

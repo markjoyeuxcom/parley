@@ -9,7 +9,7 @@
     "dev": "node scripts/run-native-swift.mjs dev --package-path native --runtime development --cwd .",
     "test": "npm run test:checks && npm run test:scripts && npm run scan:public && npm run scan:platform",
     "test:checks": "node scripts/run-native-swift.mjs run --package-path native parley-native-checks",
-    "test:scripts": "node --test scripts/run-native-swift.test.mjs scripts/github-security.test.mjs scripts/native-macos-package.test.mjs scripts/native-macos-release.test.mjs scripts/public-repository-scan.test.mjs scripts/platform-dependency-scan.test.mjs scripts/seam-tooling.test.mjs",
+    "test:scripts": "node --test scripts/run-native-swift.test.mjs scripts/github-security.test.mjs scripts/native-macos-package.test.mjs scripts/native-macos-release.test.mjs scripts/public-repository-scan.test.mjs scripts/platform-dependency-scan.test.mjs scripts/seam-tooling.test.mjs scripts/test-vm.test.mjs",
     "scan:public": "node scripts/public-repository-scan.mjs",
     "test:soak": "node scripts/run-native-swift.mjs run --package-path native parley-native-soak",
     "build": "node scripts/run-native-swift.mjs build --package-path native",
@@ -18,6 +18,7 @@
     "verify:launch:mac": "node scripts/verify-native-macos-launch.mjs dist/Parley.app",
     "release:mac:beta": "node scripts/native-macos-release.mjs --unnotarized-beta",
     "release:mac": "node scripts/native-macos-release.mjs",
-    "scan:platform": "node scripts/platform-dependency-scan.mjs"
+    "scan:platform": "node scripts/platform-dependency-scan.mjs",
+    "test:vm": "node scripts/test-vm.mjs"
   }
 }

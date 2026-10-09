@@ -1,0 +1,84 @@
+import { strict as assert } from "node:assert";
+import test from "node:test";
+import {
+  ciPins,
+  vmState,
+  guestSetupScript,
+  guestSyncScript,
+  guestRunScript,
+  shellWord,
+  GUEST_REPO,
+} from "./test-vm.mjs";
+
+const CI = `
+variables:
+  GIT_DEPTH: 0
+  MACOS_IMAGE: ghcr.io/cirruslabs/macos-tahoe-base@sha256:1b09abc
+  NODE_VERSION: "24.21.0"
+  NODE_SHA256: "6239d4cf92d864487ec8cd3615038f7b67e7f58b77b21cd2f09ea9fbd68065fe"
+  DOCKER_ONLY_CHECKS: "container bypass preflight,container follow-up image probe"
+`;
+
+test("ciPins reads the image and Node pins from .gitlab-ci.yml", () => {
+  assert.deepEqual(ciPins(CI), {
+    image: "ghcr.io/cirruslabs/macos-tahoe-base@sha256:1b09abc",
+    nodeVersion: "24.21.0",
+    nodeSHA256: "6239d4cf92d864487ec8cd3615038f7b67e7f58b77b21cd2f09ea9fbd68065fe",
+    dockerOnlyChecks: "container bypass preflight,container follow-up image probe",
+  });
+});
+
+test("ciPins refuses a file missing a pin rather than guessing", () => {
+  assert.throws(() => ciPins("variables:\n  NODE_VERSION: \"1.0.0\"\n"), /MACOS_IMAGE/);
+});
+
+test("vmState reads one VM out of tart list --format json", () => {
+  const listing = JSON.stringify([
+    { Source: "local", Name: "other", Disk: 50, Size: 20, State: "running" },
+    { Source: "local", Name: "parley-dev", Disk: 50, Size: 31, State: "stopped" },
+  ]);
+  assert.equal(vmState(listing, "parley-dev"), "stopped");
+  assert.equal(vmState(listing, "other"), "running");
+  assert.equal(vmState(listing, "missing"), null);
+});
+
+test("shellWord quotes anything the shell could interpret", () => {
+  assert.equal(shellWord("plain"), "plain");
+  assert.equal(shellWord("has space"), "'has space'");
+  assert.equal(shellWord("it's"), `'it'"'"'s'`);
+  assert.equal(shellWord("$HOME;rm"), "'$HOME;rm'");
+});
+
+test("guest setup installs the pinned Node once and checks its digest", () => {
+  const script = guestSetupScript(ciPins(CI));
+  assert.match(script, /node-v24\.21\.0-darwin-arm64/);
+  assert.match(script, /6239d4cf92d864487ec8cd3615038f7b67e7f58b77b21cd2f09ea9fbd68065fe {2}/);
+  assert.match(script, /shasum -a 256 -c/);
+  assert.match(script, /set -eu/);
+  // Already installed means no download at all.
+  assert.match(script, /if \[ -x ".*\/bin\/node" \]/);
+});
+
+test("guest sync removes the previous tree's files but keeps ignored build caches", () => {
+  const script = guestSyncScript();
+  assert.match(script, new RegExp(`mkdir -p ${GUEST_REPO}`));
+  assert.match(script, /git ls-files -co --exclude-standard -z \| xargs -0 rm -f/);
+  assert.match(script, /tar -x/);
+  assert.doesNotMatch(script, /rm -rf/);
+});
+
+test("guest run uses the pinned Node, the synced tree and quoted arguments", () => {
+  const script = guestRunScript(ciPins(CI), ["run", "test:checks", "--", "--only", "pane menu"]);
+  assert.match(script, /node-v24\.21\.0-darwin-arm64\/bin/);
+  assert.match(script, new RegExp(`cd ${GUEST_REPO}`));
+  assert.match(script, /exec npm run test:checks -- --only 'pane menu'$/);
+});
+
+test("guest run defaults to the pipeline's sequence with the Docker-only checks skipped", () => {
+  const script = guestRunScript(ciPins(CI), []);
+  assert.match(script, /npm run test:checks -- --skip 'container bypass preflight,container follow-up image probe' && npm run test:scripts && npm run scan:public && npm run scan:platform && exec npm run build$/);
+});
+
+test("ciPins carries the Docker-only check names the pipeline skips", () => {
+  assert.equal(ciPins(CI).dockerOnlyChecks, "container bypass preflight,container follow-up image probe");
+});
