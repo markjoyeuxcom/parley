@@ -19,7 +19,7 @@ variables:
   DOCKER_ONLY_CHECKS: "container bypass preflight,container follow-up image probe"
 `;
 
-test("ciPins reads the image and Node pins from .gitlab-ci.yml", () => {
+test("ciPins reads the image and Node pins from the CI workflow's env block", () => {
   assert.deepEqual(ciPins(CI), {
     image: "ghcr.io/cirruslabs/macos-tahoe-base@sha256:1b09abc",
     nodeVersion: "24.21.0",

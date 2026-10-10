@@ -1,5 +1,9 @@
 name: CI
 
+# The deterministic macOS gate for pull requests and main, on GitHub's hosted
+# Apple silicon runner. It runs `npm test` as its four parts so the checks half
+# can carry `--skip` for the two checks that need a Docker daemon the runner
+# has none of; `npm test` itself skips nothing.
 on:
   pull_request:
   push:
@@ -12,18 +16,58 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Pins read by scripts/test-vm.mjs as well, so there is one place to bump
+  # them. MACOS_IMAGE is the Tart image the local parley-dev VM is cloned from
+  # (`npm run test:vm`); the hosted runner uses GitHub's own macOS image.
+  MACOS_IMAGE: ghcr.io/cirruslabs/macos-tahoe-base@sha256:1b093499716409d29e8b5336844528e1cae375db97d2ad8e5aeff78cf0da201e
+  # Node is build tooling here, never shipped. The official nodejs.org build
+  # is fetched and checked rather than whatever the runner image carries.
+  # Bump both together (SHASUMS256.txt for the version). The two release
+  # workflows carry the same pair; a script test keeps them equal.
+  NODE_VERSION: "24.21.0"
+  NODE_SHA256: "6239d4cf92d864487ec8cd3615038f7b67e7f58b77b21cd2f09ea9fbd68065fe"
+  # The two deterministic checks that need a Docker daemon.
+  DOCKER_ONLY_CHECKS: "container bypass preflight,container follow-up image probe"
+
 jobs:
   verify:
     name: Test and build
     runs-on: macos-latest
+    timeout-minutes: 45
     steps:
       - name: Check out the source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # The public repository scan walks the complete reachable history.
           fetch-depth: 0
 
-      - name: Run deterministic checks
-        run: npm test
+      - name: Install the pinned Node build
+        run: |
+          set -eu
+          node_dir="node-v$NODE_VERSION-darwin-arm64"
+          curl --fail --location --silent --show-error --output "$RUNNER_TEMP/$node_dir.tar.xz" "https://nodejs.org/dist/v$NODE_VERSION/$node_dir.tar.xz"
+          echo "$NODE_SHA256  $RUNNER_TEMP/$node_dir.tar.xz" | shasum -a 256 -c -
+          tar -xJf "$RUNNER_TEMP/$node_dir.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$node_dir/bin" >> "$GITHUB_PATH"
+
+      - name: Show the toolchain
+        run: |
+          node --version
+          swift --version | head -1
+          xcode-select -p
+
+      - name: Run the native checks
+        run: npm run test:checks -- --skip "$DOCKER_ONLY_CHECKS"
+
+      - name: Run the script tests
+        run: npm run test:scripts
+
+      - name: Scan the public repository
+        run: npm run scan:public
+
+      - name: Scan platform dependencies
+        run: npm run scan:platform
 
       - name: Build the native application
         run: npm run build

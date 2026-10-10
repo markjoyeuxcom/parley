@@ -11,10 +11,17 @@ on:
 permissions:
   contents: write
 
+env:
+  # Keep equal to .github/workflows/ci.yml; a script test checks they match.
+  NODE_VERSION: "24.21.0"
+  NODE_SHA256: "6239d4cf92d864487ec8cd3615038f7b67e7f58b77b21cd2f09ea9fbd68065fe"
+  DOCKER_ONLY_CHECKS: "container bypass preflight,container follow-up image probe"
+
 jobs:
   draft:
     name: Verify, notarize and create draft
     runs-on: macos-latest
+    timeout-minutes: 180
     steps:
       - name: Check out the exact tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -22,8 +29,26 @@ jobs:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
 
-      - name: Run deterministic checks
-        run: npm test
+      - name: Install the pinned Node build
+        run: |
+          set -eu
+          node_dir="node-v$NODE_VERSION-darwin-arm64"
+          curl --fail --location --silent --show-error --output "$RUNNER_TEMP/$node_dir.tar.xz" "https://nodejs.org/dist/v$NODE_VERSION/$node_dir.tar.xz"
+          echo "$NODE_SHA256  $RUNNER_TEMP/$node_dir.tar.xz" | shasum -a 256 -c -
+          tar -xJf "$RUNNER_TEMP/$node_dir.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/$node_dir/bin" >> "$GITHUB_PATH"
+
+      - name: Run the native checks
+        run: npm run test:checks -- --skip "$DOCKER_ONLY_CHECKS"
+
+      - name: Run the script tests
+        run: npm run test:scripts
+
+      - name: Scan the public repository
+        run: npm run scan:public
+
+      - name: Scan platform dependencies
+        run: npm run scan:platform
 
       - name: Run Ghostty runtime release gate
         run: |

@@ -99,9 +99,9 @@ The root npm scripts are a dependency-free runner around
 `scripts/run-native-swift.mjs`. Do not run `npm install` at the repository root.
 The helper chooses a compatible installed macOS SDK and writable Swift caches.
 
-`npm run test:vm` (`scripts/test-vm.mjs`) runs the pipeline's own sequence
-inside a local Tart macOS VM named `parley-dev`, cloned once from the image
-`.gitlab-ci.yml` pins. The checks open real Ghostty surfaces, menus and
+`npm run test:vm` (`scripts/test-vm.mjs`) runs CI's own sequence inside a
+local Tart macOS VM named `parley-dev`, cloned once from the image
+`.github/workflows/ci.yml` pins. The checks open real Ghostty surfaces, menus and
 windows, which on the desktop land on the person's screen and fail when they
 touch the Mac or the display sleeps; the VM has a display of its own. Prefer
 it for a full run, and for the screen-touching checks in particular. Pass npm
@@ -778,8 +778,8 @@ There is no Development-attached-to-Production mode.
 ## Verification
 
 Prax notes: "Parley verification practices, check hygiene, CI runner, release
-jobs and version pins"; "Parley GitLab CI on the Tart macOS runner"; "Parley
-release runbook: beta release and production preparation on GitLab".
+jobs and version pins"; "Parley moved back to GitHub on 10 October 2026";
+"Parley: run the suite in a local Tart VM with npm run test:vm".
 
 - Never report work as done because it was written. Run it. For non-trivial
   logic write the failing check first, observe it fail, then make it pass.
@@ -803,18 +803,24 @@ release runbook: beta release and production preparation on GitLab".
   run is interference, not a regression.
 - Default checks never launch a vendor CLI, spend quota, touch unrelated
   processes or need the network. `--host-vendor-spike <codex>` and the Docker
-  checks are explicit. CI runs on the self-hosted Tart `macos` runner, which
-  has no Docker, so jobs pass `--skip "container bypass preflight,container
-  follow-up image probe"`; a skipped check is never a passed one and `npm
-  test` itself skips nothing. `test:checks` and `test:scripts` are its halves.
-- `prepare-production-release` is manual and tag-protected, imports signing
-  material into a temporary keychain, emits artifacts only and never touches
-  the stable feed. Release jobs must pass the 25-round eight-pane soak with
-  its JSON report in SHA256SUMS, Developer ID-sign Sparkle inside-out,
-  notarize and staple app and DMG, pass Gatekeeper and produce an
-  Ed25519-signed appcast and SHA-256-pinned cask; missing evidence fails
-  closed. The cask goes through a branch and pull request, never a direct
-  push to main.
+  checks are explicit. CI is GitHub Actions on the hosted `macos-latest`
+  runner (the repository is public, so it costs nothing; it lived on GitLab
+  with a self-hosted Tart runner from 7 September to 10 October 2026). The
+  runner has no Docker, so every workflow runs `npm test` as its four parts
+  and passes `--skip "container bypass preflight,container follow-up image
+  probe"` to the checks; a skipped check is never a passed one and `npm test`
+  itself skips nothing. `test:checks` and `test:scripts` are its halves.
+  External Actions are pinned to full commit SHAs (`github-security.test.mjs`).
+- The **Prepare macOS draft release** workflow is manual and tag-exact,
+  imports signing material into a temporary keychain, retains an unpublished
+  draft and never touches the stable feed. Release workflows must pass the
+  25-round eight-pane soak with its JSON report in SHA256SUMS, Developer
+  ID-sign Sparkle inside-out, notarize and staple app and DMG, pass
+  Gatekeeper and produce an Ed25519-signed appcast and SHA-256-pinned cask;
+  missing evidence fails closed. The cask goes through a branch and pull
+  request, never a direct push to main. The test-beta workflow publishes an
+  unnotarized prerelease with the workflow's own token and refuses a tag
+  that already has a release.
 
 ## Version policy
 

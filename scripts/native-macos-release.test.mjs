@@ -75,13 +75,19 @@ test('unnotarized test beta is explicit and cannot weaken the signed release pat
     /cannot be combined/,
   )
 
-  // The GitHub Actions test-beta workflow was replaced on 2026-09-08 by the
-  // manual release-beta job in .gitlab-ci.yml (see github-security.test.mjs),
-  // so a second, dispatchable publisher of the same beta must not come back.
+  // Exactly one dispatchable publisher of the unnotarized beta exists: the
+  // GitHub workflow (see github-security.test.mjs). The GitLab release-beta
+  // job that replaced it between 2026-09-08 and 2026-10-10 must not come
+  // back beside it.
   assert.equal(
     existsSync(join(repositoryRoot, '.github/workflows/macos-test-beta-release.yml')),
+    true,
+    'the GitHub test-beta workflow is the one beta publisher',
+  )
+  assert.equal(
+    existsSync(join(repositoryRoot, '.gitlab-ci.yml')),
     false,
-    'the GitHub test-beta workflow was retired in favour of the GitLab release-beta job',
+    'a second, dispatchable publisher of the same beta must not come back',
   )
 })
 

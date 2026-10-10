@@ -4,8 +4,8 @@
 // The checks binary opens real Ghostty surfaces, menus and windows, which
 // land on whoever's screen runs it and fail when a person touches the Mac or
 // the display sleeps. A Tart VM has a display of its own, so the same suite
-// runs there untouched, on the same base image the GitLab pipeline pins in
-// .gitlab-ci.yml, and a green run here means what a green pipeline means.
+// runs there untouched, with the pins .github/workflows/ci.yml carries, and a
+// green run here means what a green CI run means.
 //
 //   npm run test:vm                      # the pipeline's sequence
 //   npm run test:vm -- run test:checks -- --only "pane menu"
@@ -13,7 +13,7 @@
 // The VM is a persistent clone named parley-dev (PARLEY_TEST_VM overrides),
 // created once with the pinned image:
 //
-//   tart clone <MACOS_IMAGE from .gitlab-ci.yml> parley-dev
+//   tart clone <MACOS_IMAGE from .github/workflows/ci.yml> parley-dev
 //
 // Each run starts the VM headless if it is stopped, installs the pinned Node
 // inside it once, replaces the guest's copy of the working tree (tracked and
@@ -31,12 +31,14 @@ export const GUEST_REPO = "~/parley";
 export const DEFAULT_VM = "parley-dev";
 const BOOT_TIMEOUT_SECONDS = 240;
 
-// The pins the pipeline uses, read from .gitlab-ci.yml so there is one place
+export const CI_WORKFLOW = ".github/workflows/ci.yml";
+
+// The pins CI uses, read from the workflow's env block so there is one place
 // to bump them. A missing pin is an error, never a default.
 export function ciPins(yaml) {
   const pick = (key, pattern) => {
     const match = yaml.match(new RegExp(`^\\s*${key}:\\s*"?(${pattern})"?\\s*$`, "m"));
-    if (!match) throw new Error(`.gitlab-ci.yml has no ${key} pin`);
+    if (!match) throw new Error(`${CI_WORKFLOW} has no ${key} pin`);
     return match[1];
   };
   return {
@@ -97,8 +99,8 @@ export function guestSyncScript() {
   ].join("\n");
 }
 
-// Runs npm in the guest: the arguments given, or the pipeline's own sequence
-// (the two Docker-only checks skipped, since the VM has no daemon).
+// Runs npm in the guest: the arguments given, or CI's own sequence (the two
+// Docker-only checks skipped, since the VM has no daemon).
 export function guestRunScript(pins, npmArguments) {
   const command = npmArguments.length > 0
     ? `exec npm ${npmArguments.map(shellWord).join(" ")}`
@@ -172,7 +174,7 @@ async function main() {
   const root = dirname(dirname(fileURLToPath(import.meta.url)));
   const vm = process.env.PARLEY_TEST_VM || DEFAULT_VM;
   if (!/^[A-Za-z0-9_.-]+$/.test(vm)) fail(`PARLEY_TEST_VM must be a plain VM name, not ${JSON.stringify(vm)}`);
-  const pins = ciPins(readFileSync(join(root, ".gitlab-ci.yml"), "utf8"));
+  const pins = ciPins(readFileSync(join(root, CI_WORKFLOW), "utf8"));
   const npmArguments = process.argv.slice(2);
 
   await ensureRunning(vm, pins);
