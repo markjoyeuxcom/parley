@@ -74,6 +74,14 @@ function assertRunsDeterministicChecks(source, label) {
   assert.match(source, /shasum -a 256 -c -/, `${label} must verify the Node download before unpacking it`)
   assert.match(source, /runs-on:\s*macos-latest/, `${label} must run on the hosted macOS runner`)
   assert.match(source, /fetch-depth:\s*0/, `${label} must fetch complete history for the publication scan`)
+  // The hosted image selects a full Xcode, whose /usr/bin/git shim forks
+  // xcodebuild on a cold cache; GitReadBoundary forbids Git any fork, so the
+  // guarded reads fail (run 38047165730, 10 October 2026). The Command Line
+  // Tools shim execs the real Git, and must be selected before the checks.
+  const select = source.indexOf('sudo xcode-select -s /Library/Developer/CommandLineTools')
+  const checks = source.indexOf('npm run test:checks')
+  assert.ok(select >= 0, `${label} must select the Command Line Tools toolchain`)
+  assert.ok(select < checks, `${label} must select the Command Line Tools before the native checks run`)
 }
 
 test('macOS CI verifies pull requests and main with the four parts of npm test', () => {

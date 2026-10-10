@@ -29,6 +29,14 @@ jobs:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
 
+      # See ci.yml: the full Xcode's Git shim cannot fork under GitReadBoundary.
+      - name: Select the Command Line Tools toolchain
+        run: |
+          sudo xcode-select -s /Library/Developer/CommandLineTools
+          xcode-select -p
+          git --version
+          swift --version | head -1
+
       - name: Install the pinned Node build
         run: |
           set -eu
