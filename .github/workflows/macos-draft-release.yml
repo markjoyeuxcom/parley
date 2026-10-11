@@ -23,11 +23,6 @@ env:
   NODE_VERSION: "24.21.0"
   NODE_SHA256: "6239d4cf92d864487ec8cd3615038f7b67e7f58b77b21cd2f09ea9fbd68065fe"
   DOCKER_ONLY_CHECKS: "container bypass preflight,container follow-up image probe"
-  # Fixed locations for every piece of signing material, so cleanup needs no
-  # record of what was created: it removes these whether or not import ran.
-  PARLEY_TEMP_KEYCHAIN: ${{ runner.temp }}/parley-signing.keychain-db
-  PARLEY_SIGNING_P12: ${{ runner.temp }}/parley-developer-id.p12
-  PARLEY_NOTARY_KEY: ${{ runner.temp }}/parley-notary-key.p8
 
 jobs:
   draft:
@@ -93,8 +88,14 @@ jobs:
           mkdir -p dist
           npm run test:soak -- --rounds 25 --output dist/Parley-Ghostty-soak.json
 
+      # The signing material lives at fixed paths, declared on each step that
+      # touches them (the runner context is not available to workflow-level
+      # env), so cleanup needs no record of what import created.
       - name: Import Developer ID identity and notary credentials
         env:
+          PARLEY_TEMP_KEYCHAIN: ${{ runner.temp }}/parley-signing.keychain-db
+          PARLEY_SIGNING_P12: ${{ runner.temp }}/parley-developer-id.p12
+          PARLEY_NOTARY_KEY: ${{ runner.temp }}/parley-notary-key.p8
           PARLEY_SIGNING_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_P12_BASE64 }}
           PARLEY_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
           PARLEY_NOTARY_KEY_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
@@ -116,6 +117,7 @@ jobs:
 
       - name: Prepare, notarize and verify release assets
         env:
+          PARLEY_NOTARY_KEY: ${{ runner.temp }}/parley-notary-key.p8
           PARLEY_RELEASE_TAG: ${{ inputs.tag }}
           PARLEY_CODESIGN_IDENTITY: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION }}
           PARLEY_SPARKLE_PUBLIC_ED_KEY: ${{ secrets.SPARKLE_PUBLIC_ED_KEY }}
@@ -160,9 +162,13 @@ jobs:
             --title "Parley v${version}" \
             --notes-file "$notes"
 
-      # Fixed paths, removed whether or not the import step ran or finished.
+      # The same fixed paths, removed whether or not the import step ran.
       - name: Remove temporary signing material
         if: always()
+        env:
+          PARLEY_TEMP_KEYCHAIN: ${{ runner.temp }}/parley-signing.keychain-db
+          PARLEY_SIGNING_P12: ${{ runner.temp }}/parley-developer-id.p12
+          PARLEY_NOTARY_KEY: ${{ runner.temp }}/parley-notary-key.p8
         run: |
           security delete-keychain "$PARLEY_TEMP_KEYCHAIN" || true
           rm -f "$PARLEY_SIGNING_P12" "$PARLEY_NOTARY_KEY"

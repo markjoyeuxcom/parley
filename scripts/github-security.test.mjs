@@ -147,6 +147,18 @@ test('macOS release packaging creates the shared artifact directory on a clean c
   }
 })
 
+test('workflow-level env blocks use no runner context, which GitHub rejects at push', () => {
+  // GitHub validates every workflow file on push; a workflow-level env entry
+  // that reads ${{ runner.* }} makes the file invalid and records a failed run
+  // with no jobs for every push (seen 11 October 2026 on macos-draft-release).
+  for (const name of ['ci.yml', 'macos-test-beta-release.yml', 'macos-draft-release.yml']) {
+    const source = workflow(name)
+    const block = source.match(/^env:\n((?:[ \t].*\n|\n)*)/m)
+    if (!block) continue
+    assert.doesNotMatch(block[1], /\$\{\{\s*runner\./, `${name}: workflow-level env cannot use the runner context`)
+  }
+})
+
 test('the notarized draft workflow signs in an ephemeral keychain and retains an unpublished draft', () => {
   const source = workflow('macos-draft-release.yml')
   // The signing secrets live in the release-signing environment, which
@@ -157,7 +169,14 @@ test('the notarized draft workflow signs in an ephemeral keychain and retains an
   assert.match(source, /umask 077/, 'decoded signing material must be private from creation')
   // Cleanup removes fixed paths unconditionally: a failed import exits before
   // any record of what it created, so cleanup must not depend on one.
-  assert.match(source, /PARLEY_TEMP_KEYCHAIN:\s*\$\{\{ runner\.temp \}\}\//, 'the keychain path is fixed at workflow level')
+  // The same three fixed paths are declared on the import step and on the
+  // cleanup step, so cleanup needs no record of what import created.
+  const fixedPaths = source.match(/PARLEY_TEMP_KEYCHAIN:\s*\$\{\{ runner\.temp \}\}\/parley-signing\.keychain-db/g) ?? []
+  assert.equal(fixedPaths.length, 2, 'the keychain path is declared on the import and cleanup steps')
+  const cleanup = source.slice(source.indexOf('- name: Remove temporary signing material'))
+  assert.match(cleanup, /PARLEY_TEMP_KEYCHAIN:\s*\$\{\{ runner\.temp \}\}\//, 'cleanup declares the keychain path itself')
+  assert.match(cleanup, /PARLEY_SIGNING_P12:\s*\$\{\{ runner\.temp \}\}\//)
+  assert.match(cleanup, /PARLEY_NOTARY_KEY:\s*\$\{\{ runner\.temp \}\}\//)
   assert.ok(source.includes('security delete-keychain "$PARLEY_TEMP_KEYCHAIN" || true'), 'the keychain is deleted unconditionally')
   assert.ok(source.includes('rm -f "$PARLEY_SIGNING_P12" "$PARLEY_NOTARY_KEY"'), 'the decoded files are removed unconditionally')
   assert.doesNotMatch(source, /if test -n "\$\{PARLEY_TEMP_KEYCHAIN/, 'cleanup must not be conditional on an export the import step may never reach')
