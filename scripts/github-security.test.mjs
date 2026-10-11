@@ -44,81 +44,174 @@ test('Dependabot watches Swift packages and GitHub Actions weekly', () => {
   assert.match(source, /package-ecosystem:\s*["']?github-actions["']?[\s\S]*?directory:\s*["']?\/["']?[\s\S]*?interval:\s*["']?weekly["']?/)
 })
 
-test('macOS CI verifies pull requests and main', () => {
-  const workflow = join(workflowsDirectory, 'ci.yml')
-  assert.equal(existsSync(workflow), true, '.github/workflows/ci.yml is missing')
+// Every macOS workflow runs `npm test` as its four parts so the checks half
+// can carry `--skip` for the two checks that need a Docker daemon the hosted
+// runner has none of. The skip list is pinned by name here: widening it is a
+// visible decision.
+const dockerOnlyChecks = 'container bypass preflight,container follow-up image probe'
 
-  const source = readFileSync(workflow, 'utf8')
+const workflow = (name) => {
+  const path = join(workflowsDirectory, name)
+  assert.equal(existsSync(path), true, `.github/workflows/${name} is missing`)
+  return readFileSync(path, 'utf8')
+}
+
+const pin = (source, key) => {
+  const match = source.match(new RegExp(`^\\s*${key}:\\s*"?([^"\\n]+?)"?\\s*$`, 'm'))
+  assert.ok(match, `${key} is not pinned`)
+  return match[1]
+}
+
+function assertRunsDeterministicChecks(source, label) {
+  assert.match(source, /run:\s*npm run test:checks -- --skip "\$DOCKER_ONLY_CHECKS"/, `${label} must run the native checks with the declared Docker-only skip`)
+  assert.match(source, /run:\s*npm run test:scripts/, `${label} must run the script tests`)
+  assert.match(source, /run:\s*npm run scan:public/, `${label} must run the public repository scan`)
+  assert.match(source, /run:\s*npm run scan:platform/, `${label} must run the platform dependency scan`)
+  assert.doesNotMatch(source, /--skip (?!"\$DOCKER_ONLY_CHECKS")/, `${label} may skip only the declared Docker-only checks`)
+  assert.doesNotMatch(source, /run:\s*npm test\s*$/m, `${label} must run the four parts, not npm test, so the skip reaches the checks`)
+  assert.equal(pin(source, 'DOCKER_ONLY_CHECKS'), dockerOnlyChecks, `${label} may skip only the two Docker-only checks`)
+  assert.match(source, /NODE_SHA256:\s*"[0-9a-f]{64}"/, `${label} must checksum the nodejs.org build`)
+  assert.match(source, /shasum -a 256 -c -/, `${label} must verify the Node download before unpacking it`)
+  assert.match(source, /runs-on:\s*macos-latest/, `${label} must run on the hosted macOS runner`)
+  assert.match(source, /fetch-depth:\s*0/, `${label} must fetch complete history for the publication scan`)
+  // The hosted image selects a full Xcode, whose /usr/bin/git shim forks
+  // xcodebuild on a cold cache; GitReadBoundary forbids Git any fork, so the
+  // guarded reads fail (run 38047165730, 10 October 2026). The Command Line
+  // Tools shim execs the real Git, and must be selected before the checks.
+  const select = source.indexOf('sudo xcode-select -s /Library/Developer/CommandLineTools')
+  const checks = source.indexOf('npm run test:checks')
+  assert.ok(select >= 0, `${label} must select the Command Line Tools toolchain`)
+  assert.ok(select < checks, `${label} must select the Command Line Tools before the native checks run`)
+}
+
+test('macOS CI verifies pull requests and main with the four parts of npm test', () => {
+  // The repository returned to github.com/markjoyeuxcom/parley on
+  // 2026-10-10. It is public, so GitHub's hosted Apple silicon runners cost
+  // nothing, and the self-hosted Tart runner on GitLab is retired.
+  const source = workflow('ci.yml')
   assert.match(source, /pull_request:/)
   assert.match(source, /push:[\s\S]*?branches:\s*\[main\]/)
-  assert.match(source, /runs-on:\s*macos-latest/)
-  assert.match(source, /fetch-depth:\s*0/, 'CI must fetch complete history for the publication scan')
-  assert.match(source, /run:\s*npm test/)
+  assert.match(source, /permissions:\s*\n\s*contents:\s*read/, 'CI needs no write access')
+  assertRunsDeterministicChecks(source, 'CI')
   assert.match(source, /run:\s*npm run build/)
+  assert.match(source, /MACOS_IMAGE:\s*ghcr\.io\/cirruslabs\/macos-[a-z]+-base@sha256:[0-9a-f]{64}/, 'the local test VM image must be pinned by digest')
+})
+
+test('the three macOS workflows pin the same Node build and skip list', () => {
+  const names = ['ci.yml', 'macos-test-beta-release.yml', 'macos-draft-release.yml']
+  const pins = names.map((name) => {
+    const source = workflow(name)
+    return { name, version: pin(source, 'NODE_VERSION'), sha256: pin(source, 'NODE_SHA256'), skip: pin(source, 'DOCKER_ONLY_CHECKS') }
+  })
+  for (const entry of pins.slice(1)) {
+    assert.equal(entry.version, pins[0].version, `${entry.name} pins a different Node version from ci.yml`)
+    assert.equal(entry.sha256, pins[0].sha256, `${entry.name} pins a different Node digest from ci.yml`)
+    assert.equal(entry.skip, pins[0].skip, `${entry.name} skips a different list from ci.yml`)
+  }
 })
 
 test('macOS releases require versioned notes for the exact requested tag', () => {
-  const workflow = join(workflowsDirectory, 'macos-draft-release.yml')
-  assert.equal(existsSync(workflow), true, '.github/workflows/macos-draft-release.yml is missing')
-
-  const source = readFileSync(workflow, 'utf8')
-  assert.ok(
-    source.includes('notes=".github/release-notes/${PARLEY_RELEASE_TAG}.md"'),
-    'release notes must be selected by the exact requested tag',
-  )
-  assert.ok(source.includes('test -f "$notes"'), 'the release must fail when its versioned notes are missing')
-  assert.ok(source.includes('--notes-file "$notes"'), 'the GitHub draft must use the versioned release notes')
+  for (const name of ['macos-draft-release.yml', 'macos-test-beta-release.yml']) {
+    const source = workflow(name)
+    assert.ok(
+      source.includes('notes=".github/release-notes/${PARLEY_RELEASE_TAG}.md"'),
+      `${name}: release notes must be selected by the exact requested tag`,
+    )
+    assert.ok(source.includes('test -f "$notes"'), `${name}: the release must fail when its versioned notes are missing`)
+    assert.ok(source.includes('--notes-file "$notes"'), `${name}: the GitHub release must use the versioned release notes`)
+    assert.match(source, /workflow_dispatch:[\s\S]*?inputs:[\s\S]*?tag:/, `${name}: a person starts it with an explicit tag`)
+    assert.match(source, /ref:\s*\$\{\{ inputs\.tag \}\}/, `${name}: the exact tag is checked out`)
+    assert.match(source, /--verify-tag/, `${name}: the release must be created on the existing tag`)
+    // The preflight runs before any expensive or privileged step: the tag
+    // must be the ref the workflow was dispatched from (so environment tag
+    // rules bind it), the notes must exist, and package.json must agree.
+    assert.ok(source.includes('test "$GITHUB_REF" = "refs/tags/$PARLEY_RELEASE_TAG"'), `${name}: the input tag must be the dispatched ref`)
+    const notesCheck = source.indexOf('test -f "$notes"')
+    assert.ok(notesCheck >= 0 && notesCheck < source.indexOf('npm run test:checks'), `${name}: the notes must be checked before the checks run`)
+    assert.ok(source.indexOf('test "v$version" = "$PARLEY_RELEASE_TAG"') < source.indexOf('npm run test:checks'), `${name}: package.json must match the tag before the checks run`)
+    assert.doesNotMatch(source, /--dangerously|danger-full-access/, `${name}: no approval bypass`)
+    assert.doesNotMatch(source, /vscode|vsix|companion/i, `${name}: the VS Code companion was retired in the September 2026 reduction`)
+  }
 })
 
 test('macOS release packaging creates the shared artifact directory on a clean checkout', () => {
-  const workflow = join(workflowsDirectory, 'macos-draft-release.yml')
-  const source = readFileSync(workflow, 'utf8')
-  const createDirectory = source.indexOf('mkdir -p dist')
-  const soak = source.indexOf('npm run test:soak')
-
-  assert.ok(createDirectory >= 0, 'the release workflow must create dist before packaging')
-  assert.ok(createDirectory < soak, 'dist must exist before the soak writes its report')
-  assert.doesNotMatch(source, /vscode|vsix|companion/i, 'the VS Code companion was retired in the September 2026 reduction')
+  for (const name of ['macos-draft-release.yml', 'macos-test-beta-release.yml']) {
+    const source = workflow(name)
+    const createDirectory = source.indexOf('mkdir -p dist')
+    const soak = source.indexOf('npm run test:soak -- --rounds 25')
+    assert.ok(createDirectory >= 0, `${name}: the release workflow must create dist before packaging`)
+    assert.ok(createDirectory < soak, `${name}: dist must exist before the soak writes its report`)
+    assert.ok(soak >= 0, `${name}: a release must pass the 25-round Ghostty soak`)
+    assertRunsDeterministicChecks(source, name)
+    assert.match(source, /npm run verify:launch:mac/, `${name}: a release must prove the packaged app reaches its event loop`)
+  }
 })
 
-// The pipeline runs `npm test` as its four parts so the checks half can carry
-// `--skip` for the two checks that need a Docker daemon the CI VM cannot run.
-// The skip list is pinned by name here: widening it is a visible decision.
-const dockerOnlyChecks = 'container bypass preflight,container follow-up image probe'
-
-function assertRunsDeterministicChecks(job, label) {
-  assert.match(job, /-\s*npm run test:checks -- --skip "\$DOCKER_ONLY_CHECKS"/, `${label} must run the native checks with the declared Docker-only skip`)
-  assert.match(job, /-\s*npm run test:scripts/, `${label} must run the script tests`)
-  assert.match(job, /-\s*npm run scan:public/, `${label} must run the public repository scan`)
-  assert.match(job, /-\s*npm run scan:platform/, `${label} must run the platform dependency scan`)
-  assert.doesNotMatch(job, /--skip (?!"\$DOCKER_ONLY_CHECKS")/, `${label} may skip only the declared Docker-only checks`)
-}
-
-test('GitLab production preparation requires a protected tag, signing and reviewed artifacts', () => {
-  const source = readFileSync(join(repositoryRoot, '.gitlab-ci.yml'), 'utf8')
-  const job = source.slice(source.indexOf('prepare-production-release:'), source.indexOf('# Cuts an unnotarized test beta'))
-  assert.match(job, /CI_COMMIT_REF_PROTECTED == "true"/)
-  assert.match(job, /when: manual/)
-  assertRunsDeterministicChecks(job, 'production preparation')
-  assert.match(job, /npm run test:soak -- --rounds 25/)
-  assert.match(job, /trap cleanup_signing EXIT/)
-  assert.match(job, /security delete-keychain/)
-  assert.match(job, /keychains\.json/)
-  assert.match(job, /json\.load\(open\(sys\.argv\[1\]\)\)/)
-  assert.ok(job.indexOf('test -f "$notes"') < job.indexOf('npm run release:mac'))
-  assert.match(job, /PARLEY_NOTARY_KEY=/)
-  assert.match(job, /PARLEY_SPARKLE_PRIVATE_ED_KEY=/)
-  assert.match(job, /npm run release:mac\n/)
-  assert.match(job, /npm run verify:launch:mac/)
-  assert.match(job, /when: on_success/)
-  assert.match(job, /dist\/appcast\.xml/)
-  assert.match(job, /dist\/parley\.rb/)
-  assert.doesNotMatch(job, /release:mac:beta|--unnotarized|(?:glab|gh) release create|git push/)
-  const artifacts = job.slice(job.indexOf('  artifacts:'))
-  assert.doesNotMatch(artifacts, /signing_dir|\.p12|\.p8|keychain/)
+test('workflow-level env blocks use no runner context, which GitHub rejects at push', () => {
+  // GitHub validates every workflow file on push; a workflow-level env entry
+  // that reads ${{ runner.* }} makes the file invalid and records a failed run
+  // with no jobs for every push (seen 11 October 2026 on macos-draft-release).
+  for (const name of ['ci.yml', 'macos-test-beta-release.yml', 'macos-draft-release.yml']) {
+    const source = workflow(name)
+    const block = source.match(/^env:\n((?:[ \t].*\n|\n)*)/m)
+    if (!block) continue
+    assert.doesNotMatch(block[1], /\$\{\{\s*runner\./, `${name}: workflow-level env cannot use the runner context`)
+  }
 })
 
-test('npm test is composed of the halves the pipeline runs', () => {
+test('the notarized draft workflow signs in an ephemeral keychain and retains an unpublished draft', () => {
+  const source = workflow('macos-draft-release.yml')
+  // The signing secrets live in the release-signing environment, which
+  // admits only v* tags and requires a reviewer; repository writers who can
+  // dispatch the workflow do not thereby reach the secrets.
+  assert.match(source, /environment:\s*release-signing/, 'signing must run in the protected environment')
+  assert.match(source, /security create-keychain/)
+  assert.match(source, /umask 077/, 'decoded signing material must be private from creation')
+  // Cleanup removes fixed paths unconditionally: a failed import exits before
+  // any record of what it created, so cleanup must not depend on one.
+  // The same three fixed paths are declared on the import step and on the
+  // cleanup step, so cleanup needs no record of what import created.
+  const fixedPaths = source.match(/PARLEY_TEMP_KEYCHAIN:\s*\$\{\{ runner\.temp \}\}\/parley-signing\.keychain-db/g) ?? []
+  assert.equal(fixedPaths.length, 2, 'the keychain path is declared on the import and cleanup steps')
+  const cleanup = source.slice(source.indexOf('- name: Remove temporary signing material'))
+  assert.match(cleanup, /PARLEY_TEMP_KEYCHAIN:\s*\$\{\{ runner\.temp \}\}\//, 'cleanup declares the keychain path itself')
+  assert.match(cleanup, /PARLEY_SIGNING_P12:\s*\$\{\{ runner\.temp \}\}\//)
+  assert.match(cleanup, /PARLEY_NOTARY_KEY:\s*\$\{\{ runner\.temp \}\}\//)
+  assert.ok(source.includes('security delete-keychain "$PARLEY_TEMP_KEYCHAIN" || true'), 'the keychain is deleted unconditionally')
+  assert.ok(source.includes('rm -f "$PARLEY_SIGNING_P12" "$PARLEY_NOTARY_KEY"'), 'the decoded files are removed unconditionally')
+  assert.doesNotMatch(source, /if test -n "\$\{PARLEY_TEMP_KEYCHAIN/, 'cleanup must not be conditional on an export the import step may never reach')
+  assert.match(source, /if: always\(\)/, 'signing material must be removed whether or not the release succeeded')
+  assert.ok(source.indexOf('test -f "$notes"') < source.indexOf('security import'), 'notes are checked before any signing material is decoded')
+  assert.ok(source.indexOf('npm run test:soak') < source.indexOf('security import'), 'the soak runs before any signing material is decoded')
+  assert.match(source, /PARLEY_NOTARY_KEY:\s*\$\{\{ runner\.temp \}\}\//)
+  assert.match(source, /PARLEY_SPARKLE_PRIVATE_ED_KEY:\s*\$\{\{ secrets\./)
+  assert.match(source, /run:\s*npm run release:mac\s*$/m)
+  assert.match(source, /--draft/, 'production assets are retained for review, never published by the workflow')
+  assert.match(source, /"dist\/appcast\.xml"/)
+  assert.match(source, /"dist\/parley\.rb"/)
+  assert.doesNotMatch(source, /release:mac:beta|--unnotarized|--prerelease|git push/)
+})
+
+test('the test-beta workflow publishes an unnotarized prerelease with its own token and never overwrites one', () => {
+  const source = workflow('macos-test-beta-release.yml')
+  assert.match(source, /release:mac:beta/, 'a test beta must use the unnotarized release path')
+  assert.match(source, /gh release create "\$PARLEY_RELEASE_TAG"/, 'the release must be created for the requested tag')
+  assert.match(source, /--prerelease/, 'a test beta is a prerelease')
+  assert.match(source, /gh release view "\$PARLEY_RELEASE_TAG"[\s\S]*?exit 1/, 'an existing release must fail the run instead of being overwritten')
+  assert.ok(source.indexOf('gh release view "$PARLEY_RELEASE_TAG"') < source.indexOf('npm run test:checks'), 'an existing release is refused before the checks and soak run')
+  assert.match(source, /GH_TOKEN:\s*\$\{\{ github\.token \}\}/, 'the workflow signs in with its own token')
+  assert.doesNotMatch(source, /secrets\.|GITLAB|glab /, 'no personal token or GitLab login takes part')
+  assert.doesNotMatch(source, /appcast|parley\.rb|--draft/, 'a beta never emits a feed or cask and is published, not drafted')
+  // The release CLI reads PARLEY_RELEASE_TAG from the environment and the
+  // deterministic checks assert it is not preset, so it must be set on the
+  // release step only, never at workflow or job level.
+  const beforeJobs = source.slice(0, source.indexOf('jobs:'))
+  assert.doesNotMatch(beforeJobs, /PARLEY_RELEASE_TAG/, 'PARLEY_RELEASE_TAG must not be a workflow-level variable')
+  const releaseStep = source.slice(source.indexOf('Prepare and verify unnotarized test-beta assets'))
+  assert.match(releaseStep, /env:\s*\n\s*PARLEY_RELEASE_TAG:\s*\$\{\{ inputs\.tag \}\}\s*\n\s*run:\s*npm run release:mac:beta/)
+})
+
+test('npm test is composed of the halves CI runs', () => {
   const scripts = JSON.parse(readFileSync(join(repositoryRoot, 'package.json'), 'utf8')).scripts
   assert.equal(scripts.test, 'npm run test:checks && npm run test:scripts && npm run scan:public && npm run scan:platform')
   assert.match(scripts['test:checks'], /parley-native-checks$/, 'test:checks must end with the checks product so a --skip argument reaches it')
@@ -126,59 +219,8 @@ test('npm test is composed of the halves the pipeline runs', () => {
   assert.match(scripts['test:scripts'], /^node --test /)
 })
 
-test('GitLab CI is the deterministic macOS gate for merge requests and main', () => {
-  // The repository moved to gitlab.com/markjoyeuxcom/apps/parley on
-  // 2026-09-07. GitLab.com's hosted macOS runners are a paid-tier feature,
-  // so the pipeline targets the self-hosted runner tagged `macos`, which since
-  // 2026-09-19 runs every job in a throwaway Tart VM: each job needs an
-  // `image:`, pinned by digest, and names its own toolchain paths.
-  const pipeline = join(repositoryRoot, '.gitlab-ci.yml')
-  assert.equal(existsSync(pipeline), true, '.gitlab-ci.yml is missing')
-  const source = readFileSync(pipeline, 'utf8')
-  assert.match(source, /tags:\s*\n\s*-\s*macos/, 'the job must target a macOS runner')
-  assert.match(source, /MACOS_IMAGE:\s*ghcr\.io\/cirruslabs\/macos-[a-z]+-base@sha256:[0-9a-f]{64}/, 'the Tart image must be pinned by digest')
-  assert.match(source, /default:\s*\n\s*image:\s*\$MACOS_IMAGE/, 'every job must name the pinned image or the Tart executor refuses to prepare it')
-  assert.match(source, /NODE_SHA256:\s*"[0-9a-f]{64}"/, 'the nodejs.org build must be checksummed')
-  assert.match(source, /shasum -a 256 -c -/, 'the Node download must be verified before it is unpacked')
-  assert.match(source, new RegExp(`DOCKER_ONLY_CHECKS:\\s*"${dockerOnlyChecks}"`), 'only the two Docker-only checks may be skipped in the VM')
-  const verify = source.slice(source.indexOf('test-and-build:'), source.indexOf('release-beta:'))
-  assertRunsDeterministicChecks(verify, 'the verify job')
-  assert.match(verify, /-\s*npm run build/, 'the job must build the native application')
-  assert.match(source, /GIT_DEPTH:\s*0/, 'the public scan needs the complete reachable history')
-  assert.match(source, /merge_request_event/, 'merge requests must be verified')
-  assert.match(source, /CI_COMMIT_BRANCH == \$CI_DEFAULT_BRANCH/, 'pushes to main must be verified')
-})
-
-test('the GitLab release job is manual, tag-only, and publishes a GitLab release with its job token', () => {
-  // GitHub Actions minutes are exhausted, so the test-beta release runs on the
-  // macOS runner and publishes a release of the GitLab project itself, with
-  // the files in the project's generic package registry. The job signs in with
-  // its own CI job token; no personal GitLab or GitHub login on the runner
-  // takes part, and nothing is pushed to or published on GitHub.
-  const source = readFileSync(join(repositoryRoot, '.gitlab-ci.yml'), 'utf8')
-  const job = source.slice(source.indexOf('release-beta:'))
-  assert.ok(job.length > 0, 'the release-beta job is missing')
-  assert.match(job, /when:\s*manual/, 'a release must be started by a person')
-  assert.match(job, /CI_COMMIT_TAG =~/, 'a release must come from a version tag')
-  assertRunsDeterministicChecks(job, 'the release job')
-  assert.match(job, /-\s*brew install glab/, 'the throwaway VM has no glab; the job installs it')
-  assert.match(job, /test:soak -- --rounds 25/, 'a release must pass the 25-round Ghostty soak')
-  assert.match(job, /release:mac:beta/, 'a test beta must use the unnotarized release path')
-  assert.match(job, /verify:launch:mac/, 'a release must prove the packaged app reaches its event loop')
-  assert.match(job, /GLAB_ENABLE_CI_AUTOLOGIN=true glab release create "\$CI_COMMIT_TAG"/, 'the release must be created for the pipeline tag with the job token')
-  assert.match(job, /--repo "\$CI_PROJECT_PATH"/, 'the release must target the project the pipeline runs in')
-  assert.match(job, /--use-package-registry/, 'release files must live in the generic package registry')
-  assert.match(job, /--package-name parley/, 'release files must live under the parley package')
-  assert.match(job, /--no-update/, 'an existing release must fail the job instead of being overwritten')
-  assert.match(job, /--notes-file/, 'the release must carry the version notes')
-  assert.doesNotMatch(job, /gh release|github\.com|GITHUB_/, 'the job must neither publish on nor push to GitHub')
-  assert.doesNotMatch(job, /GITLAB_TOKEN|PRIVATE-TOKEN|glab auth login/, 'no personal token may take part in the release')
-  assert.doesNotMatch(job, /--dangerously|danger-full-access/, 'no approval bypass')
-  // The release CLI reads PARLEY_RELEASE_TAG from the environment and the
-  // deterministic checks assert it is not preset, so it must not be a job
-  // variable; only the release step may set it.
-  assert.doesNotMatch(job, /^\s+PARLEY_RELEASE_TAG:/m, 'PARLEY_RELEASE_TAG must not be a job-level variable')
-  assert.match(job, /PARLEY_RELEASE_TAG="\$CI_COMMIT_TAG" npm run release:mac:beta/, 'the release step must receive the tag explicitly')
+test('no GitLab pipeline remains beside the GitHub workflows', () => {
+  assert.equal(existsSync(join(repositoryRoot, '.gitlab-ci.yml')), false, '.gitlab-ci.yml must not come back: GitHub Actions is the one CI')
 })
 
 test('public repository policy files describe the Apache-2.0 open-source boundary', () => {
