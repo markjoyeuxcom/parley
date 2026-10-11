@@ -590,9 +590,8 @@ credential and no transport authority of its own.
 - macOS 14 or later.
 - At least one supported vendor CLI installed and signed in with its normal
   subscription flow.
-- Xcode 26 or later selected with `xcode-select` for development: the embedded
-  Ghostty wrapper compiles a strings resource with Xcode's `xcstringstool`,
-  which the Command Line Tools alone do not ship.
+- Xcode command-line tools and a compatible macOS SDK for development. A
+  full Xcode works too but is not required.
 - Node from the machine's mise toolchain for the dependency-free task runner.
 
 ## Develop
