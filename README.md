@@ -732,8 +732,7 @@ runs on the host in a new human Shell.
 
 What has been checked on OrbStack, and what has not, is in the guide's
 [Signing in](docs/container-images.md#signing-in) and
-[Known limits](docs/container-images.md#known-limits); the first spike is
-recorded in [docs/container-pane-spike.md](docs/container-pane-spike.md).
+[Known limits](docs/container-images.md#known-limits).
 Team approval can choose host or container execution per vendor, with the image,
 daemon and any shared Git mount shown before approval. Each container member gets
 a private vendor-state volume. Creation counts during preparation; Stop can revoke

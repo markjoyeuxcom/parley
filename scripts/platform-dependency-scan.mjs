@@ -18,7 +18,8 @@
 // This deliberately guards imports, not APIs. A Linux build additionally needs
 // the syscall guarantees behind those imports re-derived (LOCAL_PEERPID,
 // O_EXLOCK, O_EVTONLY, renamex_np, POSIX_SPAWN_CLOEXEC_DEFAULT, SO_NOSIGPIPE,
-// proc_pidinfo, KERN_PROCARGS2). See docs/headless-and-portability-feasibility.md.
+// proc_pidinfo, KERN_PROCARGS2). See the Prax note "Parley feasibility: headless
+// operation, a remote box and a Windows port".
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";

@@ -287,7 +287,7 @@ Prax notes: "Parley team sessions…".
 ## Managed Git worktrees
 
 Prax notes: "Parley managed worktrees…"; "Parley worktree cleanup policy…";
-"Parley Worktrees window…". Decisions: `docs/worktrees-roadmap.md`.
+"Parley Worktrees window…"; "Parley worktrees roadmap…" (decisions).
 
 - One worktree per feature or team, never per pane. Fixed `/usr/bin/git`
   argv, scrubbed environment, `--end-of-options`, bounded timeouts, no
