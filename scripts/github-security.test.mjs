@@ -93,7 +93,10 @@ test('macOS CI verifies pull requests and main with the four parts of npm test',
   assert.match(source, /permissions:\s*\n\s*contents:\s*read/, 'CI needs no write access')
   assertRunsDeterministicChecks(source, 'CI')
   assert.match(source, /run:\s*npm run build/)
-  assert.match(source, /MACOS_IMAGE:\s*ghcr\.io\/cirruslabs\/macos-[a-z]+-base@sha256:[0-9a-f]{64}/, 'the local test VM image must be pinned by digest')
+  // The Xcode variant: since libghostty-spm 2.x the build compiles an
+  // xcstrings resource with Xcode's xcstringstool, which the base image's
+  // Command Line Tools do not ship (11 October 2026).
+  assert.match(source, /MACOS_IMAGE:\s*ghcr\.io\/cirruslabs\/macos-[a-z]+-xcode@sha256:[0-9a-f]{64}/, 'the local test VM image must be the Xcode variant, pinned by digest')
 })
 
 test('the three macOS workflows pin the same Node build and skip list', () => {
