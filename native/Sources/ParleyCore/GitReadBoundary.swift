@@ -16,6 +16,12 @@ import Foundation
 /// The 22 September 2026 review reproduced a container agent getting its
 /// clean filter run on this Mac by running `parley done`.
 ///
+/// Before either layer, `realGit(for:environment:)` resolves Apple's
+/// `/usr/bin/git` shim to the selected developer directory's Git from the
+/// filesystem alone, so the guard execs Git itself: the shim forks
+/// `xcodebuild -find git` on a cold xcrun cache when a full Xcode is
+/// selected, and under the guard that fork fails before Git runs.
+///
 /// Two layers:
 /// 1. The read runs under a fixed `/bin/bash` guard that lowers the process
 ///    limit to one and then `exec`s Git in place. Git itself runs, but
@@ -86,6 +92,60 @@ public enum GitReadBoundary {
         return result
     }
 
+    /// Apple's Git shim. `/usr/bin/git` is not Git: it asks libxcselect for
+    /// the selected developer directory and runs that directory's Git. With a
+    /// warm xcrun cache it `exec`s it in place; with a cold cache and a full
+    /// Xcode selected it forks `xcodebuild -find git` first, which the guard
+    /// refuses, so the read fails before Git runs (seen on the hosted CI image,
+    /// 10 October 2026, and possible on any Mac with Xcode selected after a
+    /// boot or a TMPDIR change).
+    public static let shim = URL(fileURLWithPath: "/usr/bin/git")
+    /// The link `xcode-select` maintains to the selected developer directory.
+    public static let developerDirectoryLink = "/var/db/xcode_select_link"
+    /// Where the Command Line Tools install, selected or not.
+    public static let commandLineToolsDirectory = "/Library/Developer/CommandLineTools"
+
+    /// The Git the guard execs for `git`. The shim is resolved here, outside
+    /// the guard and from the filesystem alone, the way xcrun resolves it:
+    /// `DEVELOPER_DIR` when set to an absolute path (the directory itself or
+    /// the Xcode bundle it lives in), then the developer directory
+    /// `xcode-select` links, then the Command Line Tools, taking the first
+    /// whose `usr/bin/git` is an executable regular file, symlinks followed;
+    /// the path is returned as named, so the guard's argv shows which
+    /// developer directory answered.
+    /// Nothing here reads the repository, so nothing an agent or container
+    /// writes can steer it. When no candidate exists the shim is kept, and
+    /// the read reports whatever the shim then does. Any other `git` is run
+    /// as named.
+    public static func realGit(
+        for git: URL,
+        environment: [String: String],
+        isExecutableRegularFile: (String) -> Bool = isExecutableRegularFile
+    ) -> URL {
+        guard git.path == shim.path else { return git }
+        var developerDirectories: [String] = []
+        if let developerDirectory = environment["DEVELOPER_DIR"], developerDirectory.hasPrefix("/") {
+            developerDirectories.append(developerDirectory)
+            developerDirectories.append(developerDirectory + "/Contents/Developer")
+        }
+        developerDirectories.append(developerDirectoryLink)
+        developerDirectories.append(commandLineToolsDirectory)
+        for directory in developerDirectories {
+            let candidate = directory + "/usr/bin/git"
+            if isExecutableRegularFile(candidate) { return URL(fileURLWithPath: candidate) }
+        }
+        return git
+    }
+
+    /// Whether `path`, symlinks followed, is a regular file this process may
+    /// execute.
+    public static func isExecutableRegularFile(_ path: String) -> Bool {
+        let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        guard let type = (try? FileManager.default.attributesOfItem(atPath: resolved))?[.type] as? FileAttributeType,
+              type == .typeRegular else { return false }
+        return FileManager.default.isExecutableFile(atPath: resolved)
+    }
+
     /// The executable and argv that run `git <arguments>` unable to start
     /// another process.
     public static func invocation(git: URL, arguments: [String]) -> (executable: URL, arguments: [String]) {
@@ -105,7 +165,7 @@ public enum GitReadBoundary {
         environment: [String: String],
         runner: any CommandRunning
     ) throws -> CommandOutput {
-        let invocation = invocation(git: git, arguments: arguments)
+        let invocation = invocation(git: realGit(for: git, environment: environment), arguments: arguments)
         return try runner.run(executable: invocation.executable, arguments: invocation.arguments, environment: environment, input: nil)
     }
 

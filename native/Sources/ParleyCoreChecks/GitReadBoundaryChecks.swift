@@ -279,6 +279,85 @@ func checkGitReadBoundaryInvocationEnvironmentAndDriverNames() throws {
     try grExpect(GitReadBoundary.overrides(disabling: []).isEmpty, "no drivers still produced overrides")
 }
 
+private final class GuardRecordingRunner: CommandRunning, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recorded: [(executable: URL, arguments: [String])] = []
+    var calls: [(executable: URL, arguments: [String])] { lock.withLock { recorded } }
+    func run(executable: URL, arguments: [String], environment: [String: String], input: Data?) throws -> CommandOutput {
+        lock.withLock { recorded.append((executable, arguments)) }
+        return CommandOutput(stdout: Data("git version 0.0.0\n".utf8))
+    }
+    func run(executable: URL, arguments: [String], environment: [String: String], input: Data?, outputExpectation: CommandOutputExpectation) throws -> CommandOutput {
+        try run(executable: executable, arguments: arguments, environment: environment, input: input)
+    }
+}
+
+/// `/usr/bin/git` is Apple's shim, which on a cold xcrun cache with a full
+/// Xcode selected forks `xcodebuild -find git` before any Git runs. Under
+/// the guard that fork is refused and every read failed (hosted CI, 10
+/// October 2026). The boundary therefore resolves the real Git outside the
+/// guard, the way xcrun would, from the filesystem alone: `DEVELOPER_DIR`
+/// when set, the developer directory `xcode-select` links, then the Command
+/// Line Tools; and the guard execs that regular file. A Git given by any
+/// other path is run as named.
+func checkGitReadsExecTheRealGitNotTheXcrunShim() throws {
+    let shim = GitReadBoundary.shim
+    let link = GitReadBoundary.developerDirectoryLink + "/usr/bin/git"
+    let clt = GitReadBoundary.commandLineToolsDirectory + "/usr/bin/git"
+    let xcode = "/Applications/Xcode.app/Contents/Developer/usr/bin/git"
+    func resolve(_ environment: [String: String], existing: Set<String>) -> String {
+        GitReadBoundary.realGit(for: shim, environment: environment, isExecutableRegularFile: { existing.contains($0) }).path
+    }
+    try grExpect(resolve([:], existing: [link, clt]) == link, "the selected developer directory's Git was not preferred")
+    try grExpect(resolve([:], existing: [clt]) == clt, "the Command Line Tools' Git was not the fallback")
+    try grExpect(resolve([:], existing: []) == shim.path, "with no real Git found the shim must be kept, never an invented path")
+    try grExpect(resolve(["DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer"], existing: [xcode, link, clt]) == xcode,
+                 "DEVELOPER_DIR did not take precedence, as it does for xcrun")
+    try grExpect(resolve(["DEVELOPER_DIR": "/Applications/Xcode.app"], existing: [xcode, clt]) == xcode, "an app-bundle DEVELOPER_DIR was not understood")
+    try grExpect(resolve(["DEVELOPER_DIR": "relative/dir"], existing: ["relative/dir/usr/bin/git", clt]) == clt, "a relative DEVELOPER_DIR was followed")
+    try grExpect(resolve(["DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer"], existing: [link, clt]) == link,
+                 "a DEVELOPER_DIR without a Git did not fall through")
+    let other = URL(fileURLWithPath: "/opt/homebrew/bin/git")
+    try grExpect(GitReadBoundary.realGit(for: other, environment: [:], isExecutableRegularFile: { _ in true }) == other, "a Git that is not the shim was replaced")
+
+    // On this Mac the shim resolves to a regular executable that is not the
+    // shim, and that is what run() hands the guard; invocation(git:) stays
+    // the pure argv builder.
+    let real = GitReadBoundary.realGit(for: shim, environment: [:])
+    try grExpect(real.path != shim.path, "no real Git behind the shim on this Mac: neither the selected developer directory nor the Command Line Tools has one")
+    try grExpect(GitReadBoundary.isExecutableRegularFile(real.path), "the resolved Git is not an executable regular file: \(real.path)")
+    let recorder = GuardRecordingRunner()
+    _ = try GitReadBoundary.run(git: shim, arguments: ["--version"], environment: ["PATH": "/usr/bin:/bin"], runner: recorder)
+    try grExpect(recorder.calls.count == 1 && recorder.calls[0].executable == GitReadBoundary.shell && recorder.calls[0].arguments[3] == real.path,
+                 "the guard was handed \(recorder.calls.map(\.arguments)) instead of the resolved Git \(real.path)")
+    try grExpect(GitReadBoundary.invocation(git: shim, arguments: []).arguments[3] == shim.path, "invocation(git:) resolved; resolution belongs to run()")
+
+    // The failure the resolution removes, reproduced without the shim's cache:
+    // a Git that forks before it execs cannot run under the guard; the real
+    // Git behind a developer directory that merely links to it can.
+    let root = URL(fileURLWithPath: "/tmp/parley-gr-shim-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let forkingDirectory = root.appendingPathComponent("forking/usr/bin", isDirectory: true)
+    let linkedDirectory = root.appendingPathComponent("linked/usr/bin", isDirectory: true)
+    for folder in [forkingDirectory, linkedDirectory] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+    let forking = forkingDirectory.appendingPathComponent("git")
+    try "#!/bin/sh\nset -e\n/usr/bin/true\nexec \(real.path) \"$@\"\n".write(to: forking, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: forking.path)
+    try FileManager.default.createSymbolicLink(at: linkedDirectory.appendingPathComponent("git"), withDestinationURL: real)
+    let runner = ProcessCommandRunner(timeout: 10)
+    let environment = GitReadBoundary.environment(["PATH": "/usr/bin:/bin"])
+    let direct = try GitReadBoundary.run(git: forking, arguments: ["--version"], environment: environment, runner: runner)
+    try grExpect(direct.status != 0 && !direct.stdoutText.hasPrefix("git version"),
+                 "a Git that forks before exec ran under the guard, so the guard no longer refuses forks: \(direct.status) \(direct.stdoutText)")
+    let linkedRoot = root.appendingPathComponent("linked", isDirectory: true).path
+    let resolved = GitReadBoundary.realGit(for: shim, environment: ["DEVELOPER_DIR": linkedRoot])
+    try grExpect(resolved.path == linkedDirectory.appendingPathComponent("git").path, "a linked developer Git was not chosen as named: \(resolved.path)")
+    let viaLink = try GitReadBoundary.run(git: shim, arguments: ["--version"],
+                                          environment: environment.merging(["DEVELOPER_DIR": linkedRoot]) { _, new in new }, runner: runner)
+    try grExpect(viaLink.status == 0 && viaLink.stdoutText.hasPrefix("git version"),
+                 "the resolved Git did not run under the guard: \(viaLink.status) \(viaLink.stderrText)")
+}
+
 /// A container pane's delegations record that Parley ran no Git, instead of
 /// running it on the agent's cue; host panes keep their facts.
 func checkContainerPaneDelegationsRecordGitFactsNotCaptured() throws {
@@ -376,6 +455,7 @@ func checkGitReadDisclosuresNameTheContainerExposure() throws {
     ("host git reads never run planted repository commands", checkHostGitReadsNeverRunPlantedRepositoryCommands),
     ("git read guard stops drivers added after the listing", checkGitReadGuardStopsDriversAddedAfterTheListing),
     ("git read boundary invocation, environment and driver names", checkGitReadBoundaryInvocationEnvironmentAndDriverNames),
+    ("git reads exec the real git, not the xcrun shim", checkGitReadsExecTheRealGitNotTheXcrunShim),
     ("container pane delegations record git facts not captured", checkContainerPaneDelegationsRecordGitFactsNotCaptured),
     ("git read disclosures name the container exposure", checkGitReadDisclosuresNameTheContainerExposure),
 ]

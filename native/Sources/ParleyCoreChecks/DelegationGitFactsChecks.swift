@@ -106,7 +106,8 @@ func checkDelegationGitSnapshotIsBoundedPathsOnly() throws {
     try gitExpect(runner.calls.count == 2, "capture ran \(runner.calls.count) commands instead of the listing and one status")
     try gitExpect(runner.calls.allSatisfy { $0.executable == GitReadBoundary.shell.path }, "capture ran Git outside the read guard")
     let gitCalls = runner.calls.map { GitReadBoundary.gitArguments(inInvocation: $0.arguments) }
-    try gitExpect(runner.calls.allSatisfy { $0.arguments[3] == "/usr/bin/git" }, "the guard did not exec the fixed Git executable")
+    let realGit = GitReadBoundary.realGit(for: URL(fileURLWithPath: "/usr/bin/git"), environment: [:]).path
+    try gitExpect(runner.calls.allSatisfy { $0.arguments[3] == realGit }, "the guard did not exec the resolved Git executable: \(runner.calls.map { $0.arguments[3] })")
     try gitExpect(
         gitCalls.first == ["-C", folder, "-c", "core.fsmonitor=false", "config", "--list", "--name-only", "-z"],
         "capture did not list filter drivers first: \(String(describing: gitCalls.first))"

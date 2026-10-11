@@ -216,9 +216,10 @@ Prax notes: "Parley process boundary…"; "Parley host vendor launches…";
 
 - Spawn fixed executables with argument arrays. Agent-authored content must
   never be interpolated into a shell command.
-- Every host Git read uses `GitReadBoundary`: `ulimit -u 1`, neutralised
-  filter drivers, `diffArguments`, ignored submodules, scrubbed `GIT_*` and
-  shell variables, no prompts or pagers. Person-confirmed worktree add,
+- Every host Git read uses `GitReadBoundary`: the real Git behind the
+  `/usr/bin/git` shim resolved outside the guard (`realGit`, filesystem
+  only), `ulimit -u 1`, neutralised filter drivers, `diffArguments`, ignored
+  submodules, scrubbed `GIT_*` and shell variables, no prompts or pagers. Person-confirmed worktree add,
   remove and prune, `branch -d` and Integrate run Git outside the guard.
 - Every spawner sets `POSIX_SPAWN_SETSIGDEF` and `POSIX_SPAWN_SETSIGMASK`.
   `ProcessCommandRunner` runs each command in its own session and signals the
@@ -451,8 +452,8 @@ Prax notes: "Parley verification practices…"; "Parley moved back to GitHub…"
   Window-state steps wait, bounded, for the fact they need; never a fixed
   delay. Run screen-touching checks through `test:vm`.
 - Default checks never launch a vendor CLI, spend quota or need the network.
-  CI is GitHub Actions on `macos-latest`. Workflows select the Command Line
-  Tools first, run `npm test` as its four parts and pass `--skip "container
+  CI is GitHub Actions on `macos-latest`, on the image's default Xcode.
+  Workflows run `npm test` as its four parts and pass `--skip "container
   bypass preflight,container follow-up image probe"`; a skipped check is
   never a passed one and `npm test` itself skips nothing. External Actions
   are pinned to full commit SHAs.

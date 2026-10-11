@@ -75,13 +75,12 @@ function assertRunsDeterministicChecks(source, label) {
   assert.match(source, /runs-on:\s*macos-latest/, `${label} must run on the hosted macOS runner`)
   assert.match(source, /fetch-depth:\s*0/, `${label} must fetch complete history for the publication scan`)
   // The hosted image selects a full Xcode, whose /usr/bin/git shim forks
-  // xcodebuild on a cold cache; GitReadBoundary forbids Git any fork, so the
-  // guarded reads fail (run 38047165730, 10 October 2026). The Command Line
-  // Tools shim execs the real Git, and must be selected before the checks.
-  const select = source.indexOf('sudo xcode-select -s /Library/Developer/CommandLineTools')
-  const checks = source.indexOf('npm run test:checks')
-  assert.ok(select >= 0, `${label} must select the Command Line Tools toolchain`)
-  assert.ok(select < checks, `${label} must select the Command Line Tools before the native checks run`)
+  // xcodebuild on a cold cache. Until 11 October 2026 the workflows selected
+  // the Command Line Tools to dodge that; GitReadBoundary now resolves the
+  // real Git itself (check "git reads exec the real git, not the xcrun
+  // shim"), and CI runs on the image's default toolchain so the fix is
+  // exercised where the failure was seen (run 38047165730).
+  assert.doesNotMatch(source, /xcode-select -s/, `${label} must not select a toolchain; the Git read boundary does not depend on one`)
 }
 
 test('macOS CI verifies pull requests and main with the four parts of npm test', () => {

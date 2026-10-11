@@ -54,10 +54,8 @@ jobs:
           version="$(node -p "require('./package.json').version")"
           test "v$version" = "$PARLEY_RELEASE_TAG" || { echo "package.json is $version, tag is $PARLEY_RELEASE_TAG" >&2; exit 1; }
 
-      # See ci.yml: the full Xcode's Git shim cannot fork under GitReadBoundary.
-      - name: Select the Command Line Tools toolchain
+      - name: Report the toolchain
         run: |
-          sudo xcode-select -s /Library/Developer/CommandLineTools
           xcode-select -p
           git --version
           swift --version | head -1
