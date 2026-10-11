@@ -244,7 +244,7 @@ test('repository carries notices for Ghostty, its Swift wrapper, theme data and 
   const notice = readFileSync(new URL('../THIRD_PARTY_NOTICES.md', import.meta.url), 'utf8')
   assert.match(notice, /Ghostty/)
   assert.match(notice, /libghostty-spm/)
-  assert.match(notice, /MSDisplayLink/)
+  assert.match(notice, /DisplayLink/)
   assert.match(notice, /Sparkle/)
   assert.match(notice, /Color scheme data sourced from iTerm2-Color-Schemes/)
   assert.match(notice, /Permission is hereby granted, free of charge/)
@@ -256,7 +256,7 @@ test('native package pins the registry-verified Sparkle release exactly', () => 
   const manifest = readFileSync(new URL('../native/Package.swift', import.meta.url), 'utf8')
   assert.match(
     manifest,
-    /\.package\(url: "https:\/\/github\.com\/sparkle-project\/Sparkle", exact: "2\.9\.6"\)/,
+    /\.package\(url: "https:\/\/github\.com\/sparkle-project\/Sparkle", exact: "2\.10\.0"\)/,
   )
   assert.match(manifest, /\.product\(name: "Sparkle", package: "Sparkle"\)/)
 })
