@@ -19,11 +19,12 @@ concurrency:
 env:
   # Pins read by scripts/test-vm.mjs as well, so there is one place to bump
   # them. MACOS_IMAGE is the Tart image the local parley-dev VM is cloned from
-  # (`npm run test:vm`); the hosted runner uses GitHub's own macOS image. It
-  # is the Xcode variant: since libghostty-spm 2.x the build compiles an
-  # xcstrings resource with Xcode's xcstringstool, which the Command Line
-  # Tools do not ship.
-  MACOS_IMAGE: ghcr.io/cirruslabs/macos-tahoe-xcode@sha256:71d9dc1d6c4614b7ecbb328753124912b43425fc8cf1c4085d7f352026df6601
+  # (`npm run test:vm`); the hosted runner uses GitHub's own macOS image. The
+  # base image carries only the Command Line Tools, which must stay enough to
+  # build Parley: libghostty-spm is pinned to 2.2.2026100501, the last release
+  # without the xcstrings resource that needs Xcode's xcstringstool
+  # (Lakr233/libghostty-spm#81).
+  MACOS_IMAGE: ghcr.io/cirruslabs/macos-tahoe-base@sha256:1b093499716409d29e8b5336844528e1cae375db97d2ad8e5aeff78cf0da201e
   # Node is build tooling here, never shipped. The official nodejs.org build
   # is fetched and checked rather than whatever the runner image carries.
   # Bump both together (SHASUMS256.txt for the version). The two release

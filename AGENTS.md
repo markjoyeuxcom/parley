@@ -75,9 +75,10 @@ npm run test:vm
 ```
 
 Root npm scripts use the dependency-free `scripts/run-native-swift.mjs`; never
-run `npm install` here. Building needs a full Xcode selected: libghostty-spm
-2.x compiles its xcstrings resource with Xcode's `xcstringstool`, which the
-Command Line Tools do not ship. Prefer `npm run test:vm` for full checks. Its local
+run `npm install` here. The Command Line Tools must stay enough to build:
+libghostty-spm stays pinned at 2.2.2026100501, the last release without the
+xcstrings resource that needs Xcode's `xcstringstool`, until
+Lakr233/libghostty-spm#81 is resolved. Prefer `npm run test:vm` for full checks. Its local
 Tart VM `parley-dev` is cloned once from `.github/workflows/ci.yml`'s pinned
 image, and it runs only from the primary checkout, one run per VM at a time.
 Pass npm arguments through, e.g. `npm run test:vm -- run test:checks -- --only
