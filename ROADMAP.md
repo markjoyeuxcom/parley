@@ -54,8 +54,8 @@ Implementation and validation:
   the launch checks. Ordinary commands and patching, private-path denials,
   endpoint access, approved execution, native authorization, Relay/Ask and
   existing helper paths pass. Build, all 326 native checks after the core-audit merge, 41 Node tests and
-  the 25-round eight-pane Ghostty soak pass. See the
-  [validation record](docs/host-permission-validation.md).
+  the 25-round eight-pane Ghostty soak pass. The validation record is the
+  Prax note "Parley vendor-managed host permissions: validation record".
 - [ ] Manually exercise fresh and supported resumed interactive sessions for
   each vendor in the new app build, including its normal permission prompt.
   Existing panes require an explicit person-authorized restart; none were
@@ -84,9 +84,8 @@ the native core stays on macOS.
 
 Current guidance (the image contract, one image for every vendor, using and
 changing an image, signing in, reaching a service on the Mac, known limits) is
-in [docs/container-images.md](docs/container-images.md); the first OrbStack
-spike is recorded in [docs/container-pane-spike.md](docs/container-pane-spike.md),
-and the acceptance steps are in [docs/test-scenarios.md, P1.3](docs/test-scenarios.md#p13-container-pane-acceptance).
+in [docs/container-images.md](docs/container-images.md), and the acceptance
+steps are in [docs/test-scenarios.md, P1.3](docs/test-scenarios.md#p13-container-pane-acceptance).
 
 Mark's release decision on 9 September: this is a greenfield project; ship the
 reviewed implementation with its tested configuration and known limitations.

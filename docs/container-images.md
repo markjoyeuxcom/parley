@@ -403,7 +403,8 @@ whether a harvest hook there reaches Prax, was not checked.
   sandbox to work inside the container, which the container pane spike found
   unavailable in the tested OrbStack configuration. The separately selected
   legacy Landlock option remains available for compatible images and is
-  deprecated. See `docs/container-pane-spike.md`, the record of that spike.
+  deprecated. The record of that spike is the Prax note "Parley container
+  pane spike, 9 September 2026".
 - Sign-in, instruction uptake in a fresh or resumed vendor session, and login
   persistence across a Parley relaunch are human checks; passing the probe
   establishes none of them. What has been observed is under
