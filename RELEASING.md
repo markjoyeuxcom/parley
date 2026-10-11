@@ -37,8 +37,12 @@ repository secret below, keep an offline recovery copy and delete the temporary
 file. Never commit either release private key, a PKCS#12 archive or its
 password.
 
-Configure these as GitHub Actions repository secrets (Settings › Secrets and
-variables › Actions). Only the manual draft-release workflow reads them.
+Configure these as secrets of the `release-signing` environment (Settings ›
+Environments), not as repository secrets. That environment admits only `v*`
+tags and requires a reviewer's approval before a run may use them, so a
+repository writer who can dispatch the workflow does not thereby reach the
+signing material. Only the manual draft-release workflow uses the
+environment.
 
 | Secret | Exact value |
 | --- | --- |
@@ -81,12 +85,13 @@ To cut a test beta:
    in a pull request; merge it once CI is green.
 2. Tag the merge commit `vX.Y.Z` and push the tag.
 3. Run the **Prepare unnotarized macOS test beta** workflow (Actions › Run
-   workflow) with that tag. It checks out the exact tag, runs the
+   workflow), choosing that tag as the ref to run from and naming it in the
+   input. It first checks that the input is the dispatched tag, that the
+   notes and `package.json` version match it, and that no release exists
+   for it (delete one deliberately before rerunning); then it runs the
    deterministic checks, the 25-round Ghostty soak, packaging, launch
-   verification and checksum assembly, then publishes a prerelease with the
-   DMG, ZIP, manifest, checksums, install guide and soak report. It refuses
-   a tag that already has a release: delete that release deliberately
-   before rerunning.
+   verification and checksum assembly, and publishes a prerelease with the
+   DMG, ZIP, manifest, checksums, install guide and soak report.
 4. Review the prerelease's checksums, soak report and install guide. Download
    from the release page or with `gh release download vX.Y.Z -R
    markjoyeuxcom/parley`.
@@ -120,14 +125,19 @@ globally.
 2. Ensure the signing secrets above are configured on the repository. Run
    the two Docker-only checks on a Mac with Docker; the hosted runner
    explicitly skips them and does not claim they passed.
-3. Run the manual **Prepare macOS draft release** workflow with the tag. It
-   runs the deterministic checks and the 25-round Ghostty soak, then signs,
-   notarizes, verifies Gatekeeper and proves that the packaged app reaches
-   its event loop.
+3. Run the manual **Prepare macOS draft release** workflow from the tag,
+   naming it in the input, and approve the `release-signing` environment
+   when asked. It preflights the tag, notes and version, runs the
+   deterministic checks and the 25-round Ghostty soak, and only then decodes
+   the signing material, signs, notarizes, verifies Gatekeeper and proves
+   that the packaged app reaches its event loop.
 4. Review the draft release's DMG, ZIP, release manifest, checksums, install
-   guide, `appcast.xml`, `parley.rb`, release notes and soak report. A failed
-   run creates no draft. The signing keychain and private files are removed
-   on exit and the hosted runner is disposable.
+   guide, `appcast.xml`, `parley.rb`, release notes and soak report. Only
+   publish after the workflow succeeded and every expected asset is present:
+   `gh` creates the draft before uploading, so a failed upload may leave an
+   incomplete draft to inspect or delete. The signing keychain and decoded
+   files sit at fixed paths and are removed whether or not the run
+   succeeded, and the hosted runner is disposable.
 5. Verify installation and updating with the signed candidate. Publishing the
    draft is a separate, explicit action; the workflow does not publish, push
    a tag, update the feed or merge a cask change. Publishing a non-prerelease

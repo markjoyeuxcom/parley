@@ -1,64 +1,47 @@
 # Parley — engineering guide
 
-Parley is a native macOS workbench for visible, supervised collaboration
-between AI coding CLIs from different vendors. SwiftUI owns the application
-surface; embedded Ghostty surfaces own the real interactive processes.
-
-There is one implementation. All product source is under `native/`. Do not add
-a web renderer, embedded browser runtime, second terminal stack, background
-daemon or compatibility application.
+Parley is a native macOS workbench for supervised cross-vendor CLI
+collaboration. SwiftUI owns the UI; Ghostty owns interactive processes. All
+product code lives in `native/`. No web renderer, browser runtime, background
+daemon or second app.
 
 ## Rationale and history live in Prax
 
-This file holds standing rules only. The account behind each rule (what
-broke, who found it, when, which check pins it) lives in Prax, project
-`parley`, tagged `engineering-notes`; each section names its notes. Recall
-them before changing an area:
+Keep only standing rules needed on every turn here, under 32 KiB. Before
+changing an area, recall its rationale and history in Prax project `parley`,
+tag `engineering-notes`; each section names its notes.
 
 ```bash
-prax recall "<area>"                      # e.g. "Parley transport liveness"
+prax recall "<area>"
 prax recall --project parley --recent 40
 ```
 
-When behaviour changes, update the rule here and refine the note in Prax
-(`prax remember "<same title>" …` updates in place). Keep this file under 32
-KiB: every vendor reads it on every launch and Codex stops at 32 KiB by
-default. Add a rule only when an agent needs it on every turn.
+When behaviour changes, update the rule here and its Prax note in place with
+`prax remember "<same title>" …`.
 
 ## Product boundary
 
-Parley exists to make cross-vendor work easier. Claude Code, Codex, Agy and
-GitHub Copilot CLI retain their own models, authentication, tools, permission
-prompts and conversation interfaces. Parley supplies panes, workspaces,
-attributed handoffs, correlated consultations and visible supervision.
-
-Use this test for proposed scope:
-
-> Could one vendor CLI do this on its own?
-
-If yes, the vendor owns it. If the feature coordinates different vendors or
-makes that coordination visible, safe or recoverable, it belongs in Parley.
+Vendors own their models, authentication, tools, permissions and conversation
+interfaces. Parley owns panes, workspaces, attributed handoffs, correlated
+consultations and supervision. A feature belongs here only if it coordinates
+vendors or makes their coordination visible, safe or recoverable; work one CLI
+can do alone belongs to that vendor.
 
 ## Product invariants
-
-Breaking any of these changes the product.
 
 1. **Subscription CLIs only.** Use vendor binaries installed on the host or
    in a person-reviewed local container image, with the person's vendor login.
    Never add API keys or a direct model API path.
 2. **Real interactive sessions.** Preserve each CLI's TUI, prompts, permission
    flow and session behavior. Parley does not replace them with a chat UI.
-3. **Host approval protection; reviewed container exception.** Host vendor
-   launches never pass a `--dangerously-*` option, `danger-full-access` or an
-   equivalent bypass. The person may explicitly select Bypass vendor permissions
-   for a local container pane or a team's per-vendor container configuration;
-   only that reviewed container launch receives the fixed vendor bypass flag.
-   A vendor's own automatic reviewer is not a bypass: Claude's auto mode,
-   Codex's auto review and Copilot's assisted approval keep the sandbox and
-   the deny and ask rules and can refuse, so the person may select **Vendor's
-   automatic reviewer** per launch or per team vendor. Agy has no reviewer,
-   only a skip-all flag, so it always asks on the host. Skip-all flags stay
-   forbidden.
+3. **Host approvals; reviewed container bypass.** Host launches never pass
+   `--dangerously-*`, `danger-full-access` or equivalent bypass flags. Fixed
+   bypass flags require the person's explicit selection of container bypass
+   for a pane or team vendor. Per launch or team vendor, the person may select
+   **Vendor's automatic reviewer**: Claude auto mode, Codex auto review or
+   Copilot assisted approval. These retain vendor sandboxes, deny and ask
+   rules and refusal. Agy always asks on the host; it has no reviewer. Host
+   skip-all flags remain forbidden.
 4. **Cross-vendor first, pane-explicit.** Automatic targets are explicit agent
    panes other than the sender. Same-vendor routes require distinct panes.
    Never broadcast implicitly, target a shell through Relay/Paste/Ask, or guess
@@ -88,50 +71,40 @@ npm run test:soak -- --rounds 25
 npm run test:vm
 ```
 
-The root npm scripts are a dependency-free runner around
-`scripts/run-native-swift.mjs`. Do not run `npm install` at the repository
-root. `npm run test:vm` runs CI's sequence inside a local Tart VM
-(`parley-dev`, cloned once from the image `.github/workflows/ci.yml` pins):
-the checks open real Ghostty surfaces, menus and windows that fail on the
-desktop when the person touches the Mac or the display sleeps. Prefer it for
-a full run; pass npm arguments through (`npm run test:vm -- run test:checks
--- --only "pane menu"`). Normal launch never restarts a surviving pane; at
-launch every agent pane is a stopped placeholder.
+Root npm scripts use the dependency-free `scripts/run-native-swift.mjs`; never
+run `npm install` here. Prefer `npm run test:vm` for full checks. Its local
+Tart VM `parley-dev` is cloned once from `.github/workflows/ci.yml`'s pinned
+image, and it runs only from the primary checkout, one run per VM at a time.
+Pass npm arguments through, e.g. `npm run test:vm -- run test:checks -- --only
+"pane menu"`.
 
 ## Layout
 
 ```text
-native/
-  Package.swift, Package.resolved
-  Sources/
-    ParleyCore/        Foundation-only domain: AgentProtocol, Relay (broker),
-                       RelayHTTPServer, Models, WorkbenchController,
-                       CommandRunner, HostAgentPermissions, ManagedWorktrees
-    ParleyNative/      AppModel, AppResidentCoordinationCore, ContentView,
-                       GhosttyPaneRegistry, NativeTerminalHost, Sparkle bridge
-    ParleyUI/          AppKit helpers (menus, editors, delivery focus)
-    ParleyCoreChecks/  the checks binary (main.swift plus *Checks.swift)
-    ParleySoak/        the Ghostty soak
-scripts/               build, test, release and scan tooling (Node, no deps)
-docs/                  container-images.md, test-scenarios.md, worktrees-roadmap.md
+native/Sources/
+  ParleyCore/        Foundation-only domain
+  ParleyNative/      SwiftUI app, retained Ghostty surfaces, coordination, Sparkle
+  ParleyUI/          AppKit helpers
+  ParleyCoreChecks/  checks binary
+  ParleySoak/        Ghostty soak
+scripts/             dependency-free Node build/test/release/scan tooling
+docs/                engineering guides
 ```
 
 App behavior belongs in Swift. Node scripts are build and release tooling only.
 
 ## Runtime and lifetime model
 
-Prax notes: "Parley runtime: workspaces, panes, persistence, auxiliary windows
-and process exit"; "Parley durable records…"; "Parley in-process relay broker,
-UI tick revision gate and transport polling"; "Parley transport liveness…";
-"Parley Sparkle updates, pane creation menu, pane menus and split divider";
-"Parley workspaces: folders, sidebar sections, groups and navigation…".
+Prax notes: "Parley runtime…"; "Parley durable records…"; "Parley in-process
+relay broker…"; "Parley transport liveness…"; "Parley Sparkle updates…";
+"Parley workspaces…".
 
 - Runtime files live under `~/Library/Application Support/Parley Native/`
   (Production) or a separate Development directory.
-- A workspace may hold no panes; only the last workspace cannot be closed
-  (`EmptyWorkspaceChecks`). A workspace is identity independent of folders:
-  attachments and the New Pane Folder never grant permission or touch a
-  process. Folder menus never offer a missing folder.
+- A workspace may hold no panes; only the last workspace cannot be closed. A
+  workspace is identity independent of folders: attachments and the New Pane
+  Folder never grant permission or touch a process. Folder menus never offer
+  a missing folder.
 - Each live pane is one retained Ghostty `AppTerminalView` with its own PTY.
   `GhosttyPaneRegistry` retains views by pane id; `NativeTerminalHost` must
   return that exact view, never wrapped in a container that adopts it. Each
@@ -139,23 +112,21 @@ UI tick revision gate and transport polling"; "Parley transport liveness…";
 - `workbench-state.json` holds metadata only; terminal bytes and vendor
   conversations are never serialized. Title writes are coalesced to one per
   second; a cwd report persists only when the folder changed.
-- Closing the main window keeps panes alive. Auxiliary windows are scenes on
-  `AuxiliaryWindowRoot`: released when closed (no observer or timer remains),
-  suspended while hidden. Quit offers Quit Parley or Cancel only; there is no
-  Stop Everything. After a relaunch agent panes are stopped placeholders;
-  never claim a vendor session survived.
-- A pane's exit comes from Ghostty's own record (`GhosttyProcessExit`), once
-  per launch generation; unreadable is unknown, never an exit. Re-check the
-  reader whenever the Ghostty pin changes.
+- Closing the main window keeps panes alive. Release auxiliary scenes on
+  close (including observers and timers); suspend them while hidden. Quit
+  offers only Quit Parley or Cancel. Relaunch leaves agents as stopped
+  placeholders; never claim their sessions survived.
+- A pane's exit comes from Ghostty's own record, once per launch generation;
+  unreadable is unknown, never an exit. Re-check the reader whenever the
+  Ghostty pin changes.
 - Durable records are JSON lines: synced append, atomic compaction, durable
   before acknowledged, a failed append changes nothing in memory, a failed
   compaction is `lastError`, never a lost record. Owner-only stores write
   through `OwnerOnlyFile.write`.
-- The broker is `AppResidentCoordinationCore` in the app process; no separate
-  core, login item or daemon. The UI tick fetches only when `stateRevision()`
-  changed, so every mutation the UI reads must `noteChangeLocked`
-  (`BrokerRevisionChecks`); every input of `AppModel.statusSnapshot` must bump
-  `statusInputGeneration` (`StatusSnapshotChecks`).
+- The broker stays in the app process; no separate core, login item or
+  daemon. The UI tick fetches only when `stateRevision()` changes.
+  UI-visible mutations must `noteChangeLocked`; inputs to
+  `AppModel.statusSnapshot` must bump `statusInputGeneration`.
 - Transport liveness is the per-endpoint heartbeat judged by whether its time
   changes, never against the wall clock; every age uses the injected
   `RelayTransportClocks`. Heartbeats carry the transport instance and prune
@@ -167,32 +138,29 @@ UI tick revision gate and transport polling"; "Parley transport liveness…";
   the vendor is chosen in the creation review. Shortcuts are ⌥⌘1–5. Pane,
   sidebar, workspace and folder menus are AppKit snapshots, not live SwiftUI
   menus, with every enabled item also a VoiceOver action.
-- The sidebar (`WorkspaceSidebarSections`) is built for many workspaces: This
-  Workspace, Needs Attention (the menu bar's count), Pinned, Recent, All with
-  groups. Groups never reach an agent. `lastSelectedAt` changes only in
-  `activateWorkspaceLocked` and `createWorkspaceLocked`. Hidden-sidebar tabs
-  never change place.
+- Sidebar sections: This Workspace, Needs Attention (menu-bar count), Pinned,
+  Recent, All with groups. Groups never reach agents. `lastSelectedAt`
+  changes only in `activateWorkspaceLocked` and `createWorkspaceLocked`.
+  Hidden-sidebar tabs never move.
 
 ## Relay and consultation contract
 
 Prax notes: "Parley relay and consultation contract…"; "Parley relay
-threading, message limits, discovery, hook adapters and target rules";
-"Parley reviewed Ask drafts, human Ask and Answer, link policy…"; "Parley
-review loop practice and completion-evidence convention"; "Parley pane input
-delivery: paste, Enter, focus and failure classification".
+threading…"; "Parley reviewed Ask drafts…"; "Parley review loop practice…";
+"Parley pane input delivery…".
 
 - `parley` uses an authenticated capability-named filesystem endpoint; the
   native UI alone uses the control socket. A caller cannot choose another
-  source identity. `AgentProtocol.text` is the command reference.
+  source identity.
 - Every delivered question and delegation teaches its own exact id. `current`
   stays in the protocol but is never taught; a late answer, `done`, `done
   --file` or `progress` naming a closed item is refused with its state.
-- `parley status` carries `targetTurnStarted` (protocol 34). A lost paste is
-  the person's to resend: Status Center offers Ask This Again and Delegate
-  This Again, never the protocol.
-- Relay requests never run on the shared dispatch pool: each runs on its own
-  `RelayWorkerThread` (at most 128); blocking requests count against a
-  `BlockingRequestGate` of 64; `parley wait` is a 55-second long-poll.
+- `parley status` carries `targetTurnStarted`. A lost paste is the person's
+  to resend: Status Center offers Ask This Again and Delegate This Again,
+  never the protocol.
+- Relay requests never run on the shared dispatch pool: use at most 128
+  dedicated worker threads and 64 concurrent blocking requests; `parley wait`
+  is a 55-second long-poll.
 - Text is limited to `RelayText.maximumCharacters` (100,000) after `clean`,
   which never truncates; every route refuses longer text with the real
   length, and any direct paste bypassing the broker keeps its own limit.
@@ -202,12 +170,11 @@ delivery: paste, Enter, focus and failure classification".
 - Relay is immediate; paste is review-before-send. Targets resolve by exact
   pane id, explicit role, or vendor only when unique; refuse ambiguous,
   missing, same-pane, shell and busy targets; one unanswered consultation or
-  active delegation per target. Ask and Review menus stay enabled and show
-  `AskAvailability.unavailableReason`.
-- A reviewed Ask keeps its draft until the broker accepts it; after a failure
-  `ReviewedAskHistory.outcome` returns the draft only when no record exists,
-  otherwise Copy Draft Text, so a question is never offered twice. Human Ask
-  and Answer submit only after an editable preview; never capture scrollback
+  active delegation per target. Keep Ask and Review menus enabled and show
+  the unavailability reason.
+- A reviewed Ask retains its draft until broker acceptance. After failure,
+  offer the draft only if no record exists; otherwise offer Copy Draft Text.
+  Human Ask and Answer require an editable preview; never capture scrollback
   implicitly. `repairNativeTerminalFocus` must do nothing while the composer
   or any editable text view is first responder.
 - Clicked links go through `TerminalLinkPolicy` (http/https with a host only,
@@ -228,7 +195,7 @@ delivery: paste, Enter, focus and failure classification".
 
 ## Voice input and spoken handoffs
 
-Prax notes: "Parley voice input and spoken handoffs: engineering notes".
+Prax notes: "Parley voice input and spoken handoffs…".
 
 - Policy types are Foundation-only in ParleyCore; Speech and AVFoundation
   stay in ParleyNative. en-GB and en-US, on-device only, no cloud fallback,
@@ -244,18 +211,15 @@ Prax notes: "Parley voice input and spoken handoffs: engineering notes".
 
 ## Process and capability boundary
 
-Prax notes: "Parley process boundary: Git read guard, signal state, bounded
-waits and process sessions"; "Parley host vendor launches, Codex permissions,
-profile resolution and preflight"; "Parley native control socket, pane
-capabilities, ticket server and ticket policy"; "Parley PATH shim…".
+Prax notes: "Parley process boundary…"; "Parley host vendor launches…";
+"Parley native control socket…"; "Parley PATH shim…".
 
 - Spawn fixed executables with argument arrays. Agent-authored content must
   never be interpolated into a shell command.
-- Every host Git *read* goes through `GitReadBoundary` (`ulimit -u 1` so Git
-  can fork nothing, filter drivers neutralised, `diffArguments`, submodules
-  ignored, inherited `GIT_*` and shell variables dropped, prompts and pagers
-  off). Person-confirmed operations (worktree add, remove, prune, `branch
-  -d`, Integrate) are Git itself outside the guard.
+- Every host Git read uses `GitReadBoundary`: `ulimit -u 1`, neutralised
+  filter drivers, `diffArguments`, ignored submodules, scrubbed `GIT_*` and
+  shell variables, no prompts or pagers. Person-confirmed worktree add,
+  remove and prune, `branch -d` and Integrate run Git outside the guard.
 - Every spawner sets `POSIX_SPAWN_SETSIGDEF` and `POSIX_SPAWN_SETSIGMASK`.
   `ProcessCommandRunner` runs each command in its own session and signals the
   group on timeout. An unobserved exit is `unobserved` (125), never success;
@@ -287,8 +251,7 @@ capabilities, ticket server and ticket policy"; "Parley PATH shim…".
 
 ## Reviewed command runs
 
-Prax notes: "Parley reviewed command runs: worker, approval, tickets, pane
-cleanup and person proposals".
+Prax notes: "Parley reviewed command runs…".
 
 - `parley request-run` proposes exact argv in a contained folder; approval
   opens one NEW Shell pane whose fixed worker spawns argv directly, captures
@@ -306,8 +269,7 @@ cleanup and person proposals".
 
 ## Team sessions
 
-Prax notes: "Parley team sessions: grants, provisioning, ownership, stop and
-transitions".
+Prax notes: "Parley team sessions…".
 
 - Nothing is authorized until the person approves the editable preview
   (objective, folder inside the lead's, vendors, profile, ≤ 8 panes, ≤ 128
@@ -324,10 +286,8 @@ transitions".
 
 ## Managed Git worktrees
 
-Prax notes: "Parley managed worktrees: service, creation receipts and team
-binding"; "Parley worktree cleanup policy and removal outcomes"; "Parley
-Worktrees window, board, prune, delete branch, bulk removal and merge
-previews". Decisions: `docs/worktrees-roadmap.md`.
+Prax notes: "Parley managed worktrees…"; "Parley worktree cleanup policy…";
+"Parley Worktrees window…". Decisions: `docs/worktrees-roadmap.md`.
 
 - One worktree per feature or team, never per pane. Fixed `/usr/bin/git`
   argv, scrubbed environment, `--end-of-options`, bounded timeouts, no
@@ -358,27 +318,24 @@ previews". Decisions: `docs/worktrees-roadmap.md`.
 
 ## Container panes
 
-Prax notes: "Parley container panes: review, image contract, bypass flags and
-launch projection"; "Parley container lifecycle…"; "Parley container test
-images on Mark's Mac (26 Sep 2026)". Recipes: `docs/container-images.md`,
+Prax notes: "Parley container panes…"; "Parley container lifecycle…";
+"Parley container test images…". Recipes: `docs/container-images.md`,
 `docs/parley-agents.Dockerfile`, `docs/parley-agents-fetch.sh`.
 
 - Chosen in the permission review for any vendor, with a local image the
   person names; Parley never builds or pulls images. The probe proves the
   utility contract and `--version`, never login or instruction uptake.
-- Bypass vendor permissions is the container-only exception to invariant 3;
-  `ContainerLaunchProjection.bypassArguments(for:)` is the one table; bypass
-  flags arriving through vendor arguments are refused; the review, badge and
-  Status Center disclose it.
+- `ContainerLaunchProjection.bypassArguments(for:)` is the sole bypass table.
+  Refuse bypass flags in vendor arguments; disclose the mode in the review,
+  badge and Status Center.
 - argv: explicit daemon, non-root uid/gid, four exact mounts, the reviewed
   shared Git directory for a linked worktree, one private home volume
   (`volume-nocopy=true`), optional loopback `publishedPort`. Never mount the
   Docker socket, host vendor configuration or sibling endpoints. Working
   folders cannot overlap either runtime's control or transport directories;
   compare canonical realpaths first.
-- A container can rewrite its mounted repository's hooks, so Parley runs no
-  Git for a container pane's delegation (`DelegationGitSnapshot.notCaptured`)
-  and every review states `GitReadBoundary.containerDisclosure`.
+- Never run Git for container-pane delegations (`.notCaptured`); every
+  container review must state `GitReadBoundary.containerDisclosure`.
 - Creation persists a stopped placeholder, then Docker work runs off the main
   actor without the workbench lock; activation re-checks generation, folder,
   workspace, policy, profile and mode. Cleanup checks daemon, full ID and
@@ -392,7 +349,7 @@ images on Mark's Mac (26 Sep 2026)". Recipes: `docs/container-images.md`,
 
 ## SwiftPM inside agent panes and terminal type
 
-Prax notes: "Parley SwiftPM wrapper and terminal type for panes".
+Prax notes: "Parley SwiftPM wrapper and terminal type…".
 
 - SwiftPM compatibility is off by default and reaches newly started panes
   only: a `swift` wrapper adds `--disable-sandbox` to build, test, run and
@@ -405,9 +362,8 @@ Prax notes: "Parley SwiftPM wrapper and terminal type for panes".
 
 ## Reviewed context boundary
 
-Prax notes: "Parley reviewed context boundary: parts, markers, origins and
-agent-staged images"; "Parley window capture, files the person adds, context
-deletion and locking"; "Parley context draft sending…".
+Prax notes: "Parley reviewed context boundary…"; "Parley window capture…";
+"Parley context draft sending…".
 
 - An agent-staged part is a claim (`agentFileDraft`); only a human-authorized
   capture creates trusted provenance. Parts sit between marker lines no pack
@@ -437,8 +393,7 @@ deletion and locking"; "Parley context draft sending…".
 
 ## Roles and mobility
 
-Prax notes: "Parley roles, mobility, workspace registry, all-or-nothing
-lifecycle routes and external boundaries".
+Prax notes: "Parley roles, mobility…".
 
 - Roles are lowercase slugs, unique per workspace (`@reviewer`,
   `workspace/@reviewer`); vendor names and `lead` are reserved; never fall
@@ -457,13 +412,11 @@ lifecycle routes and external boundaries".
 
 ## Shared protocol launch behavior
 
-Prax notes: "Parley shared protocol launch behaviour per vendor and runtime
-isolation".
+Prax notes: "Parley shared protocol launch behaviour…".
 
-- Bump `AgentProtocol.version` whenever semantics change; `ProtocolDriftChecks`
-  pins a SHA-256 beside it, and pinning both is the deliberate act. A
-  mismatched pane shows **RESTART FOR PROTOCOL**. One canonical text, never
-  per-vendor wording.
+- Change `AgentProtocol.version` and the SHA-256 in `ProtocolDriftChecks`
+  together when semantics change. Mismatched panes show **RESTART FOR
+  PROTOCOL**.
 - Claude: `--append-system-prompt` plus a `--settings` file with hooks and,
   when execution is allowed, `permissions.allow` for `Bash(parley:*)`. Codex:
   `developer_instructions` and `-c` hooks, every string through
@@ -483,34 +436,33 @@ isolation".
 
 ## Verification
 
-Prax notes: "Parley verification practices…"; "Parley moved back to GitHub on
-10 October 2026"; "Parley: run the suite in a local Tart VM…"; "GitReadBoundary
-fails on a Mac with full Xcode selected and a cold xcrun cache".
+Prax notes: "Parley verification practices…"; "Parley moved back to GitHub…";
+"Parley: run the suite in a local Tart VM…"; "GitReadBoundary fails…".
 
 - Never report work as done because it was written. Run it. Failing check
   first for non-trivial logic. After app or core changes run `npm test` and
   `npm run build`; for terminal or lifetime changes also the soak.
-- `scan:public` streams `git log -p` line by line, so every rule and fixture
-  fits on one line. `scan:platform` is a ratchet over which ParleyCore files
-  may import a platform module; change its baseline only deliberately. After
-  a declaration lift, compare removed against re-added lines: these types are
-  `Codable` and persisted.
+- Keep `scan:public` rules and fixtures on one line. Deliberately maintain the
+  `scan:platform` ratchet over platform imports in ParleyCore. After
+  declaration lifts, compare removed and re-added lines to preserve persisted
+  `Codable` types.
 - A check leaves nothing outside the repository (fixed-name preference
   domains cleared in and out; a fixture's transport inside its own folder).
   Window-state steps wait, bounded, for the fact they need; never a fixed
-  delay. Run screen-touching checks through `test:vm`: interference is not a
-  regression.
+  delay. Run screen-touching checks through `test:vm`.
 - Default checks never launch a vendor CLI, spend quota or need the network.
-  CI is GitHub Actions on `macos-latest` (public repository, free). Workflows
-  select the Command Line Tools first, run `npm test` as its four parts and
-  pass `--skip "container bypass preflight,container follow-up image probe"`;
-  a skipped check is never a passed one and `npm test` itself skips nothing.
-  External Actions are pinned to full commit SHAs.
-- Release workflows are manual and tag-exact: the test beta publishes an
-  unnotarized prerelease with the workflow's token and refuses an existing
-  release; the draft release signs in a temporary keychain, retains an
-  unpublished draft and never touches the feed. Both need the 25-round soak
-  with its report in SHA256SUMS. The cask goes through a pull request.
+  CI is GitHub Actions on `macos-latest`. Workflows select the Command Line
+  Tools first, run `npm test` as its four parts and pass `--skip "container
+  bypass preflight,container follow-up image probe"`; a skipped check is
+  never a passed one and `npm test` itself skips nothing. External Actions
+  are pinned to full commit SHAs.
+- Release workflows are manual, dispatched from the version tag they name,
+  and preflight the tag, notes and existing release before any expensive
+  step. The test beta publishes an unnotarized prerelease with the workflow's
+  token; the draft release runs in the `release-signing` environment, signs
+  in a temporary keychain removed unconditionally, retains an unpublished
+  draft and never touches the feed. Both need the 25-round soak with its
+  report in SHA256SUMS. The cask goes through a pull request.
 
 ## Version policy
 

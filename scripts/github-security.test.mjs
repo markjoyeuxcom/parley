@@ -122,6 +122,13 @@ test('macOS releases require versioned notes for the exact requested tag', () =>
     assert.match(source, /workflow_dispatch:[\s\S]*?inputs:[\s\S]*?tag:/, `${name}: a person starts it with an explicit tag`)
     assert.match(source, /ref:\s*\$\{\{ inputs\.tag \}\}/, `${name}: the exact tag is checked out`)
     assert.match(source, /--verify-tag/, `${name}: the release must be created on the existing tag`)
+    // The preflight runs before any expensive or privileged step: the tag
+    // must be the ref the workflow was dispatched from (so environment tag
+    // rules bind it), the notes must exist, and package.json must agree.
+    assert.ok(source.includes('test "$GITHUB_REF" = "refs/tags/$PARLEY_RELEASE_TAG"'), `${name}: the input tag must be the dispatched ref`)
+    const notesCheck = source.indexOf('test -f "$notes"')
+    assert.ok(notesCheck >= 0 && notesCheck < source.indexOf('npm run test:checks'), `${name}: the notes must be checked before the checks run`)
+    assert.ok(source.indexOf('test "v$version" = "$PARLEY_RELEASE_TAG"') < source.indexOf('npm run test:checks'), `${name}: package.json must match the tag before the checks run`)
     assert.doesNotMatch(source, /--dangerously|danger-full-access/, `${name}: no approval bypass`)
     assert.doesNotMatch(source, /vscode|vsix|companion/i, `${name}: the VS Code companion was retired in the September 2026 reduction`)
   }
@@ -142,10 +149,22 @@ test('macOS release packaging creates the shared artifact directory on a clean c
 
 test('the notarized draft workflow signs in an ephemeral keychain and retains an unpublished draft', () => {
   const source = workflow('macos-draft-release.yml')
+  // The signing secrets live in the release-signing environment, which
+  // admits only v* tags and requires a reviewer; repository writers who can
+  // dispatch the workflow do not thereby reach the secrets.
+  assert.match(source, /environment:\s*release-signing/, 'signing must run in the protected environment')
   assert.match(source, /security create-keychain/)
-  assert.match(source, /security delete-keychain/)
+  assert.match(source, /umask 077/, 'decoded signing material must be private from creation')
+  // Cleanup removes fixed paths unconditionally: a failed import exits before
+  // any record of what it created, so cleanup must not depend on one.
+  assert.match(source, /PARLEY_TEMP_KEYCHAIN:\s*\$\{\{ runner\.temp \}\}\//, 'the keychain path is fixed at workflow level')
+  assert.ok(source.includes('security delete-keychain "$PARLEY_TEMP_KEYCHAIN" || true'), 'the keychain is deleted unconditionally')
+  assert.ok(source.includes('rm -f "$PARLEY_SIGNING_P12" "$PARLEY_NOTARY_KEY"'), 'the decoded files are removed unconditionally')
+  assert.doesNotMatch(source, /if test -n "\$\{PARLEY_TEMP_KEYCHAIN/, 'cleanup must not be conditional on an export the import step may never reach')
   assert.match(source, /if: always\(\)/, 'signing material must be removed whether or not the release succeeded')
-  assert.match(source, /PARLEY_NOTARY_KEY=/)
+  assert.ok(source.indexOf('test -f "$notes"') < source.indexOf('security import'), 'notes are checked before any signing material is decoded')
+  assert.ok(source.indexOf('npm run test:soak') < source.indexOf('security import'), 'the soak runs before any signing material is decoded')
+  assert.match(source, /PARLEY_NOTARY_KEY:\s*\$\{\{ runner\.temp \}\}\//)
   assert.match(source, /PARLEY_SPARKLE_PRIVATE_ED_KEY:\s*\$\{\{ secrets\./)
   assert.match(source, /run:\s*npm run release:mac\s*$/m)
   assert.match(source, /--draft/, 'production assets are retained for review, never published by the workflow')
@@ -160,6 +179,7 @@ test('the test-beta workflow publishes an unnotarized prerelease with its own to
   assert.match(source, /gh release create "\$PARLEY_RELEASE_TAG"/, 'the release must be created for the requested tag')
   assert.match(source, /--prerelease/, 'a test beta is a prerelease')
   assert.match(source, /gh release view "\$PARLEY_RELEASE_TAG"[\s\S]*?exit 1/, 'an existing release must fail the run instead of being overwritten')
+  assert.ok(source.indexOf('gh release view "$PARLEY_RELEASE_TAG"') < source.indexOf('npm run test:checks'), 'an existing release is refused before the checks and soak run')
   assert.match(source, /GH_TOKEN:\s*\$\{\{ github\.token \}\}/, 'the workflow signs in with its own token')
   assert.doesNotMatch(source, /secrets\.|GITLAB|glab /, 'no personal token or GitLab login takes part')
   assert.doesNotMatch(source, /appcast|parley\.rb|--draft/, 'a beta never emits a feed or cask and is published, not drafted')

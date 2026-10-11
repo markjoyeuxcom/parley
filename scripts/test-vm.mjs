@@ -17,19 +17,44 @@
 //
 // Each run starts the VM headless if it is stopped, installs the pinned Node
 // inside it once, replaces the guest's copy of the working tree (tracked and
-// untracked files plus .git, piped through `tart exec -i` as one tar stream;
-// ignored build caches in the guest are kept, so the second build is fast),
-// then runs npm in the guest and exits with its status. Nothing is read back
-// from the guest except its output. The guest agent in the Cirrus Labs images
-// is what makes `tart exec` work; no SSH is set up.
+// untracked files that exist on disk, plus the whole .git directory, piped
+// through `tart exec -i` as one tar stream; the guest's previous .git goes
+// entirely so no stale ref survives, while ignored build caches are kept, so
+// the second build is fast), then runs npm in the guest and exits with its
+// status. Nothing is read back from the guest except its output. The guest
+// agent in the Cirrus Labs images is what makes `tart exec` work; no SSH is
+// set up.
+//
+// It runs only from the primary checkout: a linked worktree's .git is a
+// pointer into the host repository, which the guest cannot follow. One run
+// per VM at a time, held by a lock directory in the host's temporary folder.
 import { spawn, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const GUEST_REPO = "~/parley";
 export const DEFAULT_VM = "parley-dev";
 const BOOT_TIMEOUT_SECONDS = 240;
+
+// A linked worktree reports its admin directory inside the host repository
+// (`<common>/.git/worktrees/<name>`); only the primary checkout reports `.git`.
+export function isPrimaryCheckout(gitDir) {
+  return gitDir.trim() === ".git";
+}
+
+// The files to archive: what Git lists (tracked and untracked, not ignored)
+// that still exist on disk. A tracked file deleted but not yet staged is
+// listed by Git and would stop tar; the guest's index still records it.
+export function archiveEntries(listed, exists) {
+  return listed.filter((entry) => entry.length > 0 && exists(entry));
+}
+
+// One run per VM: a directory made with mkdir, which fails when it exists.
+export function lockDirectory(vm, temporaryDirectory) {
+  return join(temporaryDirectory, `parley-test-vm-${vm}.lock`);
+}
 
 export const CI_WORKFLOW = ".github/workflows/ci.yml";
 
@@ -86,15 +111,17 @@ export function guestSetupScript(pins) {
 
 // Replaces the guest's working tree with the tar stream on stdin. Files the
 // previous copy tracked or had untracked are removed first, so a file
-// deleted on the host disappears in the guest too, while ignored paths
-// (native/.build, the Swift caches) stay for the next build. macOS xargs runs
-// nothing on empty input.
+// deleted on the host disappears in the guest too, then the previous .git
+// goes whole, so no ref, hook or configuration the host no longer has
+// survives; ignored paths (native/.build, the Swift caches) stay for the
+// next build. macOS xargs runs nothing on empty input.
 export function guestSyncScript() {
   return [
     "set -eu",
     `mkdir -p ${GUEST_REPO}`,
     `cd ${GUEST_REPO}`,
     "if [ -d .git ]; then git ls-files -co --exclude-standard -z | xargs -0 rm -f; fi",
+    "rm -rf .git",
     "tar -x -f -",
   ].join("\n");
 }
@@ -160,11 +187,15 @@ function execInGuest(vm, script, { stdin = "ignore", tty = false } = {}) {
   return result.status ?? 1;
 }
 
-function syncTree(root, vm) {
+function syncTree(root, vm, listFile) {
+  const listed = run("git", ["ls-files", "-co", "--exclude-standard", "-z"], { cwd: root });
+  if (listed.status !== 0) fail(`git ls-files failed: ${listed.stderr.trim()}`);
+  const entries = archiveEntries(listed.stdout.split("\0"), (entry) => existsSync(join(root, entry)));
+  writeFileSync(listFile, entries.join("\0"));
   // The host side is a fixed pipeline over two fixed commands; only the VM
-  // name, checked above, and the guest script reach it, and the script goes
+  // name, checked above, the list file and the guest script reach it, each
   // through one shellWord.
-  const pipeline = `git ls-files -co --exclude-standard -z | tar -c -f - --null -T - .git | tart exec -i ${vm} /bin/sh -c ${shellWord(guestSyncScript())}`;
+  const pipeline = `tar -c -f - --null -T ${shellWord(listFile)} .git | tart exec -i ${vm} /bin/sh -c ${shellWord(guestSyncScript())}`;
   const result = spawnSync("/bin/bash", ["-o", "pipefail", "-c", pipeline], { cwd: root, stdio: "inherit" });
   if (result.error) throw result.error;
   return result.status ?? 1;
@@ -177,13 +208,30 @@ async function main() {
   const pins = ciPins(readFileSync(join(root, CI_WORKFLOW), "utf8"));
   const npmArguments = process.argv.slice(2);
 
+  const gitDir = run("git", ["rev-parse", "--git-dir"], { cwd: root });
+  if (gitDir.status !== 0) fail(`not a Git checkout: ${gitDir.stderr.trim()}`);
+  if (!isPrimaryCheckout(gitDir.stdout)) {
+    fail(`this is a linked worktree (${gitDir.stdout.trim()}); test:vm syncs only the primary checkout, whose .git the guest can carry`);
+  }
+
+  const lock = lockDirectory(vm, tmpdir());
+  try {
+    mkdirSync(lock);
+  } catch (error) {
+    if (error.code === "EEXIST") fail(`another test:vm run holds ${vm} (${lock}); wait for it, or remove that directory if the run is gone`);
+    throw error;
+  }
+  const release = () => rmSync(lock, { recursive: true, force: true });
+  process.on("exit", release);
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => { release(); process.exit(130); });
+
   await ensureRunning(vm, pins);
 
   console.error("test:vm: preparing the guest toolchain");
   if (execInGuest(vm, guestSetupScript(pins)) !== 0) fail("guest toolchain setup failed");
 
   console.error(`test:vm: syncing the working tree to ${vm}:${GUEST_REPO}`);
-  if (syncTree(root, vm) !== 0) fail("syncing the working tree failed");
+  if (syncTree(root, vm, join(lock, "files")) !== 0) fail("syncing the working tree failed");
 
   console.error(`test:vm: running ${npmArguments.length > 0 ? `npm ${npmArguments.join(" ")}` : "the pipeline sequence"} in ${vm}`);
   process.exit(execInGuest(vm, guestRunScript(pins, npmArguments), { tty: process.stdout.isTTY === true }));

@@ -7,6 +7,9 @@ import {
   guestSyncScript,
   guestRunScript,
   shellWord,
+  isPrimaryCheckout,
+  archiveEntries,
+  lockDirectory,
   GUEST_REPO,
 } from "./test-vm.mjs";
 
@@ -59,12 +62,33 @@ test("guest setup installs the pinned Node once and checks its digest", () => {
   assert.match(script, /if \[ -x ".*\/bin\/node" \]/);
 });
 
-test("guest sync removes the previous tree's files but keeps ignored build caches", () => {
+test("guest sync removes the previous tree's files and its whole .git but keeps ignored build caches", () => {
   const script = guestSyncScript();
   assert.match(script, new RegExp(`mkdir -p ${GUEST_REPO}`));
   assert.match(script, /git ls-files -co --exclude-standard -z \| xargs -0 rm -f/);
+  // The previous .git goes whole, so a ref deleted on the host does not
+  // survive in the guest (scan:public walks every ref). Nothing else is
+  // removed recursively: native/.build must stay.
+  assert.deepEqual(script.match(/rm -rf \S+/g), ["rm -rf .git"]);
+  assert.ok(script.indexOf("rm -rf .git") < script.indexOf("tar -x"));
   assert.match(script, /tar -x/);
-  assert.doesNotMatch(script, /rm -rf/);
+});
+
+test("only the primary checkout is synced: a linked worktree's .git is a pointer into the host repository", () => {
+  assert.equal(isPrimaryCheckout(".git\n"), true);
+  assert.equal(isPrimaryCheckout("/Users/me/parley/.git/worktrees/feature\n"), false);
+  assert.equal(isPrimaryCheckout(".git/worktrees/feature"), false);
+});
+
+test("archive entries leave out a tracked file deleted but not yet staged", () => {
+  const present = new Set(["README.md", "scripts/test-vm.mjs"]);
+  const listed = ["README.md", "deleted-but-unstaged.md", "scripts/test-vm.mjs", ""];
+  assert.deepEqual(archiveEntries(listed, (entry) => present.has(entry)), ["README.md", "scripts/test-vm.mjs"]);
+});
+
+test("one run per VM is held by a lock directory named for the VM", () => {
+  assert.equal(lockDirectory("parley-dev", "/tmp"), "/tmp/parley-test-vm-parley-dev.lock");
+  assert.notEqual(lockDirectory("parley-dev", "/tmp"), lockDirectory("other", "/tmp"));
 });
 
 test("guest run uses the pinned Node, the synced tree and quoted arguments", () => {
