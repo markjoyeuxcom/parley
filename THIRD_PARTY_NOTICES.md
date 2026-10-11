@@ -3,7 +3,8 @@
 Parley embeds the following MIT-licensed software:
 
 - Ghostty 1.3.2-dev (upstream commit 35a81a98) — Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
-- libghostty-spm — Copyright (c) 2026 @Lakr233
+- libghostty-spm — Copyright (c) 2026 @Lakr233 (consumed through the
+  markjoyeuxcom fork, which only compiles its string catalog)
 - DisplayLink — Copyright (c) 2024 Lakr Aream
 - Sparkle 2.10.0 — Copyright (c) 2006-2013 Andy Matuschak; Copyright (c)
   2009-2013 Elgato Systems GmbH; Copyright (c) 2011-2014 Kornel Lesiński;
