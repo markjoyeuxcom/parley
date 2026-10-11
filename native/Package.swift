@@ -14,7 +14,7 @@ let package = Package(
         .library(name: "ParleyCore", targets: ["ParleyCore"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/Lakr233/libghostty-spm.git", exact: "1.6.20261003"),
+        .package(url: "https://github.com/Lakr233/libghostty-spm.git", exact: "2.2.2026101003"),
         .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0"),
     ],
     targets: [
