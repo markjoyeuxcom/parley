@@ -7,17 +7,20 @@ daemon or second app.
 
 ## Rationale and history live in Prax
 
-Keep only standing rules needed on every turn here, under 32 KiB. Before
-changing an area, recall its rationale and history in Prax project `parley`,
-tag `engineering-notes`; each section names its notes.
+Keep only standing rules needed on every turn here, under 32 KiB. Start a
+session with the project card, then recall the area you are changing: its
+rationale and history are in Prax project `parley`, tag `engineering-notes`,
+and each section names its notes.
 
 ```bash
+prax overview --project parley
+prax context --budget 1200
 prax recall "<area>"
-prax recall --project parley --recent 40
 ```
 
-When behaviour changes, update the rule here and its Prax note in place with
-`prax remember "<same title>" …`.
+When a note informed the work, run `prax used <id>`. When behaviour changes,
+update the rule here and its Prax note in place with `prax remember "<same
+title>" …`; retire a replaced note with `prax supersede`.
 
 ## Product boundary
 
