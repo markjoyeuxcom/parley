@@ -46,14 +46,28 @@ private func spinRunLoop(mode: RunLoop.Mode, seconds: TimeInterval) {
     }
 }
 
+/// Runs the current loop in `mode` until `condition` holds or the bound
+/// passes; the bound is a ceiling, not the expected time. A positive fact
+/// (the clock fired) is waited for this way; only the absence of a tick is
+/// observed over a fixed window, since nothing announces it.
+private func spinRunLoop(mode: RunLoop.Mode, until condition: () -> Bool, bound seconds: TimeInterval) {
+    let deadline = Date().addingTimeInterval(seconds)
+    while !condition() && Date() < deadline {
+        RunLoop.current.run(mode: mode, before: min(deadline, Date().addingTimeInterval(0.02)))
+    }
+}
+
 func windowRefreshClockChecks() throws {
     // The clock fires only in its run-loop mode (menu tracking is deferred as
-    // before), stops on demand, and cannot outlive its owner.
+    // before), stops on demand, and cannot outlive its owner. A loaded CI
+    // runner can starve a 50 ms timer for longer than its interval (run
+    // 38169102141, 11 October 2026), so each firing is waited for, bounded,
+    // rather than assumed within a fixed spin.
     final class Counter { var ticks = 0 }
     let counter = Counter()
     var clock: WindowRefreshClock? = WindowRefreshClock(interval: 0.05, mode: MenuTrackingRefreshPolicy.runLoopMode) { counter.ticks += 1 }
     clock?.start()
-    spinRunLoop(mode: MenuTrackingRefreshPolicy.runLoopMode, seconds: 0.3)
+    spinRunLoop(mode: MenuTrackingRefreshPolicy.runLoopMode, until: { counter.ticks >= 2 }, bound: 3)
     let afterRun = counter.ticks
     try windowExpect(afterRun >= 2, "the clock did not fire in its own run-loop mode: \(afterRun)")
     spinRunLoop(mode: .eventTracking, seconds: 0.2)
@@ -62,7 +76,7 @@ func windowRefreshClockChecks() throws {
     spinRunLoop(mode: MenuTrackingRefreshPolicy.runLoopMode, seconds: 0.15)
     try windowExpect(counter.ticks == afterRun, "a stopped clock kept firing")
     clock?.start()
-    spinRunLoop(mode: MenuTrackingRefreshPolicy.runLoopMode, seconds: 0.15)
+    spinRunLoop(mode: MenuTrackingRefreshPolicy.runLoopMode, until: { counter.ticks > afterRun }, bound: 3)
     let afterRestart = counter.ticks
     try windowExpect(afterRestart > afterRun, "a restarted clock did not fire")
     weak let released = clock
