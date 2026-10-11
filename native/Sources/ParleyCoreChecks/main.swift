@@ -4520,8 +4520,9 @@ private func checkReviewDraftsAreBoundedGuardedAndExplicit() throws {
     // Root, filter-driver listing, status and two diffs, each Git itself
     // exec'd by the fixed read guard; the guard is the only shell involved.
     try expect(runner.calls.count == 5, "changes draft ran an unexpected number of git commands")
-    try expect(runner.calls.allSatisfy { $0.executable == GitReadBoundary.shell && $0.arguments[3] == "/usr/bin/git" },
-               "changes draft ran something other than git inside the read guard")
+    let reviewRealGit = GitReadBoundary.realGit(for: URL(fileURLWithPath: "/usr/bin/git"), environment: [:]).path
+    try expect(runner.calls.allSatisfy { $0.executable == GitReadBoundary.shell && $0.arguments[3] == reviewRealGit },
+               "changes draft ran something other than the resolved git inside the read guard")
     let reviewGitCalls = runner.calls.compactMap { GitReadBoundary.gitArguments(inInvocation: $0.arguments) }
     try expect(reviewGitCalls.count == 5, "changes draft ran a command outside the read guard")
     try expect(reviewGitCalls.allSatisfy { Array($0.prefix(2)) == ["-C", repository.path] }, "changes draft did not scope every git command with argv")
@@ -4634,7 +4635,8 @@ private func checkContextPacksAreExplicitBoundedAndAttributed() throws {
     try expect(changes.text.contains("?? PRIVATE-NOTE.txt"), "Git context omitted the explicit untracked filename")
     try expect(!changes.text.contains("secret contents"), "Git context silently read untracked file contents")
     try expect(gitRunner.calls.count == 5, "Git context ran an unexpected command")
-    try expect(gitRunner.calls.allSatisfy { $0.executable == GitReadBoundary.shell && $0.arguments[3] == "/usr/bin/git"
+    let contextRealGit = GitReadBoundary.realGit(for: URL(fileURLWithPath: "/usr/bin/git"), environment: [:]).path
+    try expect(gitRunner.calls.allSatisfy { $0.executable == GitReadBoundary.shell && $0.arguments[3] == contextRealGit
                    && GitReadBoundary.gitArguments(inInvocation: $0.arguments) != nil },
                "Git context invoked a foreign executable or ran Git outside the read guard")
     try expect(gitRunner.calls.compactMap { GitReadBoundary.gitArguments(inInvocation: $0.arguments) }.filter { $0.contains("diff") }

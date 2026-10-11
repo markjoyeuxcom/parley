@@ -42,14 +42,11 @@ jobs:
           # The public repository scan walks the complete reachable history.
           fetch-depth: 0
 
-      # The image selects a full Xcode, whose /usr/bin/git shim forks
-      # xcodebuild to find Git on a cold cache. GitReadBoundary runs Git with
-      # a process limit of one, so that fork fails and every guarded read
-      # with it. The Command Line Tools shim execs the real Git directly,
-      # and the Command Line Tools are what the local Tart VM builds with.
-      - name: Select the Command Line Tools toolchain
+      # The image's default toolchain is a full Xcode. GitReadBoundary
+      # resolves the real Git behind the /usr/bin/git shim itself, so no
+      # toolchain selection is needed here; a check covers the shim's fork.
+      - name: Report the toolchain
         run: |
-          sudo xcode-select -s /Library/Developer/CommandLineTools
           xcode-select -p
           git --version
           swift --version | head -1
