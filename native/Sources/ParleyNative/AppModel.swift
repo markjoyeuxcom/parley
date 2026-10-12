@@ -338,6 +338,7 @@ final class AppModel: ObservableObject {
     @Published var paneChoiceRequest: PaneChoiceRequest?
     @Published private(set) var historyRetentionPolicy: CollaborationHistoryRetentionPolicy = .defaultPolicy
     @Published private(set) var terminalFontPreference = TerminalFontPreference.ghosttyDefault
+    @Published private(set) var terminalSurfacePreference = TerminalSurfacePreference.ghosttyDefault
     @Published private(set) var terminalAppearanceImport: GhosttyAppearanceImport?
     @Published private(set) var taskManagerSnapshot: TaskManagerSnapshot?
     @Published private(set) var paneListeningPortSnapshot = PaneListeningPortSnapshot.empty
@@ -490,6 +491,7 @@ final class AppModel: ObservableObject {
     private static let terminalTypePreferenceKey = "parley.terminalTypePreference"
     private static let terminalFontPreferenceKey = "parley.terminalFontPreference"
     private static let terminalAppearanceImportKey = "parley.terminalAppearanceImport"
+    private static let terminalSurfacePreferenceKey = "parley.terminalSurfacePreference"
     private static let projectContextRefreshInterval: TimeInterval = 5
     private static let worktreeRefreshInterval: TimeInterval = 15
     private static let periodicRefreshInterval: TimeInterval = 1
@@ -531,6 +533,15 @@ final class AppModel: ObservableObject {
                 terminalAppearanceImport = stored
             } else {
                 preferences.removeObject(forKey: Self.terminalAppearanceImportKey)
+            }
+        }
+        if let data = preferences.data(forKey: Self.terminalSurfacePreferenceKey) {
+            // Decoding validates; a stored value outside today's bounds is
+            // dropped rather than clamped into something nobody chose.
+            if let stored = try? JSONDecoder().decode(TerminalSurfacePreference.self, from: data) {
+                terminalSurfacePreference = stored
+            } else {
+                preferences.removeObject(forKey: Self.terminalSurfacePreferenceKey)
             }
         }
         if let stored = preferences.string(forKey: Self.lastAgentVendorKey), let kind = PaneKind(rawValue: stored), kind.isAgent {
@@ -580,13 +591,16 @@ final class AppModel: ObservableObject {
         do {
             try ghosttyRegistry.applyTerminalAppearance(
                 font: terminalFontPreference,
-                imported: terminalAppearanceImport
+                imported: terminalAppearanceImport,
+                surface: terminalSurfacePreference
             )
         } catch {
             terminalFontPreference = .ghosttyDefault
             terminalAppearanceImport = nil
+            terminalSurfacePreference = .ghosttyDefault
             preferences.removeObject(forKey: Self.terminalFontPreferenceKey)
             preferences.removeObject(forKey: Self.terminalAppearanceImportKey)
+            preferences.removeObject(forKey: Self.terminalSurfacePreferenceKey)
             try? ghosttyRegistry.applyTerminalFont(.ghosttyDefault)
         }
         if runtime.mode == .production {
@@ -1003,7 +1017,7 @@ final class AppModel: ObservableObject {
         imported appearance: GhosttyAppearanceImport?
     ) throws {
         let preference = try TerminalFontPreference(family: family, size: size)
-        try ghosttyRegistry.applyTerminalAppearance(font: preference, imported: appearance)
+        try ghosttyRegistry.applyTerminalAppearance(font: preference, imported: appearance, surface: terminalSurfacePreference)
         if preference == .ghosttyDefault {
             preferences.removeObject(forKey: Self.terminalFontPreferenceKey)
         } else {
@@ -1035,6 +1049,30 @@ final class AppModel: ObservableObject {
     func resetTerminalFont() throws {
         try updateTerminalAppearance(family: nil, size: nil, imported: nil)
     }
+
+    /// Applies the curated Ghostty surface options to every surface and keeps
+    /// them; Ghostty's refusal of a value is the error, and nothing is stored
+    /// then. The Ghostty default is stored as nothing at all.
+    func updateTerminalSurfacePreference(_ requested: TerminalSurfacePreference) throws {
+        let preference = try requested.validated()
+        try ghosttyRegistry.applyTerminalAppearance(
+            font: terminalFontPreference,
+            imported: terminalAppearanceImport,
+            surface: preference
+        )
+        if preference == .ghosttyDefault {
+            preferences.removeObject(forKey: Self.terminalSurfacePreferenceKey)
+        } else {
+            preferences.set(try JSONEncoder().encode(preference), forKey: Self.terminalSurfacePreferenceKey)
+        }
+        terminalSurfacePreference = preference
+    }
+
+    func resetTerminalSurfacePreference() throws {
+        try updateTerminalSurfacePreference(.ghosttyDefault)
+    }
+
+    var ghosttyThemeNames: [String] { GhosttyPaneRegistry.catalogueThemeNames }
 
 
     // MARK: Quit-time choice

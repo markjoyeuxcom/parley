@@ -625,10 +625,20 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "settings-ghostty",
+                    title: "Ghostty surface options",
+                    paragraphs: [
+                        "Settings > Terminal also holds a fixed set of Ghostty options for every pane's surface: a theme from the bundled Ghostty catalogue for the light and the dark appearance, minimum contrast, glyph thickening, programming ligatures, line height, cursor shape, blink and opacity, background opacity and blur, padding, the scrollback limit, mouse and clipboard behaviour, and the shell integration features. Each change applies to every surface at once and is kept until you change it; Restore Ghostty Defaults puts the whole set back.",
+                        "Two options are read only when a pane is created: the scrollback limit (1 to 1000 MB of uncompressed history per pane; Ghostty's default is 50 MB) and the background opacity with its blur. Panes created afterwards use the new value and running panes keep theirs. Shell integration features reach shells started afterwards.",
+                        "An imported Ghostty appearance (Settings > Appearance) supplies colours itself, so while one is in use the two catalogue themes are not applied. If Ghostty refuses a value, Settings shows its message and keeps the previous options.",
+                        "The set is deliberately closed: no option can name a program, a file, an environment variable or a key binding, and Parley never loads a raw Ghostty configuration file. The agent launch review owns what a pane runs.",
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "settings-other",
                     title: "Other Settings sections",
                     items: [
-                        "Terminal > Terminal type chooses whether new panes advertise xterm-ghostty or xterm-256color. See Terminal type for remote hosts above.",
+                        "Terminal > Terminal type chooses whether new panes advertise xterm-ghostty or xterm-256color. See Terminal type for remote hosts above. The Ghostty surface options below it are described in Ghostty surface options.",
                         "General > Agent command runs controls automatic approval and clean Shell pane removal. See Requested command runs for the exact lifetimes and exceptions.",
                         "General > Swift package builds enables the optional compatibility wrapper for newly started agent panes. See CLI permissions and Troubleshooting before retrying a nested-sandbox error.",
                         "General > Software updates controls the opt-in Production stable update checks and the separate manual Stable/Beta release channel. See Compatibility, updates and feedback.",
