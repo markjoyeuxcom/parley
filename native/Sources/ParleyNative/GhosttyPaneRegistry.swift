@@ -120,7 +120,8 @@ final class GhosttyPaneRegistry {
 
     func applyTerminalAppearance(
         font preference: TerminalFontPreference,
-        imported appearance: GhosttyAppearanceImport?
+        imported appearance: GhosttyAppearanceImport?,
+        surface: TerminalSurfacePreference = .ghosttyDefault
     ) throws {
         let resolvedFont = try preference.resolving(imported: appearance)
         var configuration = TerminalConfiguration()
@@ -130,12 +131,26 @@ final class GhosttyPaneRegistry {
         if let size = resolvedFont.size {
             configuration = configuration.fontSize(Float(size))
         }
+        // The curated surface options, every one an explicit line; the
+        // wrapper hands the whole file to Ghostty, which refuses a value it
+        // does not accept, and that refusal is the error the caller shows.
+        for line in surface.ghosttyLines {
+            configuration = configuration.custom(line.key, line.value)
+        }
 
+        // An imported Ghostty appearance carries its own colours; otherwise
+        // a theme chosen from the bundled catalogue, per appearance, with the
+        // wrapper's default for the side left unset.
         let theme: TerminalTheme
         if let appearance {
             theme = TerminalTheme(
                 light: Self.configuration(for: appearance.light),
                 dark: Self.configuration(for: appearance.dark)
+            )
+        } else if surface.lightTheme != nil || surface.darkTheme != nil {
+            theme = TerminalTheme(
+                light: try Self.catalogueConfiguration(named: surface.lightTheme) ?? TerminalTheme.default.light,
+                dark: try Self.catalogueConfiguration(named: surface.darkTheme) ?? TerminalTheme.default.dark
             )
         } else {
             theme = .default
@@ -164,6 +179,19 @@ final class GhosttyPaneRegistry {
 
     func applyTerminalFont(_ preference: TerminalFontPreference) throws {
         try applyTerminalAppearance(font: preference, imported: nil)
+    }
+
+    /// Every theme name the bundled catalogue knows, sorted for a picker.
+    static var catalogueThemeNames: [String] {
+        GhosttyThemeCatalog.search("").map(\.name).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    private static func catalogueConfiguration(named name: String?) throws -> TerminalConfiguration? {
+        guard let name else { return nil }
+        guard let theme = GhosttyThemeCatalog.theme(named: name) else {
+            throw ParleyWorkbenchError.commandFailed("\(name) is not a theme in the bundled Ghostty catalogue.")
+        }
+        return theme.toTerminalConfiguration()
     }
 
     private static func configuration(for colors: GhosttyAppearanceColors) -> TerminalConfiguration {

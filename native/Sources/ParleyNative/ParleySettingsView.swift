@@ -175,8 +175,10 @@ private struct GeneralSettingsView: View {
     }
 }
 
-/// The terminal type panes advertise. A choice takes effect at once for
-/// panes started or restarted afterwards; nothing running is touched.
+/// The terminal type panes advertise, which takes effect for panes started
+/// or restarted afterwards, and the curated Ghostty surface options, which
+/// apply to every surface at once except where Ghostty reads them only at
+/// creation.
 private struct TerminalSettingsView: View {
     @ObservedObject var model: AppModel
     @State private var copiedRemoteCommand = false
@@ -231,6 +233,8 @@ private struct TerminalSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            TerminalSurfaceSettingsSections(model: model)
         }
         .formStyle(.grouped)
         .padding(.horizontal, 12)

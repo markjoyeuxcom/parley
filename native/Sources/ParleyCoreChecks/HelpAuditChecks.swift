@@ -28,6 +28,10 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
         let settings = try helpAuditTopic("settings")
         try helpAuditContains(settings.searchableText, ["Settings > Terminal", "xterm-ghostty", "xterm-256color", "started or restarted afterwards",
             "never restarts a pane", "Container panes always receive", TerminalTypePreference.remoteTerminfoCommand])
+        // The curated Ghostty options: what they are, which ones reach only
+        // new panes, and that the set is closed.
+        try helpAuditContains(settings.searchableText, ["Ghostty surface options", "scrollback limit", "read only when a pane is created",
+            "Restore Ghostty Defaults", "never loads a raw Ghostty configuration file"])
         let troubleshooting = try helpAuditTopic("troubleshooting")
         try helpAuditContains(troubleshooting.searchableText, ["cannot initialize terminal type", "delete key", "Choose Compatible"])
     }),
