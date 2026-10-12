@@ -20,7 +20,10 @@ prax recall "<area>"
 
 When a note informed the work, run `prax used <id>`. When behaviour changes,
 update the rule here and its Prax note in place with `prax remember "<same
-title>" …`; retire a replaced note with `prax supersede`.
+title>" …`; retire a replaced note with `prax supersede`. Before opening a
+pull request run `prax check --diff main..HEAD`: it names cited memories
+whose code the branch changed, so refresh or supersede them in the same
+change. `.prax/project.json` binds this checkout to project `parley`.
 
 ## Product boundary
 
