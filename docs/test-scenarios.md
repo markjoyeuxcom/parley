@@ -175,6 +175,8 @@ Use the packaged app: the window picker and macOS's own consent need a bundle.
 5. Export from Production and try to restore it in Development: refused; the reverse too.
 6. With Swift package builds off, restore an export that had it on: the preview lists "SwiftPM compatibility turns ON" first under Settings that change. Open a launch review and leave it open: the preview lists it as a blocker.
 7. Make `permission-profiles.json` read-only, then Replace: the alert says nothing was restored and everything was put back; workspaces, recipes and preferences are as before.
+8. Replace `workspace-layouts.json` with `{ garbage` and relaunch: Configuration lists it unreadable. Restore a healthy export: the layouts come back and the Configuration section no longer lists the store. Export again: the file holds the layouts.
+9. Quit, replace `permission-profiles.json` with `{ garbage`, relaunch, Export: the alert says profiles were left out; the JSON has no `custom-` ids anywhere and still restores.
 
 **Fail:** anything secret in the file; an approved root or a config file path inside the JSON; Replace enabled with live work; a pane started by a restore; a merge instead of a replacement; a lower retention applied without its own confirmation.
 ---

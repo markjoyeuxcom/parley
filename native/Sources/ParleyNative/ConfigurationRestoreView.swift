@@ -15,6 +15,10 @@ struct ConfigurationRestoreView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Replace this runtime's configuration?")
                 .font(.title3.weight(.semibold))
+            // The facts scroll; the buttons stay in reach however long the
+            // lists get (128 profile lines were reproduced in review).
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
             Text("From \(proposal.sourceName), exported \(preview.exportedAt.formatted(date: .abbreviated, time: .shortened)) by Parley \(preview.appVersion). Everything below replaces what this \(model.runtime.mode.label) runtime has now; nothing is merged.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -76,7 +80,7 @@ struct ConfigurationRestoreView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if !preview.omittedStores.isEmpty {
-                Label("Left out of the export because they could not be read then: \(preview.omittedStores.map(\.title).joined(separator: ", ")). Those stores are restored to defaults.", systemImage: "exclamationmark.triangle")
+                Label("Left out of the export because they could not be read then: \(preview.omittedStores.map(\.title).joined(separator: ", ")). Those stores are left as they are on this Mac.", systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -108,6 +112,10 @@ struct ConfigurationRestoreView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 520)
 
             HStack {
                 Spacer()

@@ -165,6 +165,11 @@ private struct GeneralSettingsView: View {
             }
 
             Section("Configuration") {
+                if let notice = model.configurationRecoveryNotice {
+                    Label(notice, systemImage: "arrow.uturn.backward.circle")
+                        .font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 if model.configurationLoadIssues.isEmpty {
                     Label("Every configuration store loaded when Parley started.", systemImage: "checkmark.circle")
                         .font(.caption)

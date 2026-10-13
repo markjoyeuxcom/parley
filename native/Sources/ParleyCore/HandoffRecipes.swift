@@ -221,6 +221,23 @@ public final class HandoffRecipeStore: @unchecked Sendable {
         }
     }
 
+    /// Writes the built-in recipes with these edits applied, without reading
+    /// the file first (see SavedWorkspaceLayoutStore.replaceAll). Every edit
+    /// must name a built-in id; a built-in the edits leave out keeps its
+    /// default text.
+    public func replaceAll(_ edited: [HandoffRecipe]) throws {
+        try lock.withLock {
+            var recipes = HandoffRecipe.defaults
+            for recipe in edited {
+                guard let index = recipes.firstIndex(where: { $0.id == recipe.id }) else {
+                    throw HandoffRecipeError.invalid("Unknown recipe \(recipe.id).")
+                }
+                recipes[index] = recipe
+            }
+            try writeLocked(recipes)
+        }
+    }
+
     public func restoreDefaults() throws {
         try lock.withLock { try writeLocked(HandoffRecipe.defaults) }
     }

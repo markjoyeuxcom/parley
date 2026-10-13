@@ -1145,6 +1145,13 @@ struct StatusCenterView: View {
                 healthRow("Embedded Ghostty panes", model.terminalAvailable ? "CONNECTED" : "UNAVAILABLE", healthy: model.terminalAvailable)
                 healthRow("Handoffs in scope", snapshot.handoffs.count.formatted(), healthy: true)
                 healthRow("Configuration stores", model.configurationLoadIssues.isEmpty ? "LOADED" : "\(model.configurationLoadIssues.count) UNREADABLE", healthy: model.configurationLoadIssues.isEmpty)
+                if let notice = model.configurationRecoveryNotice {
+                    Text(notice)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
                 ForEach(model.configurationLoadIssues) { issue in
                     Text(issue.summary)
                         .font(.system(size: 10))

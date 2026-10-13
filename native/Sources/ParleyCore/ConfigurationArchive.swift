@@ -368,15 +368,19 @@ public enum ConfigurationArchiveValidator {
             case let .failure(error): throw ConfigurationArchiveError.invalid("group \"\(group.name)\": \(error.localizedDescription)")
             }
         }
-        var workspaceNames = Set<String>()
+        // Names are compared as the stores and the controller compare them
+        // (caseInsensitiveCompare), so a name that validates here is also
+        // unique there; lowercasing differs for Straße and STRASSE.
+        var workspaceNames: [String] = []
         for workspace in archive.workspaces {
             let name = workspace.name.trimmingCharacters(in: .whitespacesAndNewlines)
             guard (1...64).contains(name.count), name == workspace.name, !name.contains(where: \.isNewline) else {
                 throw ConfigurationArchiveError.invalid("workspace names are 1 to 64 characters on one line (\"\(workspace.name)\").")
             }
-            guard workspaceNames.insert(name.lowercased()).inserted else {
+            guard !workspaceNames.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) else {
                 throw ConfigurationArchiveError.invalid("two workspaces are named \"\(name)\".")
             }
+            workspaceNames.append(name)
             guard workspace.attachedFolders.count <= 32 else { throw ConfigurationArchiveError.invalid("workspace \"\(name)\" attaches more than 32 folders.") }
             for folder in workspace.attachedFolders + [workspace.newPaneFolder].compactMap { $0 } {
                 try requireAbsolute(folder, "workspace \"\(name)\"")
@@ -427,10 +431,11 @@ public enum ConfigurationArchiveValidator {
         guard archive.savedLayouts.count <= ConfigurationArchive.maximumSavedLayouts else {
             throw ConfigurationArchiveError.invalid("it holds \(archive.savedLayouts.count) saved layouts; at most \(ConfigurationArchive.maximumSavedLayouts) are restored.")
         }
-        var layoutNames = Set<String>()
+        var layoutNames: [String] = []
         for layout in archive.savedLayouts {
             do { try SavedWorkspaceLayoutStore.validate(layout) } catch { throw ConfigurationArchiveError.invalid("saved layout \"\(layout.name)\": \(error.localizedDescription)") }
-            guard layoutNames.insert(layout.name.lowercased()).inserted else { throw ConfigurationArchiveError.invalid("two saved layouts are named \"\(layout.name)\".") }
+            guard !layoutNames.contains(where: { $0.caseInsensitiveCompare(layout.name) == .orderedSame }) else { throw ConfigurationArchiveError.invalid("two saved layouts are named \"\(layout.name)\".") }
+            layoutNames.append(layout.name)
             for leaf in layout.root.leaves {
                 guard leaf.permissionSelection?.approvedRoots.isEmpty ?? true else {
                     throw ConfigurationArchiveError.invalid("saved layout \"\(layout.name)\" carries approved roots; grants are never in an archive.")
@@ -442,15 +447,16 @@ public enum ConfigurationArchiveValidator {
             throw ConfigurationArchiveError.invalid("it holds \(archive.customPermissionProfiles.count) custom profiles; at most \(ConfigurationArchive.maximumCustomProfiles) are restored.")
         }
         var profileIDs = Set<String>()
-        var profileNames = Set<String>()
+        var profileNames: [String] = []
         for profile in archive.customPermissionProfiles {
             guard !profile.isBuiltIn, profile.id.hasPrefix("custom-"), !PermissionProfileDefinition.builtIns.contains(where: { $0.id == profile.id }) else {
                 throw ConfigurationArchiveError.invalid("profile \"\(profile.name)\" is not a custom profile; built-ins are never restored from a file.")
             }
             do { try PermissionProfileValidator.validate(profile) } catch { throw ConfigurationArchiveError.invalid("profile \"\(profile.name)\": \(error.localizedDescription)") }
-            guard profileIDs.insert(profile.id).inserted, profileNames.insert(profile.name.lowercased()).inserted else {
+            guard profileIDs.insert(profile.id).inserted, !profileNames.contains(where: { $0.caseInsensitiveCompare(profile.name) == .orderedSame }) else {
                 throw ConfigurationArchiveError.invalid("two custom profiles share the id or name \"\(profile.name)\".")
             }
+            profileNames.append(profile.name)
         }
         for (vendor, profileID) in archive.defaultProfileIDs {
             guard let kind = PaneKind(rawValue: vendor), kind.isAgent else { throw ConfigurationArchiveError.invalid("a default profile is recorded for \"\(vendor)\", which is not an agent vendor.") }
@@ -738,6 +744,25 @@ extension SavedWorkspaceLayout {
     }
 }
 
+extension SavedWorkspaceLayout {
+    /// The layout with every profile selection that names a profile outside
+    /// `allowed` dropped, so an export whose custom profiles could not be read
+    /// carries no reference the reader would refuse.
+    public func restrictingProfiles(to allowed: Set<String>) -> SavedWorkspaceLayout {
+        func restrict(_ node: SavedLayoutNode) -> SavedLayoutNode {
+            switch node {
+            case let .leaf(leaf):
+                let selection = leaf.permissionSelection.flatMap { allowed.contains($0.profileID) ? $0 : nil }
+                return .leaf(SavedLayoutLeaf(kind: leaf.kind, name: leaf.name, folder: leaf.folder, role: leaf.role,
+                                             isWorkspaceLead: leaf.isWorkspaceLead, permissionSelection: selection))
+            case let .split(direction, ratio, first, second):
+                return .split(direction: direction, ratio: ratio, first: restrict(first), second: restrict(second))
+            }
+        }
+        return SavedWorkspaceLayout(name: name, defaultFolder: defaultFolder, root: restrict(root), automationPolicy: automationPolicy)
+    }
+}
+
 extension GhosttyAppearanceImport {
     /// The import without where it came from: the colours and fonts travel,
     /// the source file paths and a theme named by path do not.
@@ -794,5 +819,120 @@ public enum ConfigurationQuietRuntime {
         if terminating { blockers.append("a pane is still ending") }
         if uninstalling { blockers.append("Prepare to Uninstall is in progress") }
         return blockers
+    }
+}
+
+/// A restore's rollback snapshot on disk, written before the first store is
+/// touched and removed after the last, so a crash part-way is recovered at
+/// the next launch rather than left as half a configuration. The state says
+/// which way: before the workbench commit the stores are put back; after it
+/// the restored configuration stands and only the split layouts may be
+/// missing.
+public struct ConfigurationRestoreJournal: Codable, Equatable {
+    public enum State: String, Codable { case storesInProgress, workbenchCommitted }
+
+    public enum PreferenceValue: Codable, Equatable {
+        case string(String)
+        case bool(Bool)
+        case integer(Int)
+        case double(Double)
+        case data(Data)
+        case strings([String])
+
+        public init?(_ value: Any?) {
+            switch value {
+            case let value as String: self = .string(value)
+            case let value as Bool: self = .bool(value)
+            case let value as Int: self = .integer(value)
+            case let value as Double: self = .double(value)
+            case let value as Data: self = .data(value)
+            case let value as [String]: self = .strings(value)
+            default: return nil
+            }
+        }
+
+        public var object: Any {
+            switch self {
+            case let .string(value): value
+            case let .bool(value): value
+            case let .integer(value): value
+            case let .double(value): value
+            case let .data(value): value
+            case let .strings(value): value
+            }
+        }
+    }
+
+    public enum FileState: Codable, Equatable { case absent, bytes(Data), unreadable }
+    public struct FileRecord: Codable, Equatable { public let name: String; public let state: FileState }
+    public struct PreferenceRecord: Codable, Equatable { public let key: String; public let value: PreferenceValue? }
+
+    public static let fileName = "configuration-restore.json"
+
+    public var state: State
+    public var startedAt: Date
+    public var files: [FileRecord]
+    public var preferences: [PreferenceRecord]
+
+    /// The journal for a snapshot of files in one directory.
+    public init(state: State, startedAt: Date, snapshot: ConfigurationStoreSnapshot) {
+        self.state = state
+        self.startedAt = startedAt
+        files = snapshot.files.map { record in
+            let state: FileState = switch record.state {
+            case .absent: .absent
+            case let .bytes(data): .bytes(data)
+            case .unreadable: .unreadable
+            }
+            return FileRecord(name: record.url.lastPathComponent, state: state)
+        }
+        preferences = snapshot.preferences.map { PreferenceRecord(key: $0.key, value: PreferenceValue($0.value)) }
+    }
+
+    /// The snapshot this journal recorded, for files under `directory`.
+    public func snapshot(in directory: URL) -> ConfigurationStoreSnapshot {
+        ConfigurationStoreSnapshot(
+            files: files.map { record in
+                let state: ConfigurationStoreSnapshot.FileState = switch record.state {
+                case .absent: .absent
+                case let .bytes(data): .bytes(data)
+                case .unreadable: .unreadable
+                }
+                return ConfigurationStoreSnapshot.FileRecord(url: directory.appendingPathComponent(record.name), state: state)
+            },
+            preferences: preferences.map { ($0.key, $0.value?.object) }
+        )
+    }
+
+    public static func url(in directory: URL) -> URL { directory.appendingPathComponent(fileName) }
+
+    public func write(in directory: URL, fileManager: FileManager = .default) throws {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        try OwnerOnlyFile.write(try encoder.encode(self), to: Self.url(in: directory), fileManager: fileManager)
+    }
+
+    /// The journal left by an interrupted restore, or nil; a journal that
+    /// cannot be decoded is reported as nil too, and `clear` removes it.
+    public static func read(in directory: URL, fileManager: FileManager = .default) -> ConfigurationRestoreJournal? {
+        let url = url(in: directory)
+        guard fileManager.fileExists(atPath: url.path), let data = try? Data(contentsOf: url) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(ConfigurationRestoreJournal.self, from: data)
+    }
+
+    public static func clear(in directory: URL, fileManager: FileManager = .default) {
+        try? fileManager.removeItem(at: url(in: directory))
+    }
+
+    /// What the next launch does with a journal it finds.
+    public var recoveryNotice: String {
+        switch state {
+        case .storesInProgress:
+            "A configuration restore started at \(startedAt.formatted(date: .abbreviated, time: .shortened)) was interrupted before the workbench was replaced. The stores and preferences were put back as they were; nothing from the archive was kept."
+        case .workbenchCommitted:
+            "A configuration restore started at \(startedAt.formatted(date: .abbreviated, time: .shortened)) was interrupted after the workbench was replaced. The restored configuration stands; split layouts may be missing until you split the panes again."
+        }
     }
 }
