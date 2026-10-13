@@ -216,7 +216,57 @@ func checkGhosttyAcceptsTheCuratedSurfaceLines() throws {
     }
 }
 
+/// Every curated field belongs to exactly one Settings section, so a refused
+/// change is always reported beside the control that caused it, and two
+/// equal values report no section.
+func checkTerminalSurfaceSectionsCoverEveryField() throws {
+    let base = TerminalSurfacePreference.ghosttyDefault
+    var variants: [(String, TerminalSurfacePreference)] = []
+    func variant(_ name: String, _ change: (inout TerminalSurfacePreference) -> Void) {
+        var value = base
+        change(&value)
+        variants.append((name, value))
+    }
+    variant("fontThicken") { $0.fontThicken = true }
+    variant("fontThickenStrength") { $0.fontThickenStrength = 100 }
+    variant("ligatures") { $0.ligatures = false }
+    variant("cellHeightAdjustment") { $0.cellHeightAdjustment = 10 }
+    variant("cursorShape") { $0.cursorShape = .bar }
+    variant("cursorBlink") { $0.cursorBlink = .off }
+    variant("cursorOpacity") { $0.cursorOpacity = 0.5 }
+    variant("lightTheme") { $0.lightTheme = "Builtin Solarized Light" }
+    variant("darkTheme") { $0.darkTheme = "Builtin Solarized Dark" }
+    variant("minimumContrast") { $0.minimumContrast = 2 }
+    variant("backgroundOpacity") { $0.backgroundOpacity = 0.9 }
+    variant("backgroundBlur") { $0.backgroundBlur = 10 }
+    variant("paddingX") { $0.paddingX = 4 }
+    variant("paddingY") { $0.paddingY = 4 }
+    variant("scrollbackLimitMegabytes") { $0.scrollbackLimitMegabytes = 100 }
+    variant("hideMouseWhileTyping") { $0.hideMouseWhileTyping = true }
+    variant("clickToMoveCursor") { $0.clickToMoveCursor = false }
+    variant("scrollMultiplier") { $0.scrollMultiplier = 2 }
+    variant("copyOnSelect") { $0.copyOnSelect = true }
+    variant("pasteProtection") { $0.pasteProtection = false }
+    variant("linkDetection") { $0.linkDetection = false }
+    variant("shellCursor") { $0.shellCursor = false }
+    variant("shellSudo") { $0.shellSudo = true }
+    variant("shellTitle") { $0.shellTitle = false }
+    variant("shellPath") { $0.shellPath = false }
+    let storedFields = Mirror(reflecting: base).children.count
+    try tsExpect(variants.count == storedFields,
+                 "the section check varies \(variants.count) fields but TerminalSurfacePreference stores \(storedFields); add the new field to a section and to this check")
+    for (name, value) in variants {
+        let sections = TerminalSurfaceSection.changed(from: base, to: value)
+        try tsExpect(sections.count == 1, "\(name) belongs to \(sections.count) sections: \(sections.map(\.rawValue))")
+    }
+    try tsExpect(TerminalSurfaceSection.changed(from: base, to: base).isEmpty, "equal values report a changed section")
+    try tsExpect(TerminalSurfaceSection.allCases.map(\.title) == [
+        "Theme and colours", "Font rendering", "Cursor", "Background and padding", "Scrollback", "Mouse and clipboard", "Shell integration",
+    ], "the section titles changed; Settings and Help name them")
+}
+
 @MainActor let terminalSurfacePreferenceChecks: [(String, () throws -> Void)] = [
+    ("terminal surface sections cover every field", checkTerminalSurfaceSectionsCoverEveryField),
     ("ghostty accepts the curated surface lines", checkGhosttyAcceptsTheCuratedSurfaceLines),
     ("terminal surface defaults render explicit ghostty lines", checkTerminalSurfaceDefaultsRenderExplicitGhosttyLines),
     ("terminal surface lines map each field", checkTerminalSurfaceLinesMapEachField),

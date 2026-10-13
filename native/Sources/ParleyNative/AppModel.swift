@@ -179,7 +179,7 @@ struct PaletteCommand: Identifiable, Sendable {
         case newWorkspace
         case openWorkspace
         case openStatusCenter
-        case terminalAppearance
+        case openSettings(ApplicationSettingsSection)
         case selectWorkspace(WorkbenchWorkspace)
         case selectPane(WorkbenchPane)
         case ask(WorkbenchPane)
@@ -2819,17 +2819,19 @@ final class AppModel: ObservableObject {
                 ),
                 action: .openStatusCenter
             ),
-            PaletteCommand(
-                item: CommandPaletteItem(
-                    id: "action:terminal-appearance",
-                    category: .action,
-                    title: "Terminal Appearance…",
-                    detail: "Set a shared pane font or import allowlisted Ghostty colours",
-                    keywords: ["font", "size", "theme", "palette", "color", "colour", "settings"]
-                ),
-                action: .terminalAppearance
-            ),
         ]
+        for section in ApplicationSettingsSection.allCases {
+            commands.append(PaletteCommand(
+                item: CommandPaletteItem(
+                    id: "action:settings-\(section.rawValue)",
+                    category: .action,
+                    title: section.paletteTitle,
+                    detail: section.paletteDetail,
+                    keywords: section.paletteKeywords
+                ),
+                action: .openSettings(section)
+            ))
+        }
 
         commands += workspaces.map { workspace in
             PaletteCommand(
@@ -2952,8 +2954,8 @@ final class AppModel: ObservableObject {
             openWorkspacePicker()
         case .openStatusCenter:
             break
-        case .terminalAppearance:
-            showTerminalFontSettings()
+        case let .openSettings(section):
+            showSettings(section)
         case let .selectWorkspace(workspace):
             select(workspace)
         case let .selectPane(pane):

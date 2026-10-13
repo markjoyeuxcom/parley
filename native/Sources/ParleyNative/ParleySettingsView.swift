@@ -71,58 +71,10 @@ struct ParleySettingsView: View {
 
 private struct GeneralSettingsView: View {
     @ObservedObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Form {
-
-            Section("Agent command runs") {
-                Toggle(
-                    "Approve agent command runs automatically",
-                    isOn: Binding(
-                        get: { model.automaticCommandRunApprovalEnabled },
-                        set: { model.setAutomaticCommandRunApprovalEnabled($0) }
-                    )
-                )
-                .help("Start every parley request-run command as requested, in a new Shell pane, without the editable preview")
-                .accessibilityHint("Off by default. While on, requested commands run as you outside the agent boundary without a preview.")
-                Text(ReviewedCommandRunCoordinator.automaticApprovalDisclosure)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("Off by default. Requested runs stay visible under Review runs and trust and in Status Center, and Cancel still stops a running command.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle(
-                    "Close the Shell pane when a run finishes cleanly",
-                    isOn: Binding(
-                        get: { model.automaticCommandRunPaneCloseEnabled },
-                        set: { model.setAutomaticCommandRunPaneCloseEnabled($0) }
-                    )
-                )
-                .help("Close a run's new Shell pane once a clean result is recorded; failed, cancelled or truncated runs keep their pane")
-                .accessibilityHint("Off by default. Applies to runs that finish after it is turned on.")
-                Text(ReviewedCommandRunPaneClosePolicy.disclosure)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("Both choices last for this app session and reset to off when Parley quits.").font(.caption).foregroundStyle(.secondary)
-            }
-
-            Section("Swift package builds") {
-                Toggle(
-                    "Enable SwiftPM compatibility for new agent panes",
-                    isOn: Binding(
-                        get: { model.swiftPMCompatibilityEnabled },
-                        set: { model.setSwiftPMCompatibilityEnabled($0) }
-                    )
-                )
-                .accessibilityHint("Off by default. Applies when an agent pane is next started or restarted.")
-                Text(SwiftPMCompatibility.explanation)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("Off by default. Vendor prompts may show the original command without the added flag. Restart an existing agent pane to apply a setting change; Parley does not restart it automatically.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
             Section("Software updates") {
                 if model.automaticUpdatesAvailable {
                     Toggle(
@@ -168,6 +120,94 @@ private struct GeneralSettingsView: View {
                 Text(model.releaseChannel.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Swift package builds") {
+                Toggle(
+                    "Enable SwiftPM compatibility for new agent panes",
+                    isOn: Binding(
+                        get: { model.swiftPMCompatibilityEnabled },
+                        set: { model.setSwiftPMCompatibilityEnabled($0) }
+                    )
+                )
+                .accessibilityHint("Off by default. Applies when an agent pane is next started or restarted.")
+                Text(SwiftPMCompatibility.explanation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Off by default. Vendor prompts may show the original command without the added flag. Restart an existing agent pane to apply a setting change; Parley does not restart it automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Local history") {
+                Picker(
+                    "Keep up to",
+                    selection: Binding(
+                        get: { model.historyRetentionPolicy.maximumRecords },
+                        set: { model.setHistoryRetention(maximumRecords: $0) }
+                    )
+                ) {
+                    ForEach(CollaborationHistoryRetentionPolicy.allowedMaximumRecords, id: \.self) { limit in
+                        Text("\(limit) records").tag(limit)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .disabled(!model.coreAvailable)
+                .help("How many finished handoff and activity records Parley keeps on this Mac; a lower limit asks before pruning")
+                .accessibilityLabel("History retention")
+                HStack {
+                    Text("Finished handoffs and activity records are kept separately, up to this many of each, across all workspaces. Active work is never pruned. A lower limit asks for confirmation before anything is removed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Manage History…") {
+                        model.requestStatusCenterSegment(.history)
+                        openWindow(id: "status-center")
+                    }
+                    .help("Open Status Center › History for search, dismissed records and export")
+                }
+            }
+
+            Section {
+                Label("These two choices last for this app session only and reset to off when Parley quits.", systemImage: "clock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle(
+                    "Approve agent command runs automatically",
+                    isOn: Binding(
+                        get: { model.automaticCommandRunApprovalEnabled },
+                        set: { model.setAutomaticCommandRunApprovalEnabled($0) }
+                    )
+                )
+                .help("Start every parley request-run command as requested, in a new Shell pane, without the editable preview")
+                .accessibilityHint("Off by default. While on, requested commands run as you outside the agent boundary without a preview.")
+                Text(ReviewedCommandRunCoordinator.automaticApprovalDisclosure)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Off by default. Requested runs stay visible under Review runs and trust and in Status Center, and Cancel still stops a running command.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle(
+                    "Close the Shell pane when a run finishes cleanly",
+                    isOn: Binding(
+                        get: { model.automaticCommandRunPaneCloseEnabled },
+                        set: { model.setAutomaticCommandRunPaneCloseEnabled($0) }
+                    )
+                )
+                .help("Close a run's new Shell pane once a clean result is recorded; failed, cancelled or truncated runs keep their pane")
+                .accessibilityHint("Off by default. Applies to runs that finish after it is turned on.")
+                Text(ReviewedCommandRunPaneClosePolicy.disclosure)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                HStack {
+                    Text("Agent command runs")
+                    Spacer()
+                    Text("This session only")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .accessibilityLabel("Agent command runs apply to this session only")
+                }
             }
         }
         .formStyle(.grouped)

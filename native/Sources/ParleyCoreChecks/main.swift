@@ -474,6 +474,14 @@ private func checkApplicationSettingsSectionsAreComplete() throws {
         ],
         "the native Settings sections lost their user-facing labels"
     )
+    for section in ApplicationSettingsSection.allCases {
+        try expect(section.paletteTitle == "\(section.title) Settings…", "\(section.rawValue) has an unexpected palette title")
+        try expect(!section.paletteDetail.isEmpty, "\(section.rawValue) has no palette detail")
+        try expect(section.paletteKeywords.contains("settings") && section.paletteKeywords.contains("preferences"),
+                   "\(section.rawValue) does not answer to settings or preferences in the palette")
+    }
+    let ids = Set(ApplicationSettingsSection.allCases.map { "action:settings-\($0.rawValue)" })
+    try expect(ids.count == ApplicationSettingsSection.allCases.count, "palette ids for Settings sections collide")
 }
 
 private func checkNativeAskRequestCarriesFormattingIntent() throws {

@@ -291,3 +291,57 @@ public struct TerminalSurfacePreference: Codable, Equatable, Sendable {
         )
     }
 }
+
+/// The groups Settings shows the curated options in. A refused change is
+/// reported beside the group whose fields it touched, so the enum knows
+/// which fields each group owns; the check proves every field has a group.
+public enum TerminalSurfaceSection: String, CaseIterable, Sendable {
+    case theme
+    case font
+    case cursor
+    case background
+    case scrollback
+    case mouse
+    case shell
+
+    public var title: String {
+        switch self {
+        case .theme: "Theme and colours"
+        case .font: "Font rendering"
+        case .cursor: "Cursor"
+        case .background: "Background and padding"
+        case .scrollback: "Scrollback"
+        case .mouse: "Mouse and clipboard"
+        case .shell: "Shell integration"
+        }
+    }
+
+    /// Whether any field this section owns differs between the two values.
+    public func differs(_ a: TerminalSurfacePreference, _ b: TerminalSurfacePreference) -> Bool {
+        switch self {
+        case .theme:
+            a.lightTheme != b.lightTheme || a.darkTheme != b.darkTheme || a.minimumContrast != b.minimumContrast
+        case .font:
+            a.fontThicken != b.fontThicken || a.fontThickenStrength != b.fontThickenStrength
+                || a.ligatures != b.ligatures || a.cellHeightAdjustment != b.cellHeightAdjustment
+        case .cursor:
+            a.cursorShape != b.cursorShape || a.cursorBlink != b.cursorBlink || a.cursorOpacity != b.cursorOpacity
+        case .background:
+            a.backgroundOpacity != b.backgroundOpacity || a.backgroundBlur != b.backgroundBlur
+                || a.paddingX != b.paddingX || a.paddingY != b.paddingY
+        case .scrollback:
+            a.scrollbackLimitMegabytes != b.scrollbackLimitMegabytes
+        case .mouse:
+            a.hideMouseWhileTyping != b.hideMouseWhileTyping || a.clickToMoveCursor != b.clickToMoveCursor
+                || a.scrollMultiplier != b.scrollMultiplier || a.copyOnSelect != b.copyOnSelect
+                || a.pasteProtection != b.pasteProtection || a.linkDetection != b.linkDetection
+        case .shell:
+            a.shellCursor != b.shellCursor || a.shellSudo != b.shellSudo || a.shellTitle != b.shellTitle || a.shellPath != b.shellPath
+        }
+    }
+
+    /// The sections whose fields changed between `from` and `to`, in display order.
+    public static func changed(from: TerminalSurfacePreference, to: TerminalSurfacePreference) -> [TerminalSurfaceSection] {
+        allCases.filter { $0.differs(from, to) }
+    }
+}
