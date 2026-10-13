@@ -96,7 +96,7 @@ func checkAppModelReportsUnreadableStores() throws {
         try configExpect(source.contains("ConfigurationPreservation.preserve(preferenceKey: Self.\(key), in: preferences)"),
                          "the launch load of \(key) does not keep an unreadable value aside")
     }
-    try configExpect(source.contains("savedLayouts = try layoutStore.layouts()\n            } catch {"),
+    try configExpect(source.contains("savedLayouts = []\n                let kept = try? ConfigurationPreservation.preserve(file: applicationDirectory.appendingPathComponent(\"workspace-layouts.json\"))"),
                      "an unreadable workspace-layouts.json is not handled as one store")
     let settings = try configSource("ParleyNative", "ParleySettingsView.swift")
     try configExpect(settings.contains("Section(\"Configuration\")") && settings.contains("model.configurationLoadIssues"),

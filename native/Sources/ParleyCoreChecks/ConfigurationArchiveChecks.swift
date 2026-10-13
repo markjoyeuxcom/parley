@@ -457,14 +457,14 @@ func checkAppModelConfigurationTransferIsGuarded() throws {
         "let snapshot = ConfigurationStoreSnapshot.capture(",
         "try applyConfigurationStores(archive, omitted: omitted)\n            _ = try controller.replaceWorkspaces(with: WorkbenchRestorePlan(archive: archive))",
         "try snapshot.restore(defaults: preferences)",
-        "workspaceContinuity = WorkspaceContinuityState(favouriteFolders: archive.favouriteFolders)\n        var layoutWarning",
-        "savedLayouts.map { $0.strippingApprovedRoots() }",
+        "workspaceContinuity = WorkspaceContinuityState(favouriteFolders: omitted.contains(.favouriteFolders) ? favouriteFolders : archive.favouriteFolders)\n        var layoutWarning",
+        "let stripped = layout.strippingApprovedRoots()",
         "terminalAppearanceImport?.forArchive",
         "themeExists: { themeNames.contains($0) }",
         "launchReviewOpen: panePermissionRequest != nil",
         "voice.language = archived.voiceLanguage ?? \"en-GB\"",
         "configurationLoadIssues.removeAll { $0.store != .workspaceRegistry || layoutWarning == nil }",
-        "omittedStores: configurationLoadIssues.map(\\.store.rawValue)",
+        "omittedStores: ConfigurationStore.allCases.filter(unreadable.contains).map(\\.rawValue)",
         "setHistoryRetention(maximumRecords: retention)",
     ] {
         try archiveExpect(model.contains(required), "AppModel lost: \(required)")
