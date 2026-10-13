@@ -259,6 +259,15 @@ func checkConfigurationStoreSnapshotRestoresExactly() throws {
     try archiveExpect(defaults.stringArray(forKey: "parley.notificationWorkspaces") == ["A"], "the removed value was not put back")
     try archiveExpect(defaults.object(forKey: "parley.swiftPMCompatibilityEnabled") == nil, "a value that did not exist was left behind")
     try archiveExpect(defaults.string(forKey: "parley.untouched") == "kept", "an uncaptured key was touched")
+    // A store that existed but could not be read (here a directory in its
+    // place) is neither rewritten nor removed by a rollback.
+    let odd = root.appendingPathComponent("permission-profiles.json")
+    try FileManager.default.createDirectory(at: odd, withIntermediateDirectories: true)
+    let oddSnapshot = ConfigurationStoreSnapshot.capture(files: [odd], preferenceKeys: [], defaults: defaults)
+    try archiveExpect(oddSnapshot.files.first?.state == .unreadable, "a directory in a store's place was not captured as unreadable")
+    try oddSnapshot.restore(defaults: defaults)
+    var isDirectory: ObjCBool = false
+    try archiveExpect(FileManager.default.fileExists(atPath: odd.path, isDirectory: &isDirectory) && isDirectory.boolValue, "the rollback removed or replaced an unreadable store")
 }
 
 /// The quiet-runtime table names every live thing once and nothing when all
@@ -277,6 +286,10 @@ func checkConfigurationQuietRuntimeTable() throws {
                                                        comparisonRunning: false, terminating: false, uninstalling: false,
                                                        launchReviewOpen: true, launchApplying: true)
     try archiveExpect(launching == ["a launch review is open (Start it or cancel it)", "a pane launch is being applied"], "a pending launch reads \(launching)")
+    let unreadable = ConfigurationQuietRuntime.blockers(startedPanes: 0, activeHandoffs: 0, waitingConsultations: 0, liveCommandRuns: 0,
+                                                        liveTeamSessions: 0, containerWork: false, voiceActive: false, recipeRunning: false,
+                                                        comparisonRunning: false, terminating: false, uninstalling: false, coordinationUnreadable: true)
+    try archiveExpect(unreadable == ["the coordination core could not be read just now; try Restore again"], "an unreadable core reads \(unreadable)")
     try archiveExpect(busy[0] == "2 panes are running (stop agents from their menus; close shells)", "the pane line reads \(busy[0])")
     let one = ConfigurationQuietRuntime.blockers(startedPanes: 1, activeHandoffs: 0, waitingConsultations: 0, liveCommandRuns: 0,
                                                  liveTeamSessions: 0, containerWork: false, voiceActive: false, recipeRunning: false,
@@ -421,6 +434,7 @@ func checkAppModelConfigurationTransferIsGuarded() throws {
         "try ConfigurationArchiveValidator.validate(archive, themeExists: { themeNames.contains($0) })",
         "throw ConfigurationArchiveError.runtimeMismatch(archive: archive.runtime, current: currentRuntime)",
         "let blockers = configurationRestoreBlockers(fresh: true)\n        guard blockers.isEmpty else {",
+        "coordinationUnreadable = true",
         "let snapshot = ConfigurationStoreSnapshot.capture(",
         "try applyConfigurationStores(archive)\n            _ = try controller.replaceWorkspaces(with: WorkbenchRestorePlan(archive: archive))",
         "try snapshot.restore(defaults: preferences)",

@@ -662,27 +662,50 @@ public struct ConfigurationRestorePreview: Equatable, Sendable {
 /// there rather than a lossy re-import of an archive. The workbench document
 /// is not here: `WorkbenchController.replaceWorkspaces` is its own commit.
 public struct ConfigurationStoreSnapshot {
-    public struct FileState { public let url: URL; public let data: Data? }
-    public let files: [FileState]
+    /// A store as it was: absent, a regular file with these bytes, or
+    /// something that existed but could not be read (a non-regular item or an
+    /// unreadable file), which a rollback leaves exactly alone.
+    public enum FileState: Equatable {
+        case absent
+        case bytes(Data)
+        case unreadable
+    }
+
+    public struct FileRecord { public let url: URL; public let state: FileState }
+    public let files: [FileRecord]
     public let preferences: [(key: String, value: Any?)]
 
-    public static func capture(files: [URL], preferenceKeys: [String], defaults: UserDefaults) -> ConfigurationStoreSnapshot {
+    public static func capture(files: [URL], preferenceKeys: [String], defaults: UserDefaults, fileManager: FileManager = .default) -> ConfigurationStoreSnapshot {
         ConfigurationStoreSnapshot(
-            files: files.map { FileState(url: $0, data: try? Data(contentsOf: $0)) },
+            files: files.map { url in
+                var isDirectory: ObjCBool = false
+                guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return FileRecord(url: url, state: .absent) }
+                guard !isDirectory.boolValue,
+                      let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+                      (attributes[.type] as? FileAttributeType) == .typeRegular,
+                      let data = try? Data(contentsOf: url) else { return FileRecord(url: url, state: .unreadable) }
+                return FileRecord(url: url, state: .bytes(data))
+            },
             preferences: preferenceKeys.map { ($0, defaults.object(forKey: $0)) }
         )
     }
 
-    /// Puts every captured file and value back; a file that was absent is
-    /// removed. Files go through OwnerOnlyFile, so each is atomic on its own.
+    /// Puts every captured file and value back: bytes are rewritten, a file
+    /// that was absent is removed, and one that existed but could not be read
+    /// is left as it is. Files go through OwnerOnlyFile, so each is atomic on
+    /// its own; the snapshot itself is memory-only, so a crash between the
+    /// phases is not recovered by it.
     public func restore(defaults: UserDefaults, fileManager: FileManager = .default) throws {
         var firstError: Error?
         for file in files {
             do {
-                if let data = file.data {
+                switch file.state {
+                case let .bytes(data):
                     try OwnerOnlyFile.write(data, to: file.url, fileManager: fileManager)
-                } else if fileManager.fileExists(atPath: file.url.path) {
-                    try fileManager.removeItem(at: file.url)
+                case .absent:
+                    if fileManager.fileExists(atPath: file.url.path) { try fileManager.removeItem(at: file.url) }
+                case .unreadable:
+                    break
                 }
             } catch {
                 firstError = firstError ?? error
@@ -748,9 +771,11 @@ public enum ConfigurationQuietRuntime {
         terminating: Bool,
         uninstalling: Bool,
         launchReviewOpen: Bool = false,
-        launchApplying: Bool = false
+        launchApplying: Bool = false,
+        coordinationUnreadable: Bool = false
     ) -> [String] {
         var blockers: [String] = []
+        if coordinationUnreadable { blockers.append("the coordination core could not be read just now; try Restore again") }
         if launchReviewOpen { blockers.append("a launch review is open (Start it or cancel it)") }
         if launchApplying { blockers.append("a pane launch is being applied") }
         if startedPanes > 0 {

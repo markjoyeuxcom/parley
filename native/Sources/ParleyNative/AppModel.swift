@@ -1242,14 +1242,21 @@ final class AppModel: ObservableObject {
         var waiting = consultations.count
         var liveRuns = commandRuns.filter { !$0.state.isTerminal }.count
         var liveTeams = teamSessions.filter { !$0.state.isTerminal }.count
+        var coordinationUnreadable = false
         if fresh {
-            if let relayClient {
-                if let handoffs = try? relayClient.activeHandoffs() { activeHandoffs = handoffs.count }
-                if let consultations = try? relayClient.consultations() { waiting = consultations.count }
-            }
-            if let core = residentCore {
+            // A fresh read that fails is not quiet: a cached count could be
+            // stale, so the refusal says to try again rather than guessing.
+            if let relayClient, let core = residentCore {
+                do {
+                    activeHandoffs = try relayClient.activeHandoffs().count
+                    waiting = try relayClient.consultations().count
+                } catch {
+                    coordinationUnreadable = true
+                }
                 liveRuns = core.commandRuns.runs().filter { !$0.state.isTerminal }.count
                 liveTeams = core.teamSessions.sessions().filter { !$0.state.isTerminal }.count
+            } else {
+                coordinationUnreadable = true
             }
         }
         return ConfigurationQuietRuntime.blockers(
@@ -1265,7 +1272,8 @@ final class AppModel: ObservableObject {
             terminating: controller?.isTerminatingSurface ?? false,
             uninstalling: preparingToUninstall,
             launchReviewOpen: panePermissionRequest != nil,
-            launchApplying: applyingPanePermissions
+            launchApplying: applyingPanePermissions,
+            coordinationUnreadable: coordinationUnreadable
         )
     }
 
