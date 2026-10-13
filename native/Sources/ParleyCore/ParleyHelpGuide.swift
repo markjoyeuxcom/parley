@@ -1180,6 +1180,15 @@ public enum ParleyHelpGuide {
                     ]
                 ),
                 ParleyHelpSection(
+                    id: "troubleshooting-configuration",
+                    title: "A configuration file Parley cannot read",
+                    paragraphs: [
+                        "Parley keeps its configuration in small JSON files and preference values under the runtime's own directory and domain: workspace split layouts, saved layouts, recipes, custom permission profiles, favourite folders, the terminal font, the imported Ghostty appearance and the Ghostty surface options. When one of them cannot be read at launch, Parley runs on defaults for that store only, says so in Settings > General > Configuration and in Status Center > Health, and never writes the defaults back over it.",
+                        "The unreadable bytes are kept: a file is copied beside itself as <name>.unreadable-<time>, and a preference value moves to a <key>.unreadable key. Reveal in Finder shows the file and its copy. Repair or remove them, then relaunch Parley; a missing file simply means defaults. Export Configuration leaves an unreadable store out rather than exporting the defaults as if they were your choice.",
+                        "A damaged workbench-state.json is different: it holds the workspaces and panes themselves, so Parley refuses to start the terminal stack and names the file instead of guessing.",
+                    ]
+                ),
+                ParleyHelpSection(
                     id: "troubleshooting-uninstall",
                     title: "Prepare to Uninstall",
                     paragraphs: [

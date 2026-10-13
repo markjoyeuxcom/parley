@@ -164,6 +164,38 @@ private struct GeneralSettingsView: View {
                 }
             }
 
+            Section("Configuration") {
+                if model.configurationLoadIssues.isEmpty {
+                    Label("Every configuration store loaded when Parley started.", systemImage: "checkmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(model.configurationLoadIssues) { issue in
+                        HStack(alignment: .top) {
+                            Label {
+                                Text(issue.summary)
+                                    .font(.caption)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            } icon: {
+                                Image(systemName: "exclamationmark.triangle")
+                                    .foregroundStyle(.red)
+                            }
+                            Spacer()
+                            if case let .file(name) = issue.store.location {
+                                Button("Reveal in Finder") {
+                                    model.revealConfigurationFile(named: name)
+                                }
+                                .help("Show the unreadable file and its kept copy; repair or remove them, then relaunch Parley")
+                            }
+                        }
+                        .accessibilityElement(children: .combine)
+                    }
+                    Text("Parley is running on defaults for these stores and will not write over the unreadable files. Repair or remove them, then relaunch; Export Configuration leaves them out.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section {
                 Label("These two choices last for this app session only and reset to off when Parley quits.", systemImage: "clock")
                     .font(.caption)

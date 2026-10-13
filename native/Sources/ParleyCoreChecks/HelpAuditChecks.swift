@@ -122,6 +122,12 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
         try helpAuditContains(topic.searchableText, ["no outer sandbox", "attribution is not an isolation guarantee",
             "private-path rules", "legacy sandbox_mode", "app memory", "peer process", "reset to off on quit"])
     }),
+    ("Help audit explains unreadable configuration stores", {
+        let topic = try helpAuditTopic("troubleshooting")
+        try helpAuditContains(topic.searchableText, ["cannot be read", "runs on defaults for that store only", "Settings > General > Configuration",
+            "Status Center > Health", "never writes the defaults back", ".unreadable-", ".unreadable key", "Reveal in Finder",
+            "Export Configuration leaves an unreadable store out", "workbench-state.json"])
+    }),
     ("Help audit gives test-run recovery and uninstall steps", {
         let topic = try helpAuditTopic("troubleshooting")
         try helpAuditContains(topic.searchableText, [

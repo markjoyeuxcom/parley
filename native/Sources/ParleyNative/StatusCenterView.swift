@@ -1144,6 +1144,14 @@ struct StatusCenterView: View {
                 Divider()
                 healthRow("Embedded Ghostty panes", model.terminalAvailable ? "CONNECTED" : "UNAVAILABLE", healthy: model.terminalAvailable)
                 healthRow("Handoffs in scope", snapshot.handoffs.count.formatted(), healthy: true)
+                healthRow("Configuration stores", model.configurationLoadIssues.isEmpty ? "LOADED" : "\(model.configurationLoadIssues.count) UNREADABLE", healthy: model.configurationLoadIssues.isEmpty)
+                ForEach(model.configurationLoadIssues) { issue in
+                    Text(issue.summary)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
                 Divider()
                 DisclosureGroup("Technical details") {
                     VStack(alignment: .leading, spacing: 4) {
