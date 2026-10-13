@@ -1,13 +1,21 @@
 import ParleyCore
 import SwiftUI
 
-/// The curated Ghostty surface options, as Form sections inside Settings ›
-/// Terminal. Every change applies at once to every surface and is kept;
-/// when Ghostty refuses a value the form says so and keeps what it had. The
-/// two options Ghostty reads only when a surface is created say so beside
-/// their control.
+/// The curated Ghostty surface options as Form sections. Settings › Appearance
+/// shows the sections about how a pane looks (theme and colours, font
+/// rendering, background and padding) beside the font and the imported
+/// colours; Settings › Terminal shows how a pane behaves (cursor, scrollback,
+/// mouse and clipboard, shell integration) beside the terminal type. Every
+/// change applies at once to every surface and is kept; when Ghostty refuses
+/// a value the message appears beside the section that caused it and the
+/// form keeps what it had. Each section's header says when a change reaches
+/// a pane.
 struct TerminalSurfaceSettingsSections: View {
     @ObservedObject var model: AppModel
+    let tab: ApplicationSettingsSection
+    /// The title of a footer button that puts this tab's sections back to
+    /// Ghostty's defaults; nil when the tab's own footer does that.
+    let restoreTitle: String?
     @State private var draft: TerminalSurfacePreference
     @State private var errorMessage: String?
     /// The section whose fields the refused change touched, so the message
@@ -16,22 +24,56 @@ struct TerminalSurfaceSettingsSections: View {
     @State private var errorSection: TerminalSurfaceSection?
     private let themeNames: [String]
 
-    init(model: AppModel) {
+    init(model: AppModel, tab: ApplicationSettingsSection, restoreTitle: String? = nil) {
         self.model = model
+        self.tab = tab
+        self.restoreTitle = restoreTitle
         _draft = State(initialValue: model.terminalSurfacePreference)
         themeNames = model.ghosttyThemeNames
     }
 
+    private var sections: [TerminalSurfaceSection] { TerminalSurfaceSection.sections(in: tab) }
+
     var body: some View {
-        Section("Theme and colours") {
-            sectionError(.theme)
+        Group {
+            if sections.contains(.theme) { themeSection }
+            if sections.contains(.font) { fontSection }
+            if sections.contains(.cursor) { cursorSection }
+            if sections.contains(.background) { backgroundSection }
+            if sections.contains(.scrollback) { scrollbackSection }
+            if sections.contains(.mouse) { mouseSection }
+            if sections.contains(.shell) { shellSection }
+            if let restoreTitle { restoreSection(restoreTitle) }
+        }
+        .onChange(of: draft) { _, requested in apply(requested) }
+        .onChange(of: model.terminalSurfacePreference) { _, stored in
+            if stored != draft { draft = stored }
+        }
+    }
+
+    private var themeSection: some View {
+        surfaceSection(.theme) {
+            let imported = model.terminalAppearanceImport != nil
             themePicker("Light appearance theme", selection: $draft.lightTheme)
+                .disabled(imported)
             themePicker("Dark appearance theme", selection: $draft.darkTheme)
-            Text(model.terminalAppearanceImport == nil
-                 ? "A theme from Ghostty's bundled catalogue, chosen separately for the light and dark appearance. Ghostty default keeps the wrapper's own themes."
-                 : "An imported Ghostty appearance is in use (Settings > Appearance), so its colours take precedence over these themes until it is removed.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .disabled(imported)
+            if imported {
+                HStack {
+                    Text("An imported Ghostty appearance supplies the colours, so these catalogue themes are not applied until it is removed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Remove Imported Appearance") {
+                        removeImportedAppearance()
+                    }
+                    .help("Stop using the imported Ghostty colours; the catalogue themes apply again")
+                }
+            } else {
+                Text("A theme from Ghostty's bundled catalogue, chosen separately for the light and dark appearance. Ghostty default keeps the wrapper's own themes.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             LabeledContent("Minimum contrast") {
                 Slider(value: $draft.minimumContrast, in: TerminalSurfacePreference.minimumContrastRange, step: 0.1) {
                     Text("Minimum contrast")
@@ -46,9 +88,10 @@ struct TerminalSurfaceSettingsSections: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
 
-        Section("Font rendering") {
-            sectionError(.font)
+    private var fontSection: some View {
+        surfaceSection(.font) {
             Toggle("Thicken glyph strokes", isOn: $draft.fontThicken)
             LabeledContent("Thickening strength") {
                 Slider(value: Binding(get: { Double(draft.fontThickenStrength) }, set: { draft.fontThickenStrength = Int($0.rounded()) }),
@@ -70,9 +113,10 @@ struct TerminalSurfaceSettingsSections: View {
                 .accessibilityLabel("Line height adjustment")
             }
         }
+    }
 
-        Section("Cursor") {
-            sectionError(.cursor)
+    private var cursorSection: some View {
+        surfaceSection(.cursor) {
             Picker("Shape", selection: $draft.cursorShape) {
                 ForEach(TerminalCursorShape.allCases) { shape in Text(shape.label).tag(shape) }
             }
@@ -91,9 +135,10 @@ struct TerminalSurfaceSettingsSections: View {
                 Text(draft.cursorOpacity.formatted(.percent.precision(.fractionLength(0)))).monospacedDigit().frame(width: 48, alignment: .trailing)
             }
         }
+    }
 
-        Section("Background and padding") {
-            sectionError(.background)
+    private var backgroundSection: some View {
+        surfaceSection(.background) {
             LabeledContent("Background opacity") {
                 Slider(value: $draft.backgroundOpacity, in: TerminalSurfacePreference.backgroundOpacityRange, step: 0.05) { Text("Background opacity") }
                     .frame(width: 220)
@@ -121,9 +166,10 @@ struct TerminalSurfaceSettingsSections: View {
                 .accessibilityLabel("Vertical padding")
             }
         }
+    }
 
-        Section("Scrollback") {
-            sectionError(.scrollback)
+    private var scrollbackSection: some View {
+        surfaceSection(.scrollback) {
             LabeledContent("Scrollback limit") {
                 TextField("Scrollback limit", value: $draft.scrollbackLimitMegabytes, format: .number)
                     .frame(width: 64)
@@ -139,9 +185,10 @@ struct TerminalSurfaceSettingsSections: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
 
-        Section("Mouse and clipboard") {
-            sectionError(.mouse)
+    private var mouseSection: some View {
+        surfaceSection(.mouse) {
             Toggle("Hide the pointer while typing", isOn: $draft.hideMouseWhileTyping)
             Toggle("Click moves the cursor at a shell prompt", isOn: $draft.clickToMoveCursor)
             Toggle("Copy selected text to the clipboard", isOn: $draft.copyOnSelect)
@@ -158,15 +205,15 @@ struct TerminalSurfaceSettingsSections: View {
                     .frame(width: 160)
                     .disabled(draft.scrollMultiplier == nil)
                     .accessibilityLabel("Scroll speed")
-                Text((draft.scrollMultiplier ?? 3).formatted(.number.precision(.fractionLength(1)))).monospacedDigit().frame(width: 36, alignment: .trailing)
+                Text(draft.scrollMultiplier.map { $0.formatted(.number.precision(.fractionLength(1))) } ?? "Device")
+                    .monospacedDigit()
+                    .frame(width: 48, alignment: .trailing)
             }
-            Text("Lines per wheel step. Left alone, Ghostty uses 3 for a mouse wheel and 1 for a trackpad.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
+    }
 
-        Section("Shell integration") {
-            sectionError(.shell)
+    private var shellSection: some View {
+        surfaceSection(.shell) {
             Toggle("Cursor shape follows the prompt", isOn: $draft.shellCursor)
             Toggle("Shell integration under sudo", isOn: $draft.shellSudo)
             Toggle("Pane title from the shell", isOn: $draft.shellTitle)
@@ -175,7 +222,9 @@ struct TerminalSurfaceSettingsSections: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
 
+    private func restoreSection(_ title: String) -> some View {
         Section {
             HStack {
                 if let errorMessage, errorSection == nil {
@@ -184,19 +233,43 @@ struct TerminalSurfaceSettingsSections: View {
                         .foregroundStyle(.red)
                 }
                 Spacer()
-                Button("Restore Ghostty Defaults") {
-                    draft = .ghosttyDefault
+                Button(title) {
+                    draft = draft.resetting(sections)
                 }
-                .disabled(draft == .ghosttyDefault)
+                .disabled(draft.resetting(sections) == draft)
             }
         } footer: {
-            Text("Every option here is one of a fixed set Parley writes for Ghostty; none can name a program, a file or an environment variable.")
+            Text("Puts the options above back to Ghostty's defaults. Every option here is one of a fixed set Parley writes for Ghostty; none can name a program, a file or an environment variable.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .onChange(of: draft) { _, requested in apply(requested) }
-        .onChange(of: model.terminalSurfacePreference) { _, stored in
-            if stored != draft { draft = stored }
+    }
+
+    /// A section whose header names when a change reaches a pane, and whose
+    /// first row is the refusal Ghostty gave for a change to its fields.
+    private func surfaceSection<Content: View>(_ section: TerminalSurfaceSection, @ViewBuilder content: () -> Content) -> some View {
+        Section {
+            sectionError(section)
+            content()
+        } header: {
+            HStack {
+                Text(section.title)
+                Spacer()
+                Text(section.scope)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("\(section.title) applies to \(section.scope.lowercased())")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sectionError(_ section: TerminalSurfaceSection) -> some View {
+        if let errorMessage, errorSection == section {
+            Label(errorMessage, systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .foregroundStyle(.red)
+                .accessibilityLabel("Ghostty refused the change: \(errorMessage)")
         }
     }
 
@@ -210,13 +283,18 @@ struct TerminalSurfaceSettingsSections: View {
         .accessibilityLabel(title)
     }
 
-    @ViewBuilder
-    private func sectionError(_ section: TerminalSurfaceSection) -> some View {
-        if let errorMessage, errorSection == section {
-            Label(errorMessage, systemImage: "exclamationmark.triangle")
-                .font(.callout)
-                .foregroundStyle(.red)
-                .accessibilityLabel("Ghostty refused the change: \(errorMessage)")
+    private func removeImportedAppearance() {
+        do {
+            try model.updateTerminalAppearance(
+                family: model.terminalFontPreference.family,
+                size: model.terminalFontPreference.size,
+                imported: nil
+            )
+            errorMessage = nil
+            errorSection = nil
+        } catch {
+            errorMessage = error.localizedDescription
+            errorSection = .theme
         }
     }
 

@@ -386,6 +386,16 @@ other than the command shown.
 4. Settings › Terminal: set Scrollback limit to 0 with the keyboard. The refusal appears inside the Scrollback section, not at the bottom, and the field returns to the stored value.
 
 **Fail:** a Settings section missing from the palette; the session-only switches above the durable ones; a refusal shown only at the bottom of the form.
+
+## P2.12 Appearance tab regroup (13 October 2026 polish)
+
+1. Settings › Appearance is one grouped form: Font, Imported Ghostty appearance, Theme and colours, Font rendering, Background and padding, then Restore Parley Defaults. Widen the window: the form fills it, nothing stays at a fixed width.
+2. Change the font family: every open pane changes at once, no Apply button anywhere. Type a size with Override on: panes follow as you type, and an out-of-range value is clamped.
+3. Import…: the theme pickers grey out and offer Remove Imported Appearance; Remove brings them back.
+4. Each section header shows its scope on the right (Current and new panes; Padding now, opacity and blur for new panes; New panes; New shells in Terminal).
+5. Settings › Terminal keeps Terminal type, Remote hosts, Cursor, Scrollback, Mouse and clipboard, Shell integration and Restore Ghostty Defaults; that button leaves the Appearance tab's options alone.
+
+**Fail:** an Apply button; a theme picker that still looks live under an import; a section without a scope label; Restore in one tab changing the other tab's options.
 ---
 
 # Priority 3 — breadth

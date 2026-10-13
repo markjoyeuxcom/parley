@@ -76,10 +76,12 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
     ("Help audit explains appearance overrides and apply or reset", {
         let text = try helpAuditTopic("settings").searchableText
         try helpAuditContains(text, [
-            "font family", "font size", "Override", "Import", "Refresh", "Remove", "Apply",
+            "font family", "font size", "Override", "Import", "Refresh", "Remove", "no Apply button",
             "Restore Parley Defaults", "immediately", "appearance values", "commands", "keybindings",
-            "shell integration", "explicit font", "running sessions", "unapplied",
+            "shell integration", "explicit font", "running sessions", "Current and new panes", "New shells",
+            "Remove Imported Appearance", "each put back the options of their own tab",
         ])
+        try helpAuditRequire(!text.contains("unapplied"), "Help still describes unapplied Settings edits; every change saves at once")
     }),
     ("Help audit separates command-run approvals and launch-time clean close", {
         let text = try helpAuditTopic("command-runs").searchableText
@@ -111,7 +113,7 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
         let text = try helpAuditTopic("settings").searchableText
         try helpAuditContains(text, [
             "Status Center", "Settings", "Help", "About", "close",
-            "released", "filters", "toggles", "unapplied", "minimise", "hide Parley",
+            "released", "filters", "toggles", "saves every change as you make it", "minimise", "hide Parley",
             "drafts", "refresh pauses", "saved settings", "history", "main window", "panes running",
         ])
     }),

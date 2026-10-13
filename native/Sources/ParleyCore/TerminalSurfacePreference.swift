@@ -344,4 +344,75 @@ public enum TerminalSurfaceSection: String, CaseIterable, Sendable {
     public static func changed(from: TerminalSurfacePreference, to: TerminalSurfacePreference) -> [TerminalSurfaceSection] {
         allCases.filter { $0.differs(from, to) }
     }
+
+    /// Which Settings tab shows the section: what a pane looks like sits in
+    /// Appearance beside the font and the imported colours; how it behaves
+    /// stays in Terminal beside the terminal type.
+    public var tab: ApplicationSettingsSection {
+        switch self {
+        case .theme, .font, .background: .appearance
+        case .cursor, .scrollback, .mouse, .shell: .terminal
+        }
+    }
+
+    /// When a change reaches a pane, shown beside the section's title.
+    public var scope: String {
+        switch self {
+        case .theme, .font, .cursor, .mouse: "Current and new panes"
+        case .background: "Padding now; opacity and blur for new panes"
+        case .scrollback: "New panes"
+        case .shell: "New shells"
+        }
+    }
+
+    public static func sections(in tab: ApplicationSettingsSection) -> [TerminalSurfaceSection] {
+        allCases.filter { $0.tab == tab }
+    }
+}
+
+extension TerminalSurfacePreference {
+    /// A copy with the given sections' fields put back to Ghostty's defaults
+    /// and every other field kept, so each Settings tab can restore only the
+    /// options it shows.
+    public func resetting(_ sections: [TerminalSurfaceSection]) -> TerminalSurfacePreference {
+        var value = self
+        let base = TerminalSurfacePreference.ghosttyDefault
+        for section in sections {
+            switch section {
+            case .theme:
+                value.lightTheme = base.lightTheme
+                value.darkTheme = base.darkTheme
+                value.minimumContrast = base.minimumContrast
+            case .font:
+                value.fontThicken = base.fontThicken
+                value.fontThickenStrength = base.fontThickenStrength
+                value.ligatures = base.ligatures
+                value.cellHeightAdjustment = base.cellHeightAdjustment
+            case .cursor:
+                value.cursorShape = base.cursorShape
+                value.cursorBlink = base.cursorBlink
+                value.cursorOpacity = base.cursorOpacity
+            case .background:
+                value.backgroundOpacity = base.backgroundOpacity
+                value.backgroundBlur = base.backgroundBlur
+                value.paddingX = base.paddingX
+                value.paddingY = base.paddingY
+            case .scrollback:
+                value.scrollbackLimitMegabytes = base.scrollbackLimitMegabytes
+            case .mouse:
+                value.hideMouseWhileTyping = base.hideMouseWhileTyping
+                value.clickToMoveCursor = base.clickToMoveCursor
+                value.scrollMultiplier = base.scrollMultiplier
+                value.copyOnSelect = base.copyOnSelect
+                value.pasteProtection = base.pasteProtection
+                value.linkDetection = base.linkDetection
+            case .shell:
+                value.shellCursor = base.shellCursor
+                value.shellSudo = base.shellSudo
+                value.shellTitle = base.shellTitle
+                value.shellPath = base.shellPath
+            }
+        }
+        return value
+    }
 }

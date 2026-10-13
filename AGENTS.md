@@ -143,10 +143,12 @@ relay broker…"; "Parley transport liveness…"; "Parley Sparkle updates…";
   endpoints whose capability is gone. The shim stages stdin before the request
   exists; "not running" and "could not write the request" mean nothing was
   sent.
-- Settings › Terminal renders `TerminalSurfacePreference` as explicit Ghostty
-  lines for a closed, bounded key set (`renderedKeys`); never a free-form key,
-  never one in `forbiddenKeys` (`command`, `env`, `working-directory`,
-  `config-file`, shaders, shell integration's script).
+- Settings › Appearance (look) and › Terminal (behaviour) render
+  `TerminalSurfacePreference` as explicit Ghostty lines for a closed, bounded
+  key set (`renderedKeys`, grouped by `TerminalSurfaceSection`); never a
+  free-form key, never one in `forbiddenKeys` (`command`, `env`,
+  `working-directory`, `config-file`, shaders, shell integration's script).
+  Every Settings change applies and saves at once; no Apply button.
 - Sparkle is the sole updater, opt-in, never a daemon; Development never
   starts it. The Pane menu offers Shell and Agent, never one entry per vendor;
   the vendor is chosen in the creation review. Shortcuts are ⌥⌘1–5. Pane,
