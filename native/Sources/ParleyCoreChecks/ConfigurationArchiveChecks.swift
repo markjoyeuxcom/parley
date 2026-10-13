@@ -147,7 +147,7 @@ func checkConfigurationArchiveValidatorRefusesBadShapes() throws {
     try refused("a duplicate role", { $0.workspaces[0].panes[0].role = "reviewer" }, "two panes the role")
     try refused("a layout missing a pane", { $0.workspaces[0].layout = .leaf(0) }, "does not name each of its panes exactly once")
     try refused("a bad split fraction", { $0.workspaces[0].splitFractions = ["0": 2] }, "invalid split position")
-    try refused("a built-in profile", { $0.customPermissionProfiles = [PermissionProfileDefinition.builtIns[0]] }, "built-ins are never restored")
+    try refused("a built-in profile", { $0.workspaces[0].panes[1].profileID = nil; $0.customPermissionProfiles = [PermissionProfileDefinition.builtIns[0]] }, "built-ins are never restored")
     try refused("a default for a shell", { $0.defaultProfileIDs = ["shell": "default"] }, "not an agent vendor")
     try refused("a recipe without targets", { $0.recipes[0] = HandoffRecipe(id: $0.recipes[0].id, name: $0.recipes[0].name, kind: $0.recipes[0].kind, instructions: "no placeholder") }, "recipe")
     try refused("an unknown retention", { $0.preferences.historyRetention = 300 }, "history retention 300")
@@ -156,6 +156,109 @@ func checkConfigurationArchiveValidatorRefusesBadShapes() throws {
     try refused("an unknown omitted store", { $0.omittedStores = ["journals"] }, "unknown omitted store")
     try refused("a future schema", { $0.schemaVersion = 2 }, "schema version 2")
     try refused("an out-of-range surface option", { $0.preferences.surfaceOptions?.scrollbackLimitMegabytes = 5000 }, "Ghostty options")
+    // Codex's review of 13 October 2026: references and nested exclusions.
+    try refused("a pane naming an unknown profile", { $0.workspaces[0].panes[0].profileID = "custom-nowhere" }, "neither built in nor in the archive")
+    try refused("a default naming an unknown profile", { $0.defaultProfileIDs = ["claude": "custom-nowhere"] }, "neither built in nor in the archive")
+    try refused("a saved layout with approved roots", {
+        let leaf = SavedLayoutLeaf(kind: .claude, name: "Lead", folder: folder, role: nil, isWorkspaceLead: false,
+                                   permissionSelection: PermissionProfileSelection(profileID: "default", approvedRoots: ["/Users/example"], lifetime: .session))
+        $0.savedLayouts = [SavedWorkspaceLayout(name: "Rooted", defaultFolder: folder, root: .leaf(leaf), automationPolicy: .off)]
+    }, "approved roots")
+    try refused("an imported appearance with source paths", {
+        $0.preferences.appearanceImport = GhosttyAppearanceImport(sourceFiles: ["/Users/example/.config/ghostty/config"], themeDescription: "Nord",
+                                                                  fontFamily: nil, fontSize: nil, light: GhosttyAppearanceColors(), dark: GhosttyAppearanceColors(), ignoredSettingCount: 0)
+    }, "source file paths")
+    try refused("an imported appearance naming a theme by path", {
+        $0.preferences.appearanceImport = GhosttyAppearanceImport(sourceFiles: [], themeDescription: "/Users/example/themes/private",
+                                                                  fontFamily: nil, fontSize: nil, light: GhosttyAppearanceColors(), dark: GhosttyAppearanceColors(), ignoredSettingCount: 0)
+    }, "theme by path")
+    var themed = sampleArchive(folder: folder)
+    themed.preferences.surfaceOptions?.lightTheme = "Not A Theme"
+    do {
+        try ConfigurationArchiveValidator.validate(themed, themeExists: { $0 != "Not A Theme" })
+        throw NSError(domain: "ConfigurationArchive", code: 3, userInfo: [NSLocalizedDescriptionKey: "an unknown theme was accepted"])
+    } catch let error as ConfigurationArchiveError {
+        try archiveExpect(error.localizedDescription.contains("not in this Parley's catalogue"), "an unknown theme reported \(error.localizedDescription)")
+    }
+    try ConfigurationArchiveValidator.validate(themed)
+}
+
+/// The export projections drop what a person granted or where a file lived,
+/// and the writer refuses an archive the reader would refuse.
+func checkConfigurationArchiveProjectionsAndWriter() throws {
+    let folder = "/Users/example/Developer/parley"
+    let rooted = SavedWorkspaceLayout(
+        name: "Rooted", defaultFolder: folder,
+        root: .split(direction: .vertical, ratio: 0.4,
+                     first: .leaf(SavedLayoutLeaf(kind: .codex, name: "Codex", folder: folder, role: "reviewer", isWorkspaceLead: false,
+                                                 permissionSelection: PermissionProfileSelection(profileID: "flexible", approvedRoots: ["/Users/example"], lifetime: .remembered, approvals: .vendorReviewer))),
+                     second: .leaf(SavedLayoutLeaf(kind: .shell, name: "Shell", folder: folder, role: nil, isWorkspaceLead: false, permissionSelection: nil))),
+        automationPolicy: .askAnswer
+    )
+    let stripped = rooted.strippingApprovedRoots()
+    let leaves = stripped.root.leaves
+    try archiveExpect(leaves.count == 2 && leaves[0].permissionSelection?.approvedRoots == [] && leaves[0].permissionSelection?.profileID == "flexible"
+                          && leaves[0].permissionSelection?.approvals == .vendorReviewer && leaves[0].role == "reviewer" && leaves[1].permissionSelection == nil,
+                      "stripping approved roots changed more than the roots")
+    try archiveExpect(stripped.name == rooted.name && stripped.automationPolicy == rooted.automationPolicy, "stripping changed the layout's identity")
+    let imported = GhosttyAppearanceImport(sourceFiles: ["/Users/example/.config/ghostty/config"], themeDescription: "/Users/example/themes/private",
+                                           fontFamily: "Menlo", fontSize: 13, light: GhosttyAppearanceColors(), dark: GhosttyAppearanceColors(), ignoredSettingCount: 4)
+    let projected = imported.forArchive
+    try archiveExpect(projected.sourceFiles.isEmpty && projected.themeDescription == nil && projected.fontFamily == "Menlo" && projected.ignoredSettingCount == 4,
+                      "the appearance projection kept provenance or lost values")
+    try archiveExpect(GhosttyAppearanceImport(sourceFiles: [], themeDescription: "Nord", fontFamily: nil, fontSize: nil, light: GhosttyAppearanceColors(), dark: GhosttyAppearanceColors(), ignoredSettingCount: 0).forArchive.themeDescription == "Nord",
+                      "a theme named by name was dropped")
+
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("parley-config-writer-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    var oversized = sampleArchive(folder: folder)
+    oversized.workspaces[0].panes = Array(repeating: oversized.workspaces[0].panes[2], count: ConfigurationArchive.maximumPanesPerWorkspace + 1)
+    oversized.workspaces[0].layout = nil
+    do {
+        try ConfigurationArchiveCoder.write(oversized, to: root.appendingPathComponent("too-many.json"))
+        throw NSError(domain: "ConfigurationArchive", code: 5, userInfo: [NSLocalizedDescriptionKey: "an archive the reader refuses was written"])
+    } catch let error as ConfigurationArchiveError {
+        try archiveExpect(error.localizedDescription.contains("panes"), "the writer refused with \(error.localizedDescription)")
+    }
+    try archiveExpect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("too-many.json").path), "a refused export left a file")
+    let destination = root.appendingPathComponent("good.json")
+    try ConfigurationArchiveCoder.write(sampleArchive(folder: folder), to: destination)
+    let attributes = try FileManager.default.attributesOfItem(atPath: destination.path)
+    try archiveExpect((attributes[.posixPermissions] as? Int) == 0o600, "the export is not owner-only")
+    try archiveExpect(try ConfigurationArchiveCoder.decode(Data(contentsOf: destination)) == sampleArchive(folder: folder), "the written export does not read back")
+}
+
+/// The snapshot puts back exactly the bytes and values it captured, removes
+/// a file that did not exist, and leaves untouched keys alone.
+func checkConfigurationStoreSnapshotRestoresExactly() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("parley-config-snapshot-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let suite = "com.markjoyeux.parley.checks.configuration-snapshot"
+    guard let defaults = UserDefaults(suiteName: suite) else { throw NSError(domain: "ConfigurationArchive", code: 6, userInfo: [NSLocalizedDescriptionKey: "no suite"]) }
+    defaults.removePersistentDomain(forName: suite)
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let present = root.appendingPathComponent("handoff-recipes.json")
+    let absent = root.appendingPathComponent("workspace-layouts.json")
+    let original = Data("{\"version\":2}".utf8)
+    try original.write(to: present)
+    defaults.set("beta", forKey: "parley.releaseChannel")
+    defaults.set(["A"], forKey: "parley.notificationWorkspaces")
+    let snapshot = ConfigurationStoreSnapshot.capture(files: [present, absent], preferenceKeys: ["parley.releaseChannel", "parley.notificationWorkspaces", "parley.swiftPMCompatibilityEnabled"], defaults: defaults)
+    try Data("changed".utf8).write(to: present)
+    try Data("new".utf8).write(to: absent)
+    defaults.set("stable", forKey: "parley.releaseChannel")
+    defaults.removeObject(forKey: "parley.notificationWorkspaces")
+    defaults.set(true, forKey: "parley.swiftPMCompatibilityEnabled")
+    defaults.set("kept", forKey: "parley.untouched")
+    try snapshot.restore(defaults: defaults)
+    try archiveExpect(try Data(contentsOf: present) == original, "the changed file was not put back")
+    try archiveExpect(!FileManager.default.fileExists(atPath: absent.path), "a file that did not exist was left behind")
+    try archiveExpect(defaults.string(forKey: "parley.releaseChannel") == "beta", "the changed value was not put back")
+    try archiveExpect(defaults.stringArray(forKey: "parley.notificationWorkspaces") == ["A"], "the removed value was not put back")
+    try archiveExpect(defaults.object(forKey: "parley.swiftPMCompatibilityEnabled") == nil, "a value that did not exist was left behind")
+    try archiveExpect(defaults.string(forKey: "parley.untouched") == "kept", "an uncaptured key was touched")
 }
 
 /// The quiet-runtime table names every live thing once and nothing when all
@@ -169,6 +272,11 @@ func checkConfigurationQuietRuntimeTable() throws {
                                                   liveTeamSessions: 1, containerWork: true, voiceActive: true, recipeRunning: true,
                                                   comparisonRunning: true, terminating: true, uninstalling: true)
     try archiveExpect(busy.count == 11, "a fully busy runtime reports \(busy.count) blockers: \(busy)")
+    let launching = ConfigurationQuietRuntime.blockers(startedPanes: 0, activeHandoffs: 0, waitingConsultations: 0, liveCommandRuns: 0,
+                                                       liveTeamSessions: 0, containerWork: false, voiceActive: false, recipeRunning: false,
+                                                       comparisonRunning: false, terminating: false, uninstalling: false,
+                                                       launchReviewOpen: true, launchApplying: true)
+    try archiveExpect(launching == ["a launch review is open (Start it or cancel it)", "a pane launch is being applied"], "a pending launch reads \(launching)")
     try archiveExpect(busy[0] == "2 panes are running (stop agents from their menus; close shells)", "the pane line reads \(busy[0])")
     let one = ConfigurationQuietRuntime.blockers(startedPanes: 1, activeHandoffs: 0, waitingConsultations: 0, liveCommandRuns: 0,
                                                  liveTeamSessions: 0, containerWork: false, voiceActive: false, recipeRunning: false,
@@ -198,6 +306,24 @@ func checkConfigurationRestorePreviewFacts() throws {
     try archiveExpect(!preview.canApply, "a preview with a blocker can apply")
     let same = ConfigurationRestorePreview(incoming: incoming, current: current, currentRetention: 250, blockers: [], folderExists: { _ in true })
     try archiveExpect(same.retentionChange == nil && same.missingFolders.isEmpty && same.canApply, "a clean preview reports a change")
+    try archiveExpect(same.settingChanges.isEmpty && same.profileChanges.isEmpty, "identical preferences report changes: \(same.settingChanges) \(same.profileChanges)")
+    try archiveExpect(same.containerTemplateCount == 1, "container templates counted \(same.containerTemplateCount)")
+    try archiveExpect(same.automationSummary == "1 Off, 1 Ask + Delegation", "automation summary reads \(same.automationSummary)")
+    var quiet = current
+    quiet.preferences = ArchivedPreferences()
+    quiet.customPermissionProfiles = []
+    quiet.defaultProfileIDs = [:]
+    let changes = ConfigurationRestorePreview(incoming: incoming, current: quiet, currentRetention: 500, blockers: [], folderExists: { _ in true })
+    try archiveExpect(changes.settingChanges.first?.hasPrefix("Swift package builds: SwiftPM compatibility turns ON") == true, "SwiftPM is not the first listed change: \(changes.settingChanges)")
+    for expected in ["Terminal type: Ghostty → Compatible", "Manual release channel: Stable → Beta", "Terminal font changes", "Ghostty surface options change",
+                     "Voice language: en-GB → en-US", "Read-aloud turns on", "Collaboration Dock hidden", "Workspace notifications for: Parley"] {
+        try archiveExpect(changes.settingChanges.contains { $0.hasPrefix(expected) }, "missing change line \(expected) in \(changes.settingChanges)")
+    }
+    try archiveExpect(changes.profileChanges.contains("Custom profile added: Review tight") && changes.profileChanges.contains { $0.hasPrefix("Default profile for Claude") },
+                      "profile changes are \(changes.profileChanges)")
+    // nil means default: an archive that never chose read-aloud restores it off.
+    let defaults = ConfigurationRestorePreview(incoming: quiet, current: incoming, currentRetention: 250, blockers: [], folderExists: { _ in true })
+    try archiveExpect(defaults.settingChanges.contains("Read-aloud turns off") && defaults.settingChanges.contains("Collaboration Dock shown"), "nil preferences do not read as defaults: \(defaults.settingChanges)")
 }
 
 /// The controller replaces every workspace, group and pane with the plan's
@@ -292,11 +418,19 @@ func checkAppModelConfigurationTransferIsGuarded() throws {
     let model = try archiveSource("ParleyNative", "AppModel.swift")
     for required in [
         "BoundedRegularFile.read(source, maximumBytes: ConfigurationArchive.maximumBytes)",
-        "try ConfigurationArchiveValidator.validate(archive)",
+        "try ConfigurationArchiveValidator.validate(archive, themeExists: { themeNames.contains($0) })",
         "throw ConfigurationArchiveError.runtimeMismatch(archive: archive.runtime, current: currentRuntime)",
-        "let blockers = configurationRestoreBlockers()\n        guard blockers.isEmpty else {",
-        "let before = makeConfigurationArchive()",
-        "try controller.replaceWorkspaces(with: WorkbenchRestorePlan(archive: archive))",
+        "let blockers = configurationRestoreBlockers(fresh: true)\n        guard blockers.isEmpty else {",
+        "let snapshot = ConfigurationStoreSnapshot.capture(",
+        "try applyConfigurationStores(archive)\n            _ = try controller.replaceWorkspaces(with: WorkbenchRestorePlan(archive: archive))",
+        "try snapshot.restore(defaults: preferences)",
+        "workspaceContinuity = WorkspaceContinuityState(favouriteFolders: archive.favouriteFolders)\n        var layoutWarning",
+        "savedLayouts.map { $0.strippingApprovedRoots() }",
+        "terminalAppearanceImport?.forArchive",
+        "themeExists: { themeNames.contains($0) }",
+        "launchReviewOpen: panePermissionRequest != nil",
+        "voice.language = archived.voiceLanguage ?? \"en-GB\"",
+        "configurationLoadIssues.removeAll { $0.store != .workspaceRegistry || layoutWarning == nil }",
         "omittedStores: configurationLoadIssues.map(\\.store.rawValue)",
         "setHistoryRetention(maximumRecords: retention)",
     ] {
@@ -319,5 +453,7 @@ func checkAppModelConfigurationTransferIsGuarded() throws {
     ("configuration restore preview facts", checkConfigurationRestorePreviewFacts),
     ("workbench replaces workspaces from a plan", checkWorkbenchReplacesWorkspacesFromAPlan),
     ("archived layout node maps indices", checkArchivedLayoutNodeMapsIndices),
+    ("configuration archive projections and writer", checkConfigurationArchiveProjectionsAndWriter),
+    ("configuration store snapshot restores exactly", checkConfigurationStoreSnapshotRestoresExactly),
     ("app model configuration transfer is guarded", checkAppModelConfigurationTransferIsGuarded),
 ]

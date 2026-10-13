@@ -127,7 +127,7 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
         try helpAuditContains(text, ["Export Configuration", "Restore Configuration", "stopped templates", "allowlisted values",
             "never a copy of Application Support", "relay credentials", "control tokens", "handoff and activity history", "container daemon",
             "worktree receipts", "command-run trust", "team grants", "launch generations", "session-only command-run switches",
-            "recent-folder history", "left out and named", "preview first", "quiet Parley", "every shell pane closed", "never stops anything because Restore was chosen",
+            "recent-folder history", "left out and named", "preview first", "quiet Parley", "every shell pane closed", "no launch review open", "every setting that changes", "SwiftPM compatibility opt-in first", "ran in a container", "exact previous bytes kept", "restores its default", "never stops anything because Restore was chosen",
             "not a merge", "fresh workspace and pane identities", "nothing launches", "no saved approval becomes execution authority",
             "MISSING", "asked about separately", "put back", "only into Production", "4 MB", "schema version"])
     }),

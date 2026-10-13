@@ -1105,10 +1105,13 @@ final class AppModel: ObservableObject {
         for kind in Self.agentKinds {
             if let profileID = preferences.string(forKey: permissionProfilePreferenceKey(for: kind)) { defaultProfileIDs[kind.rawValue] = profileID }
         }
+        // Nested values are projected: a saved layout loses its approved
+        // roots and an imported appearance its source paths, so nothing a
+        // person granted or where a file lived leaves with the colours.
         let archivedPreferences = ArchivedPreferences(
             terminalType: terminalTypePreference == .default ? nil : terminalTypePreference.rawValue,
             font: unreadable.contains(.terminalFont) || terminalFontPreference == .ghosttyDefault ? nil : terminalFontPreference,
-            appearanceImport: unreadable.contains(.terminalAppearanceImport) ? nil : terminalAppearanceImport,
+            appearanceImport: unreadable.contains(.terminalAppearanceImport) ? nil : terminalAppearanceImport?.forArchive,
             surfaceOptions: unreadable.contains(.terminalSurfaceOptions) || terminalSurfacePreference == .ghosttyDefault ? nil : terminalSurfacePreference,
             voiceLanguage: preferences.string(forKey: "voice.language"),
             readAloud: preferences.object(forKey: "voice.readAloud") == nil ? nil : preferences.bool(forKey: "voice.readAloud"),
@@ -1125,7 +1128,7 @@ final class AppModel: ObservableObject {
             exportedAt: now,
             groups: groups.map { ArchivedWorkspaceGroup(name: $0.name, isCollapsed: $0.isCollapsed) },
             workspaces: archivedWorkspaces,
-            savedLayouts: unreadable.contains(.savedLayouts) ? [] : savedLayouts,
+            savedLayouts: unreadable.contains(.savedLayouts) ? [] : savedLayouts.map { $0.strippingApprovedRoots() },
             customPermissionProfiles: unreadable.contains(.permissionProfiles) ? [] : permissionProfiles.filter { !$0.isBuiltIn },
             defaultProfileIDs: defaultProfileIDs,
             recipes: unreadable.contains(.handoffRecipes) ? [] : recipes,
@@ -1151,6 +1154,8 @@ final class AppModel: ObservableObject {
         configurationTransferring = true
         Task { [weak self] in
             do {
+                // The writer validates the archive against the reader's own
+                // rules and size bound, so what is saved is what restores.
                 try await Task.detached(priority: .utility) {
                     try ConfigurationArchiveCoder.write(archive, to: destination)
                 }.value
@@ -1174,8 +1179,8 @@ final class AppModel: ObservableObject {
     }
 
     /// Reads a chosen export, refuses anything that is not a valid archive
-    /// for this runtime, and shows the preview; nothing changes until the
-    /// person chooses Replace there.
+    /// for this runtime and this Parley's theme catalogue, and shows the
+    /// preview; nothing changes until the person chooses Replace there.
     func chooseConfigurationToRestore() {
         guard !configurationTransferring, configurationRestoreProposal == nil else { return }
         let panel = NSOpenPanel()
@@ -1188,12 +1193,13 @@ final class AppModel: ObservableObject {
         guard panel.runModal() == .OK, let source = panel.url else { return }
         configurationTransferring = true
         let currentRuntime = runtime.mode
+        let themeNames = Set(ghosttyThemeNames)
         Task { [weak self] in
             let loaded: Result<ConfigurationArchive, Error> = await Task.detached(priority: .utility) {
                 do {
                     let data = try BoundedRegularFile.read(source, maximumBytes: ConfigurationArchive.maximumBytes)
                     let archive = try ConfigurationArchiveCoder.decode(data)
-                    try ConfigurationArchiveValidator.validate(archive)
+                    try ConfigurationArchiveValidator.validate(archive, themeExists: { themeNames.contains($0) })
                     guard archive.runtime == currentRuntime else {
                         throw ConfigurationArchiveError.runtimeMismatch(archive: archive.runtime, current: currentRuntime)
                     }
@@ -1222,26 +1228,44 @@ final class AppModel: ObservableObject {
             incoming: archive,
             current: makeConfigurationArchive(),
             currentRetention: historyRetentionPolicy.maximumRecords,
-            blockers: configurationRestoreBlockers(),
+            blockers: configurationRestoreBlockers(fresh: false),
             folderExists: { FileManager.default.fileExists(atPath: $0) }
         )
     }
 
-    /// What must be finished before a restore may apply, from the live
-    /// facts the model already holds; empty means quiet.
-    func configurationRestoreBlockers() -> [String] {
-        ConfigurationQuietRuntime.blockers(
+    /// What must be finished before a restore may apply. The preview reads
+    /// the model's published facts; Replace reads the coordinators again
+    /// (`fresh`), so a handoff, run or team session that began while the
+    /// sheet was open is seen.
+    func configurationRestoreBlockers(fresh: Bool) -> [String] {
+        var activeHandoffs = latestKnownHandoffs.filter { $0.state.isActive }.count
+        var waiting = consultations.count
+        var liveRuns = commandRuns.filter { !$0.state.isTerminal }.count
+        var liveTeams = teamSessions.filter { !$0.state.isTerminal }.count
+        if fresh {
+            if let relayClient {
+                if let handoffs = try? relayClient.activeHandoffs() { activeHandoffs = handoffs.count }
+                if let consultations = try? relayClient.consultations() { waiting = consultations.count }
+            }
+            if let core = residentCore {
+                liveRuns = core.commandRuns.runs().filter { !$0.state.isTerminal }.count
+                liveTeams = core.teamSessions.sessions().filter { !$0.state.isTerminal }.count
+            }
+        }
+        return ConfigurationQuietRuntime.blockers(
             startedPanes: panes.filter { $0.isStarted && !$0.isDead }.count,
-            activeHandoffs: latestKnownHandoffs.filter { $0.state.isActive }.count,
-            waitingConsultations: consultations.count,
-            liveCommandRuns: commandRuns.filter { !$0.state.isTerminal }.count,
-            liveTeamSessions: teamSessions.filter { !$0.state.isTerminal }.count,
+            activeHandoffs: activeHandoffs,
+            waitingConsultations: waiting,
+            liveCommandRuns: liveRuns,
+            liveTeamSessions: liveTeams,
             containerWork: controller?.hasContainerWorkInProgress() ?? false,
             voiceActive: voiceController.map { $0.session.captureActive || $0.playbackActive } ?? false,
             recipeRunning: activeRecipeRun != nil,
             comparisonRunning: askManyComparisonRun != nil,
             terminating: controller?.isTerminatingSurface ?? false,
-            uninstalling: preparingToUninstall
+            uninstalling: preparingToUninstall,
+            launchReviewOpen: panePermissionRequest != nil,
+            launchApplying: applyingPanePermissions
         )
     }
 
@@ -1249,32 +1273,41 @@ final class AppModel: ObservableObject {
         configurationRestoreProposal = nil
     }
 
-    /// Replaces this runtime's configuration with the previewed archive. The
-    /// blockers are read again at this moment; the workbench change is one
-    /// saved commit; if a later store fails, the configuration from just
-    /// before is put back, best effort, and the alert says what happened.
-    /// Every pane comes back stopped and nothing is launched.
+    /// Replaces this runtime's configuration with the previewed archive, in
+    /// three phases: the reversible stores and preferences first, with their
+    /// exact bytes captured so a failure puts back precisely what was there;
+    /// then the workbench, one saved commit of its own; then the split
+    /// layouts, presentation only, whose failure is reported, never fatal.
+    /// The blockers are read again, fresh from the coordinators, at this
+    /// moment. Every pane comes back stopped and nothing is launched.
     func applyConfigurationRestore() {
         guard let proposal = configurationRestoreProposal, let controller else { return }
-        let blockers = configurationRestoreBlockers()
+        let blockers = configurationRestoreBlockers(fresh: true)
         guard blockers.isEmpty else {
             configurationRestoreProposal = nil
             NSAlert(error: ConfigurationArchiveError.notQuiet(blockers)).runModal()
             return
         }
-        let before = makeConfigurationArchive()
+        let archive = proposal.archive
         configurationRestoreProposal = nil
         configurationTransferring = true
         defer { configurationTransferring = false }
+        let snapshot = ConfigurationStoreSnapshot.capture(
+            files: Self.restoredStoreFiles.map { applicationDirectory.appendingPathComponent($0) },
+            preferenceKeys: restoredPreferenceKeys,
+            defaults: preferences
+        )
         do {
-            try applyConfigurationArchive(proposal.archive, controller: controller)
+            try applyConfigurationStores(archive)
+            _ = try controller.replaceWorkspaces(with: WorkbenchRestorePlan(archive: archive))
         } catch {
             var detail = error.localizedDescription
             do {
-                try applyConfigurationArchive(before, controller: controller)
-                detail += " The configuration from just before was put back."
+                try snapshot.restore(defaults: preferences)
+                try reloadConfigurationFromStores()
+                detail += " Everything was put back exactly as it was."
             } catch let rollbackError {
-                detail += " Putting the previous configuration back also failed: \(rollbackError.localizedDescription) Check Settings > General > Configuration and Status Center > Health."
+                detail += " Putting the stores back also failed: \(rollbackError.localizedDescription) Check Settings > General > Configuration and Status Center > Health."
             }
             let alert = NSAlert()
             alert.messageText = "Configuration Not Restored"
@@ -1283,10 +1316,35 @@ final class AppModel: ObservableObject {
             alert.runModal()
             return
         }
-        let archive = proposal.archive
+        // The workbench is replaced. Favourites and the workspace order are
+        // reset before the refresh reconciles the fresh workspaces, or the old
+        // bookmarks would put them back in the old order by name.
+        workspaceContinuity = WorkspaceContinuityState(favouriteFolders: archive.favouriteFolders)
+        var layoutWarning: String?
+        do {
+            try refresh(includingRelay: false)
+            try rebuildNativeLayouts(from: archive)
+        } catch {
+            layoutWarning = error.localizedDescription
+        }
+        workspaceContinuity.reconcile(workspaces)
+        favouriteFolders = workspaceContinuity.favouriteFolders
+        saveWorkspaceContinuity()
+        // Every store now holds validated content; an issue remains only for
+        // the registry if its rebuild failed.
+        configurationLoadIssues.removeAll { $0.store != .workspaceRegistry || layoutWarning == nil }
+        try? refresh()
+
         let alert = NSAlert()
         alert.messageText = "Configuration Restored"
-        alert.informativeText = "\(archive.workspaces.count) workspace\(archive.workspaces.count == 1 ? "" : "s") with \(archive.paneCount) pane template\(archive.paneCount == 1 ? "" : "s") replaced the previous ones from \(proposal.sourceName). Every pane is stopped: start each from its menu, agents through their launch review. No credential, history record or grant was touched."
+        var detail = "\(archive.workspaces.count) workspace\(archive.workspaces.count == 1 ? "" : "s") with \(archive.paneCount) pane template\(archive.paneCount == 1 ? "" : "s") replaced the previous ones from \(proposal.sourceName). Every pane is stopped: start each from its menu, agents through their launch review. No credential, history record or grant was touched."
+        if proposal.preview.containerTemplateCount > 0 {
+            detail += " \(proposal.preview.containerTemplateCount) template\(proposal.preview.containerTemplateCount == 1 ? "" : "s") ran in a container; choose In a container again in their launch review."
+        }
+        if let layoutWarning {
+            detail += " The split layouts could not be recorded (\(layoutWarning)); each workspace shows one pane until you split it again."
+        }
+        alert.informativeText = detail
         alert.addButton(withTitle: "OK")
         alert.runModal()
         if let retention = archive.preferences.historyRetention, retention != historyRetentionPolicy.maximumRecords {
@@ -1295,26 +1353,21 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func applyConfigurationArchive(_ archive: ConfigurationArchive, controller: WorkbenchController) throws {
-        let paneIDs = try controller.replaceWorkspaces(with: WorkbenchRestorePlan(archive: archive))
-        try refresh(includingRelay: false)
-        let liveWorkspaces = workspaces
-        var layouts: [String: NativeLayoutNode] = [:]
-        var fractions: [String: [String: Double]] = [:]
-        for (index, archived) in archive.workspaces.enumerated() where index < paneIDs.count {
-            guard let live = liveWorkspaces.first(where: { $0.name == archived.name }) ?? (index < liveWorkspaces.count ? liveWorkspaces[index] : nil) else { continue }
-            if let node = archived.layout?.restoring(paneIDs: paneIDs[index]) { layouts[live.workspaceID] = node }
-            if !archived.splitFractions.isEmpty { fractions[live.workspaceID] = archived.splitFractions }
-        }
-        nativeLayouts = layouts
-        nativeSplitFractions = fractions
-        for record in try workspaceRegistry.records() where !liveWorkspaces.contains(where: { $0.workspaceID == record.workspaceID }) {
-            try workspaceRegistry.remove(workspaceID: record.workspaceID)
-        }
-        _ = try workspaceRegistry.synchronize(workspaces: liveWorkspaces)
-        for (workspaceID, node) in layouts { try workspaceRegistry.updateLayout(workspaceID: workspaceID, layout: node) }
-        for (workspaceID, recorded) in fractions { try workspaceRegistry.updateSplitFractions(workspaceID: workspaceID, fractions: recorded) }
+    private static let restoredStoreFiles = ["workspace-layouts.json", "permission-profiles.json", "handoff-recipes.json", "worktree-repositories.json"]
 
+    private var restoredPreferenceKeys: [String] {
+        [Self.terminalTypePreferenceKey, Self.terminalFontPreferenceKey, Self.terminalAppearanceImportKey, Self.terminalSurfacePreferenceKey,
+         Self.workspaceContinuityKey, Self.notificationWorkspacesKey, Self.collaborationDockVisibleKey, Self.swiftPMCompatibilityKey,
+         Self.releaseChannelKey, Self.lastAgentVendorKey, "voice.language", "voice.readAloud"]
+            + Self.agentKinds.map { permissionProfilePreferenceKey(for: $0) }
+    }
+
+    /// Phase one: every store and preference other than the workbench, through
+    /// the ordinary setters so Ghostty, the controller and the published
+    /// values follow. nil in the archive means the default (decision of 13
+    /// October 2026), so identical archives give identical settings wherever
+    /// they are restored.
+    private func applyConfigurationStores(_ archive: ConfigurationArchive) throws {
         for layout in try layoutStore.layouts() { try layoutStore.delete(named: layout.name) }
         for layout in archive.savedLayouts { try layoutStore.save(layout) }
         savedLayouts = try layoutStore.layouts()
@@ -1332,11 +1385,6 @@ final class AppModel: ObservableObject {
         for recipe in archive.recipes { try recipeStore.save(recipe) }
         recipes = try recipeStore.recipes()
 
-        workspaceContinuity = WorkspaceContinuityState(favouriteFolders: archive.favouriteFolders)
-        workspaceContinuity.reconcile(liveWorkspaces)
-        favouriteFolders = workspaceContinuity.favouriteFolders
-        saveWorkspaceContinuity()
-
         if let store = worktreeRepositoryStore {
             for folder in try store.folders() { try store.forget(folder) }
             for folder in archive.worktreeRepositories { try store.add(folder) }
@@ -1346,18 +1394,64 @@ final class AppModel: ObservableObject {
         setTerminalTypePreference(archived.terminalType.flatMap(TerminalTypePreference.init(rawValue:)) ?? .default)
         try updateTerminalAppearance(family: archived.font?.family, size: archived.font?.size, imported: archived.appearanceImport)
         try updateTerminalSurfacePreference(archived.surfaceOptions ?? .ghosttyDefault)
-        if let language = archived.voiceLanguage { voice.language = language }
-        if let readAloud = archived.readAloud { voice.readAloudEnabled = readAloud }
+        voice.language = archived.voiceLanguage ?? "en-GB"
+        voice.readAloudEnabled = archived.readAloud ?? false
         notificationWorkspaceNames = Set(archived.notificationWorkspaces)
         saveNotificationWorkspaces()
-        if let dockVisible = archived.collaborationDockVisible {
-            collaborationDockVisible = dockVisible
-            preferences.set(dockVisible, forKey: Self.collaborationDockVisibleKey)
-        }
+        collaborationDockVisible = archived.collaborationDockVisible ?? true
+        preferences.set(collaborationDockVisible, forKey: Self.collaborationDockVisibleKey)
         setSwiftPMCompatibilityEnabled(archived.swiftPMCompatibility)
         setReleaseChannel(archived.releaseChannel.flatMap(UpdateChannel.init(rawValue:)) ?? .stable)
-        if let vendor = archived.lastAgentVendor.flatMap(PaneKind.init(rawValue:)) { rememberAgentVendor(vendor) }
-        try refresh()
+        rememberAgentVendor(archived.lastAgentVendor.flatMap(PaneKind.init(rawValue:)) ?? .claude)
+    }
+
+    /// After a rollback the files and values are back; the published values
+    /// and Ghostty must follow them.
+    private func reloadConfigurationFromStores() throws {
+        savedLayouts = try layoutStore.layouts()
+        permissionProfiles = try permissionProfileStore.profiles()
+        recipes = try recipeStore.recipes()
+        let decoder = JSONDecoder()
+        let font = preferences.data(forKey: Self.terminalFontPreferenceKey).flatMap { try? decoder.decode(TerminalFontPreference.self, from: $0) } ?? .ghosttyDefault
+        let imported = preferences.data(forKey: Self.terminalAppearanceImportKey).flatMap { try? decoder.decode(GhosttyAppearanceImport.self, from: $0) }
+        let surface = preferences.data(forKey: Self.terminalSurfacePreferenceKey).flatMap { try? decoder.decode(TerminalSurfacePreference.self, from: $0) } ?? .ghosttyDefault
+        try updateTerminalAppearance(family: font.family, size: font.size, imported: imported)
+        try updateTerminalSurfacePreference(surface)
+        setTerminalTypePreference(preferences.string(forKey: Self.terminalTypePreferenceKey).flatMap(TerminalTypePreference.init(rawValue:)) ?? .default)
+        voice.language = preferences.string(forKey: "voice.language") ?? "en-GB"
+        voice.readAloudEnabled = preferences.bool(forKey: "voice.readAloud")
+        notificationWorkspaceNames = Set(preferences.stringArray(forKey: Self.notificationWorkspacesKey) ?? [])
+        collaborationDockVisible = preferences.object(forKey: Self.collaborationDockVisibleKey) == nil ? true : preferences.bool(forKey: Self.collaborationDockVisibleKey)
+        setSwiftPMCompatibilityEnabled(preferences.bool(forKey: Self.swiftPMCompatibilityKey))
+        setReleaseChannel(preferences.string(forKey: Self.releaseChannelKey).flatMap(UpdateChannel.init(rawValue:)) ?? .stable)
+        rememberAgentVendor(preferences.string(forKey: Self.lastAgentVendorKey).flatMap(PaneKind.init(rawValue:)) ?? .claude)
+        if let data = preferences.data(forKey: Self.workspaceContinuityKey), let state = try? decoder.decode(WorkspaceContinuityState.self, from: data) {
+            workspaceContinuity = state
+            favouriteFolders = state.favouriteFolders
+        }
+    }
+
+    /// Phase three: the native split trees over the fresh pane ids, matched by
+    /// workspace name (unique in a valid archive), then recorded in the
+    /// registry. Presentation only: a failure leaves one pane per workspace.
+    private func rebuildNativeLayouts(from archive: ConfigurationArchive) throws {
+        let liveWorkspaces = workspaces
+        var layouts: [String: NativeLayoutNode] = [:]
+        var fractions: [String: [String: Double]] = [:]
+        for archived in archive.workspaces {
+            guard let live = liveWorkspaces.first(where: { $0.name == archived.name }) else { continue }
+            let paneIDs = panes.filter { $0.workspaceID == live.workspaceID }.map(\.id)
+            if let node = archived.layout?.restoring(paneIDs: paneIDs) { layouts[live.workspaceID] = node }
+            if !archived.splitFractions.isEmpty { fractions[live.workspaceID] = archived.splitFractions }
+        }
+        nativeLayouts = layouts
+        nativeSplitFractions = fractions
+        for record in try workspaceRegistry.records() where !liveWorkspaces.contains(where: { $0.workspaceID == record.workspaceID }) {
+            try workspaceRegistry.remove(workspaceID: record.workspaceID)
+        }
+        _ = try workspaceRegistry.synchronize(workspaces: liveWorkspaces)
+        for (workspaceID, node) in layouts { try workspaceRegistry.updateLayout(workspaceID: workspaceID, layout: node) }
+        for (workspaceID, recorded) in fractions { try workspaceRegistry.updateSplitFractions(workspaceID: workspaceID, fractions: recorded) }
     }
 
     private static func configurationFilename(at date: Date = Date()) -> String {

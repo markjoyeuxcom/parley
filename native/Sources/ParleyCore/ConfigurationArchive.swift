@@ -17,7 +17,7 @@ public struct ConfigurationArchive: Codable, Equatable, Sendable {
     /// larger file is not one.
     public static let maximumBytes = 4_000_000
     public static let maximumWorkspaces = 200
-    public static let maximumPanesPerWorkspace = 32
+    public static let maximumPanesPerWorkspace = 64
     public static let maximumFolders = 64
     public static let maximumSavedLayouts = 50
     public static let maximumCustomProfiles = 64
@@ -332,14 +332,28 @@ public enum ConfigurationArchiveCoder {
            let type = attributes[.type] as? FileAttributeType, type != .typeRegular {
             throw ConfigurationArchiveError.invalidDestination
         }
-        try OwnerOnlyFile.write(try encode(archive), to: destination, fileManager: fileManager)
+        // What is written must read back: the same validator and the same
+        // size bound the reader applies, before the file exists.
+        try ConfigurationArchiveValidator.validate(archive)
+        let data = try encode(archive)
+        guard data.count <= ConfigurationArchive.maximumBytes else { throw ConfigurationArchiveError.tooLarge(data.count) }
+        try OwnerOnlyFile.write(data, to: destination, fileManager: fileManager)
     }
 }
 
 /// Everything a restore checks before any store is written, so a refusal
 /// changes nothing.
 public enum ConfigurationArchiveValidator {
-    public static func validate(_ archive: ConfigurationArchive) throws {
+    /// `themeExists` answers for the Ghostty theme catalogue, which lives in
+    /// the app; the core validator checks every other reference itself.
+    public static func validate(_ archive: ConfigurationArchive, themeExists: ((String) -> Bool)? = nil) throws {
+        let knownProfileIDs = Set(PermissionProfileDefinition.builtIns.map(\.id) + archive.customPermissionProfiles.map(\.id))
+        func requireProfile(_ profileID: String?, _ owner: String) throws {
+            guard let profileID else { return }
+            guard knownProfileIDs.contains(profileID) else {
+                throw ConfigurationArchiveError.invalid("\(owner) names the profile \"\(profileID)\", which is neither built in nor in the archive.")
+            }
+        }
         guard archive.schemaVersion == ConfigurationArchive.currentSchemaVersion else {
             throw ConfigurationArchiveError.unsupportedSchema(archive.schemaVersion)
         }
@@ -392,6 +406,7 @@ public enum ConfigurationArchiveValidator {
                     leads += 1
                 }
                 if let profileID = pane.profileID, profileID.isEmpty { throw ConfigurationArchiveError.invalid("a pane in workspace \"\(name)\" names an empty profile.") }
+                try requireProfile(pane.profileID, "a pane in workspace \"\(name)\"")
             }
             guard leads <= 1 else { throw ConfigurationArchiveError.invalid("workspace \"\(name)\" marks two panes as lead.") }
             if let layout = workspace.layout {
@@ -416,6 +431,12 @@ public enum ConfigurationArchiveValidator {
         for layout in archive.savedLayouts {
             do { try SavedWorkspaceLayoutStore.validate(layout) } catch { throw ConfigurationArchiveError.invalid("saved layout \"\(layout.name)\": \(error.localizedDescription)") }
             guard layoutNames.insert(layout.name.lowercased()).inserted else { throw ConfigurationArchiveError.invalid("two saved layouts are named \"\(layout.name)\".") }
+            for leaf in layout.root.leaves {
+                guard leaf.permissionSelection?.approvedRoots.isEmpty ?? true else {
+                    throw ConfigurationArchiveError.invalid("saved layout \"\(layout.name)\" carries approved roots; grants are never in an archive.")
+                }
+                try requireProfile(leaf.permissionSelection?.profileID, "saved layout \"\(layout.name)\"")
+            }
         }
         guard archive.customPermissionProfiles.count <= ConfigurationArchive.maximumCustomProfiles else {
             throw ConfigurationArchiveError.invalid("it holds \(archive.customPermissionProfiles.count) custom profiles; at most \(ConfigurationArchive.maximumCustomProfiles) are restored.")
@@ -434,6 +455,7 @@ public enum ConfigurationArchiveValidator {
         for (vendor, profileID) in archive.defaultProfileIDs {
             guard let kind = PaneKind(rawValue: vendor), kind.isAgent else { throw ConfigurationArchiveError.invalid("a default profile is recorded for \"\(vendor)\", which is not an agent vendor.") }
             guard !profileID.isEmpty, profileID.count <= 80 else { throw ConfigurationArchiveError.invalid("the default profile for \(vendor) is not a profile id.") }
+            try requireProfile(profileID, "the default profile for \(vendor)")
         }
         var recipeIDs = Set<String>()
         for recipe in archive.recipes {
@@ -445,13 +467,26 @@ public enum ConfigurationArchiveValidator {
         }
         for folder in archive.favouriteFolders { try requireAbsolute(folder, "the favourites") }
         for folder in archive.worktreeRepositories { try requireAbsolute(folder, "the worktree repositories") }
-        try validate(archive.preferences)
+        try validate(archive.preferences, themeExists: themeExists)
         for store in archive.omittedStores where ConfigurationStore(rawValue: store) == nil {
             throw ConfigurationArchiveError.invalid("it names an unknown omitted store \"\(store)\".")
         }
     }
 
-    private static func validate(_ preferences: ArchivedPreferences) throws {
+    private static func validate(_ preferences: ArchivedPreferences, themeExists: ((String) -> Bool)?) throws {
+        if let imported = preferences.appearanceImport {
+            guard imported.sourceFiles.isEmpty else {
+                throw ConfigurationArchiveError.invalid("the imported appearance carries its source file paths; an archive holds only the colours.")
+            }
+            if let theme = imported.themeDescription, theme.contains("/") {
+                throw ConfigurationArchiveError.invalid("the imported appearance names a theme by path; an archive holds only its name.")
+            }
+        }
+        if let surface = preferences.surfaceOptions, let themeExists {
+            for theme in [surface.lightTheme, surface.darkTheme].compactMap({ $0 }) where !themeExists(theme) {
+                throw ConfigurationArchiveError.invalid("the Ghostty theme \"\(theme)\" is not in this Parley's catalogue.")
+            }
+        }
         if let terminalType = preferences.terminalType, TerminalTypePreference(rawValue: terminalType) == nil {
             throw ConfigurationArchiveError.invalid("the terminal type \"\(terminalType)\" is not Ghostty or Compatible.")
         }
@@ -502,6 +537,16 @@ public struct ConfigurationRestorePreview: Equatable, Sendable {
     public let missingFolders: [String]
     public let omittedStores: [ConfigurationStore]
     public let retentionChange: (from: Int, to: Int)?
+    /// Pane templates that ran in containers; they come back as host
+    /// templates until a launch review chooses a container again.
+    public let containerTemplateCount: Int
+    /// Preferences that would change, one line each, the SwiftPM
+    /// compatibility opt-in first because it affects what new panes run with.
+    public let settingChanges: [String]
+    /// Custom profiles and default profile choices that would change.
+    public let profileChanges: [String]
+    /// How many restored workspaces allow which automation.
+    public let automationSummary: String
     public let exportedAt: Date
     public let appVersion: String
     public let blockers: [String]
@@ -516,6 +561,8 @@ public struct ConfigurationRestorePreview: Equatable, Sendable {
             && lhs.missingFolders == rhs.missingFolders && lhs.omittedStores == rhs.omittedStores
             && lhs.retentionChange?.from == rhs.retentionChange?.from && lhs.retentionChange?.to == rhs.retentionChange?.to
             && lhs.exportedAt == rhs.exportedAt && lhs.appVersion == rhs.appVersion && lhs.blockers == rhs.blockers
+            && lhs.containerTemplateCount == rhs.containerTemplateCount && lhs.settingChanges == rhs.settingChanges
+            && lhs.profileChanges == rhs.profileChanges && lhs.automationSummary == rhs.automationSummary
     }
 
     public init(
@@ -542,9 +589,145 @@ public struct ConfigurationRestorePreview: Equatable, Sendable {
         } else {
             retentionChange = nil
         }
+        containerTemplateCount = incoming.workspaces.reduce(0) { $0 + $1.panes.filter(\.wasContainer).count }
+        settingChanges = Self.settingChanges(from: current.preferences, to: incoming.preferences)
+        profileChanges = Self.profileChanges(from: current, to: incoming)
+        automationSummary = Self.automationSummary(incoming)
         exportedAt = incoming.exportedAt
         appVersion = incoming.appVersion
         self.blockers = blockers
+    }
+
+    /// Every preference is compared by its effective value: nil means the
+    /// default, so an archive that never chose one restores the default.
+    static func settingChanges(from current: ArchivedPreferences, to incoming: ArchivedPreferences) -> [String] {
+        var lines: [String] = []
+        if current.swiftPMCompatibility != incoming.swiftPMCompatibility {
+            lines.append(incoming.swiftPMCompatibility
+                ? "Swift package builds: SwiftPM compatibility turns ON for new agent panes (the wrapper adds --disable-sandbox to SwiftPM build, test, run and package)"
+                : "Swift package builds: SwiftPM compatibility turns off")
+        }
+        let currentTerminal = TerminalTypePreference(rawValue: current.terminalType ?? "") ?? .default
+        let incomingTerminal = TerminalTypePreference(rawValue: incoming.terminalType ?? "") ?? .default
+        if currentTerminal != incomingTerminal { lines.append("Terminal type: \(currentTerminal.label) → \(incomingTerminal.label) for panes started afterwards") }
+        let currentChannel = UpdateChannel(rawValue: current.releaseChannel ?? "") ?? .stable
+        let incomingChannel = UpdateChannel(rawValue: incoming.releaseChannel ?? "") ?? .stable
+        if currentChannel != incomingChannel { lines.append("Manual release channel: \(currentChannel.label) → \(incomingChannel.label)") }
+        if (current.font ?? .ghosttyDefault) != (incoming.font ?? .ghosttyDefault) { lines.append("Terminal font changes") }
+        if (current.appearanceImport != nil) != (incoming.appearanceImport != nil) {
+            lines.append(incoming.appearanceImport != nil ? "An imported Ghostty appearance is applied" : "The imported Ghostty appearance is removed")
+        } else if current.appearanceImport != incoming.appearanceImport {
+            lines.append("The imported Ghostty appearance changes")
+        }
+        if (current.surfaceOptions ?? .ghosttyDefault) != (incoming.surfaceOptions ?? .ghosttyDefault) { lines.append("Ghostty surface options change") }
+        if (current.voiceLanguage ?? "en-GB") != (incoming.voiceLanguage ?? "en-GB") { lines.append("Voice language: \(current.voiceLanguage ?? "en-GB") → \(incoming.voiceLanguage ?? "en-GB")") }
+        if (current.readAloud ?? false) != (incoming.readAloud ?? false) { lines.append("Read-aloud turns \(incoming.readAloud ?? false ? "on" : "off")") }
+        if (current.collaborationDockVisible ?? true) != (incoming.collaborationDockVisible ?? true) { lines.append("Collaboration Dock \(incoming.collaborationDockVisible ?? true ? "shown" : "hidden")") }
+        if Set(current.notificationWorkspaces) != Set(incoming.notificationWorkspaces) {
+            lines.append(incoming.notificationWorkspaces.isEmpty ? "Workspace notifications: none" : "Workspace notifications for: \(incoming.notificationWorkspaces.joined(separator: ", "))")
+        }
+        return lines
+    }
+
+    static func profileChanges(from current: ConfigurationArchive, to incoming: ConfigurationArchive) -> [String] {
+        var lines: [String] = []
+        let currentIDs = Set(current.customPermissionProfiles.map(\.id))
+        let incomingIDs = Set(incoming.customPermissionProfiles.map(\.id))
+        for profile in incoming.customPermissionProfiles where !currentIDs.contains(profile.id) { lines.append("Custom profile added: \(profile.name)") }
+        for profile in current.customPermissionProfiles where !incomingIDs.contains(profile.id) { lines.append("Custom profile removed: \(profile.name)") }
+        for profile in incoming.customPermissionProfiles {
+            if let existing = current.customPermissionProfiles.first(where: { $0.id == profile.id }), existing != profile { lines.append("Custom profile changed: \(profile.name)") }
+        }
+        let names = Dictionary(uniqueKeysWithValues: (PermissionProfileDefinition.builtIns + incoming.customPermissionProfiles).map { ($0.id, $0.name) })
+        for vendor in Set(current.defaultProfileIDs.keys).union(incoming.defaultProfileIDs.keys).sorted() {
+            let before = current.defaultProfileIDs[vendor]
+            let after = incoming.defaultProfileIDs[vendor]
+            guard before != after else { continue }
+            let vendorName = PaneKind(rawValue: vendor)?.label ?? vendor
+            lines.append("Default profile for \(vendorName): \(before.flatMap { names[$0] ?? $0 } ?? "none") → \(after.flatMap { names[$0] ?? $0 } ?? "none")")
+        }
+        return lines
+    }
+
+    static func automationSummary(_ archive: ConfigurationArchive) -> String {
+        let counts = Dictionary(grouping: archive.workspaces, by: \.automationPolicy).mapValues(\.count)
+        return WorkspaceAutomationPolicy.allCases
+            .compactMap { policy in counts[policy].map { "\($0) \(policy.label)" } }
+            .joined(separator: ", ")
+    }
+}
+
+/// The exact bytes and preference values of the stores a restore rewrites,
+/// taken before it starts, so a failure part-way puts back precisely what was
+/// there rather than a lossy re-import of an archive. The workbench document
+/// is not here: `WorkbenchController.replaceWorkspaces` is its own commit.
+public struct ConfigurationStoreSnapshot {
+    public struct FileState { public let url: URL; public let data: Data? }
+    public let files: [FileState]
+    public let preferences: [(key: String, value: Any?)]
+
+    public static func capture(files: [URL], preferenceKeys: [String], defaults: UserDefaults) -> ConfigurationStoreSnapshot {
+        ConfigurationStoreSnapshot(
+            files: files.map { FileState(url: $0, data: try? Data(contentsOf: $0)) },
+            preferences: preferenceKeys.map { ($0, defaults.object(forKey: $0)) }
+        )
+    }
+
+    /// Puts every captured file and value back; a file that was absent is
+    /// removed. Files go through OwnerOnlyFile, so each is atomic on its own.
+    public func restore(defaults: UserDefaults, fileManager: FileManager = .default) throws {
+        var firstError: Error?
+        for file in files {
+            do {
+                if let data = file.data {
+                    try OwnerOnlyFile.write(data, to: file.url, fileManager: fileManager)
+                } else if fileManager.fileExists(atPath: file.url.path) {
+                    try fileManager.removeItem(at: file.url)
+                }
+            } catch {
+                firstError = firstError ?? error
+            }
+        }
+        for (key, value) in preferences {
+            if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+        }
+        if let firstError { throw firstError }
+    }
+}
+
+extension SavedWorkspaceLayout {
+    /// The layout without any approved roots: a grant is never in an archive,
+    /// and the launch review grants roots again.
+    public func strippingApprovedRoots() -> SavedWorkspaceLayout {
+        func strip(_ node: SavedLayoutNode) -> SavedLayoutNode {
+            switch node {
+            case let .leaf(leaf):
+                let selection = leaf.permissionSelection.map {
+                    PermissionProfileSelection(profileID: $0.profileID, approvedRoots: [], lifetime: $0.lifetime, approvals: $0.approvals)
+                }
+                return .leaf(SavedLayoutLeaf(kind: leaf.kind, name: leaf.name, folder: leaf.folder, role: leaf.role,
+                                             isWorkspaceLead: leaf.isWorkspaceLead, permissionSelection: selection))
+            case let .split(direction, ratio, first, second):
+                return .split(direction: direction, ratio: ratio, first: strip(first), second: strip(second))
+            }
+        }
+        return SavedWorkspaceLayout(name: name, defaultFolder: defaultFolder, root: strip(root), automationPolicy: automationPolicy)
+    }
+}
+
+extension GhosttyAppearanceImport {
+    /// The import without where it came from: the colours and fonts travel,
+    /// the source file paths and a theme named by path do not.
+    public var forArchive: GhosttyAppearanceImport {
+        GhosttyAppearanceImport(
+            sourceFiles: [],
+            themeDescription: themeDescription.flatMap { $0.contains("/") ? nil : $0 },
+            fontFamily: fontFamily,
+            fontSize: fontSize,
+            light: light,
+            dark: dark,
+            ignoredSettingCount: ignoredSettingCount
+        )
     }
 }
 
@@ -563,9 +746,13 @@ public enum ConfigurationQuietRuntime {
         recipeRunning: Bool,
         comparisonRunning: Bool,
         terminating: Bool,
-        uninstalling: Bool
+        uninstalling: Bool,
+        launchReviewOpen: Bool = false,
+        launchApplying: Bool = false
     ) -> [String] {
         var blockers: [String] = []
+        if launchReviewOpen { blockers.append("a launch review is open (Start it or cancel it)") }
+        if launchApplying { blockers.append("a pane launch is being applied") }
         if startedPanes > 0 {
             blockers.append(startedPanes == 1
                 ? "1 pane is running (stop an agent from its menu; close a shell)"

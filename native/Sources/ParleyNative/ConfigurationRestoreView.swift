@@ -56,6 +56,25 @@ struct ConfigurationRestoreView: View {
                 }
             }
 
+            if !preview.settingChanges.isEmpty || !preview.profileChanges.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("Settings that change", systemImage: "slider.horizontal.3")
+                        .font(.callout.weight(.medium))
+                    ForEach(preview.settingChanges + preview.profileChanges, id: \.self) { line in
+                        Text("• \(line)").font(.caption).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            Text("Workspace automation after the restore: \(preview.automationSummary.isEmpty ? "none" : preview.automationSummary). Agents start only through their launch review; a profile choice here is remembered, never granted.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if preview.containerTemplateCount > 0 {
+                Label("\(preview.containerTemplateCount) pane template\(preview.containerTemplateCount == 1 ? "" : "s") ran in a container. Images, daemons and mounts are never in an archive: each comes back as a host template until its launch review chooses In a container again.", systemImage: "shippingbox")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if !preview.omittedStores.isEmpty {
                 Label("Left out of the export because they could not be read then: \(preview.omittedStores.map(\.title).joined(separator: ", ")). Those stores are restored to defaults.", systemImage: "exclamationmark.triangle")
                     .font(.caption)
