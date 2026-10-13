@@ -31,7 +31,9 @@ let helpAuditChecks: [(String, () throws -> Void)] = [
         // The curated Ghostty options: what they are, which ones reach only
         // new panes, and that the set is closed.
         try helpAuditContains(settings.searchableText, ["Ghostty surface options", "scrollback limit", "read only when a pane is created",
-            "Restore Ghostty Defaults", "never loads a raw Ghostty configuration file"])
+            "Restore Ghostty Defaults", "never loads a raw Ghostty configuration file", "beside the section you changed"])
+        // General's order and the palette route (13 October 2026 review).
+        try helpAuditContains(settings.searchableText, ["Local history", "This session only", "command palette", "Manage History"])
         let troubleshooting = try helpAuditTopic("troubleshooting")
         try helpAuditContains(troubleshooting.searchableText, ["cannot initialize terminal type", "delete key", "Choose Compatible"])
     }),

@@ -10,6 +10,10 @@ struct TerminalSurfaceSettingsSections: View {
     @ObservedObject var model: AppModel
     @State private var draft: TerminalSurfacePreference
     @State private var errorMessage: String?
+    /// The section whose fields the refused change touched, so the message
+    /// appears beside the control that caused it rather than at the bottom
+    /// of a long form.
+    @State private var errorSection: TerminalSurfaceSection?
     private let themeNames: [String]
 
     init(model: AppModel) {
@@ -20,6 +24,7 @@ struct TerminalSurfaceSettingsSections: View {
 
     var body: some View {
         Section("Theme and colours") {
+            sectionError(.theme)
             themePicker("Light appearance theme", selection: $draft.lightTheme)
             themePicker("Dark appearance theme", selection: $draft.darkTheme)
             Text(model.terminalAppearanceImport == nil
@@ -43,6 +48,7 @@ struct TerminalSurfaceSettingsSections: View {
         }
 
         Section("Font rendering") {
+            sectionError(.font)
             Toggle("Thicken glyph strokes", isOn: $draft.fontThicken)
             LabeledContent("Thickening strength") {
                 Slider(value: Binding(get: { Double(draft.fontThickenStrength) }, set: { draft.fontThickenStrength = Int($0.rounded()) }),
@@ -66,6 +72,7 @@ struct TerminalSurfaceSettingsSections: View {
         }
 
         Section("Cursor") {
+            sectionError(.cursor)
             Picker("Shape", selection: $draft.cursorShape) {
                 ForEach(TerminalCursorShape.allCases) { shape in Text(shape.label).tag(shape) }
             }
@@ -86,6 +93,7 @@ struct TerminalSurfaceSettingsSections: View {
         }
 
         Section("Background and padding") {
+            sectionError(.background)
             LabeledContent("Background opacity") {
                 Slider(value: $draft.backgroundOpacity, in: TerminalSurfacePreference.backgroundOpacityRange, step: 0.05) { Text("Background opacity") }
                     .frame(width: 220)
@@ -115,6 +123,7 @@ struct TerminalSurfaceSettingsSections: View {
         }
 
         Section("Scrollback") {
+            sectionError(.scrollback)
             LabeledContent("Scrollback limit") {
                 TextField("Scrollback limit", value: $draft.scrollbackLimitMegabytes, format: .number)
                     .frame(width: 64)
@@ -132,6 +141,7 @@ struct TerminalSurfaceSettingsSections: View {
         }
 
         Section("Mouse and clipboard") {
+            sectionError(.mouse)
             Toggle("Hide the pointer while typing", isOn: $draft.hideMouseWhileTyping)
             Toggle("Click moves the cursor at a shell prompt", isOn: $draft.clickToMoveCursor)
             Toggle("Copy selected text to the clipboard", isOn: $draft.copyOnSelect)
@@ -156,6 +166,7 @@ struct TerminalSurfaceSettingsSections: View {
         }
 
         Section("Shell integration") {
+            sectionError(.shell)
             Toggle("Cursor shape follows the prompt", isOn: $draft.shellCursor)
             Toggle("Shell integration under sudo", isOn: $draft.shellSudo)
             Toggle("Pane title from the shell", isOn: $draft.shellTitle)
@@ -167,7 +178,7 @@ struct TerminalSurfaceSettingsSections: View {
 
         Section {
             HStack {
-                if let errorMessage {
+                if let errorMessage, errorSection == nil {
                     Text(errorMessage)
                         .font(.callout)
                         .foregroundStyle(.red)
@@ -199,14 +210,27 @@ struct TerminalSurfaceSettingsSections: View {
         .accessibilityLabel(title)
     }
 
+    @ViewBuilder
+    private func sectionError(_ section: TerminalSurfaceSection) -> some View {
+        if let errorMessage, errorSection == section {
+            Label(errorMessage, systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .foregroundStyle(.red)
+                .accessibilityLabel("Ghostty refused the change: \(errorMessage)")
+        }
+    }
+
     private func apply(_ requested: TerminalSurfacePreference) {
-        guard requested != model.terminalSurfacePreference else { return }
+        let stored = model.terminalSurfacePreference
+        guard requested != stored else { return }
         do {
             try model.updateTerminalSurfacePreference(requested)
             errorMessage = nil
+            errorSection = nil
         } catch {
             errorMessage = error.localizedDescription
-            draft = model.terminalSurfacePreference
+            errorSection = TerminalSurfaceSection.changed(from: stored, to: requested).first
+            draft = stored
         }
     }
 }

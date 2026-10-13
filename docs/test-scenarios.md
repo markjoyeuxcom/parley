@@ -377,6 +377,15 @@ Use the packaged app: the window picker and macOS's own consent need a bundle.
 started after the choice reads the old value; the Copy button copies anything
 other than the command shown.
 
+
+## P2.11 Settings navigation and General order (13 October 2026 polish)
+
+1. Command-K, type `settings`: one command per Settings section appears (General, Terminal, Voice, Appearance, Notifications). Type `scrollback`: Terminal Settings… is offered; choose it and Settings opens on Terminal.
+2. Settings › General reads Software updates, Swift package builds, Local history, then Agent command runs with a "This session only" header on the right.
+3. Local history: the segmented control shows the current retention; choosing a lower value asks before pruning, Cancel changes nothing. Manage History… opens Status Center on History.
+4. Settings › Terminal: set Scrollback limit to 0 with the keyboard. The refusal appears inside the Scrollback section, not at the bottom, and the field returns to the stored value.
+
+**Fail:** a Settings section missing from the palette; the session-only switches above the durable ones; a refusal shown only at the bottom of the form.
 ---
 
 # Priority 3 — breadth

@@ -188,7 +188,43 @@ func checkSmallFrictionFixesStay() throws {
                        "the empty workspace's New Agent button is not the Return default")
 }
 
+/// Settings is reachable from the palette for every section, General puts the
+/// durable choices before the session-only switches and carries the history
+/// retention choice, and a refused Ghostty option is reported beside its
+/// section (13 October 2026 review).
+func checkSettingsNavigationPolish() throws {
+    let appModel = try nativeSource("ParleyNative", "AppModel.swift").text
+    try frictionExpect(appModel.contains("for section in ApplicationSettingsSection.allCases {"),
+                       "the palette no longer lists every Settings section")
+    try frictionExpect(appModel.contains("case let .openSettings(section):"), "the palette cannot open a Settings section")
+    let settings = try nativeSource("ParleyNative", "ParleySettingsView.swift").text
+    let updates = try frictionRange(settings, "Section(\"Software updates\")")
+    let swiftPM = try frictionRange(settings, "Section(\"Swift package builds\")")
+    let history = try frictionRange(settings, "Section(\"Local history\")")
+    let runs = try frictionRange(settings, "Text(\"Agent command runs\")")
+    try frictionExpect(updates.lowerBound < swiftPM.lowerBound && swiftPM.lowerBound < history.lowerBound && history.lowerBound < runs.lowerBound,
+                       "General no longer lists Software updates, Swift package builds, Local history, then Agent command runs")
+    try frictionExpect(settings.contains("Text(\"This session only\")"), "the session-only command-run switches lost their header")
+    try frictionExpect(settings.contains("model.setHistoryRetention(maximumRecords: $0)"), "General lost the history retention choice")
+    try frictionExpect(settings.contains("model.requestStatusCenterSegment(.history)"), "Manage History… no longer opens Status Center on History")
+    let surface = try nativeSource("ParleyNative", "TerminalSurfaceSettingsView.swift").text
+    for section in TerminalSurfaceSection.allCases {
+        try frictionExpect(surface.contains("Section(\"\(section.title)\") {\n            sectionError(.\(section.rawValue))"),
+                           "the \(section.title) section does not show its own refusal")
+    }
+    try frictionExpect(surface.contains("errorSection = TerminalSurfaceSection.changed(from: stored, to: requested).first"),
+                       "a refused Ghostty option is not attributed to its section")
+}
+
+private func frictionRange(_ text: String, _ needle: String) throws -> Range<String.Index> {
+    guard let range = text.range(of: needle) else {
+        throw NSError(domain: "EverydayFriction", code: 3, userInfo: [NSLocalizedDescriptionKey: "Settings lost \(needle)"])
+    }
+    return range
+}
+
 @MainActor let everydayFrictionChecks: [(String, () throws -> Void)] = [
+    ("settings navigation polish stays", checkSettingsNavigationPolish),
     ("help opens on start here", checkHelpOpensOnStartHere),
     ("ask menu says why nothing can be asked", checkAskMenuSaysWhyNothingCanBeAsked),
     ("context pack says why it cannot be sent", checkContextPackSaysWhyItCannotBeSent),
