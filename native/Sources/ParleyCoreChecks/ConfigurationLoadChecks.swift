@@ -82,11 +82,16 @@ func checkAppModelReportsUnreadableStores() throws {
         "(try? workspaceRegistry.records()) ?? []",
         "(try? recipeStore.recipes()) ?? HandoffRecipe.defaults",
         "(try? permissionProfileStore.profiles())",
-        "preferences.removeObject(forKey: Self.terminalFontPreferenceKey)",
-        "preferences.removeObject(forKey: Self.terminalAppearanceImportKey)",
-        "preferences.removeObject(forKey: Self.workspaceContinuityKey)",
+        "let decoded = try? JSONDecoder().decode(WorkspaceContinuityState.self",
     ] {
-        try configExpect(!source.contains(forbidden), "AppModel still silently falls back or deletes: \(forbidden)")
+        try configExpect(!source.contains(forbidden), "AppModel still silently falls back on a store: \(forbidden)")
+    }
+    // The launch loads keep an unreadable value aside instead of removing
+    // it; the setters may still remove a key when the person chooses the
+    // default, which is a choice, not a fallback.
+    for key in ["terminalFontPreferenceKey", "terminalAppearanceImportKey", "terminalSurfacePreferenceKey", "workspaceContinuityKey"] {
+        try configExpect(source.contains("ConfigurationPreservation.preserve(preferenceKey: Self.\(key), in: preferences)"),
+                         "the launch load of \(key) does not keep an unreadable value aside")
     }
     try configExpect(source.contains("savedLayouts = try layoutStore.layouts()\n            } catch {"),
                      "an unreadable workspace-layouts.json is not handled as one store")
