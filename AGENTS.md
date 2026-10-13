@@ -107,7 +107,9 @@ App behavior belongs in Swift. Node scripts are build and release tooling only.
 
 Prax notes: "Parley runtime…"; "Parley durable records…"; "Parley in-process
 relay broker…"; "Parley transport liveness…"; "Parley Sparkle updates…";
-"Parley workspaces…".
+"Parley workspaces…"; "Parley Settings › Terminal: curated Ghostty surface
+options"; "Parley configuration stores and unreadable-store handling";
+"Parley configuration export and restore…".
 
 - Runtime files live under `~/Library/Application Support/Parley Native/`
   (Production) or a separate Development directory.
@@ -149,6 +151,14 @@ relay broker…"; "Parley transport liveness…"; "Parley Sparkle updates…";
   free-form key, never one in `forbiddenKeys` (`command`, `env`,
   `working-directory`, `config-file`, shaders, shell integration's script).
   Every Settings change applies and saves at once; no Apply button.
+- Settings › General › Backup exports `ConfigurationArchive`, allowlisted
+  typed values only (never Application Support, credentials, journals,
+  context, container or worktree ids, grants, generations, session-only
+  switches, recent folders); a store with a `ConfigurationLoadIssue` is left
+  out and named. Restore is a previewed replacement for the same runtime
+  only, refused unless `ConfigurationQuietRuntime.blockers` is empty, applied
+  through `replaceWorkspaces(with:)` in one commit with every pane stopped
+  and fresh ids; nothing launches and no approval is restored.
 - Sparkle is the sole updater, opt-in, never a daemon; Development never
   starts it. The Pane menu offers Shell and Agent, never one entry per vendor;
   the vendor is chosen in the creation review. Shortcuts are ⌥⌘1–5. Pane,

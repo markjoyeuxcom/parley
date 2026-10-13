@@ -540,8 +540,8 @@ public enum PermissionProfileResolver {
     }
 }
 
-private enum PermissionProfileValidator {
-    static func validate(_ profile: PermissionProfileDefinition) throws {
+public enum PermissionProfileValidator {
+    public static func validate(_ profile: PermissionProfileDefinition) throws {
         let identifierCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-")
         guard !profile.id.isEmpty,
               profile.id.count <= 80,

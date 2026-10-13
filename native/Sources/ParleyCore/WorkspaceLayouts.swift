@@ -274,7 +274,7 @@ public final class SavedWorkspaceLayoutStore: @unchecked Sendable {
 
     public func save(_ layout: SavedWorkspaceLayout) throws {
         try lock.withLock {
-            try validate(layout)
+            try Self.validate(layout)
             var document = try readDocument()
             if let index = document.layouts.firstIndex(where: {
                 $0.name.caseInsensitiveCompare(layout.name) == .orderedSame
@@ -309,7 +309,7 @@ public final class SavedWorkspaceLayoutStore: @unchecked Sendable {
             guard document.version == Self.schemaVersion else {
                 throw SavedWorkspaceLayoutStoreError.unreadable("unsupported schema version \(document.version)")
             }
-            for layout in document.layouts { try validate(layout) }
+            for layout in document.layouts { try Self.validate(layout) }
             return document
         } catch let error as SavedWorkspaceLayoutStoreError {
             throw error
@@ -343,7 +343,7 @@ public final class SavedWorkspaceLayoutStore: @unchecked Sendable {
         }
     }
 
-    private func validate(_ layout: SavedWorkspaceLayout) throws {
+    public static func validate(_ layout: SavedWorkspaceLayout) throws {
         let name = layout.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard (1...80).contains(name.count), name == layout.name else {
             throw SavedWorkspaceLayoutStoreError.invalid("layout names must be 1–80 trimmed characters")
