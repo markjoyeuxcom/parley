@@ -341,6 +341,9 @@ final class AppModel: ObservableObject {
     /// Configuration stores that could not be read at launch; Settings › General
     /// and Status Center › Health show them, and the exporter leaves them out.
     @Published private(set) var configurationLoadIssues: [ConfigurationLoadIssue] = []
+    /// What the launch did with a restore journal it found: an interrupted
+    /// restore was rolled back, or its committed workbench kept.
+    @Published private(set) var configurationRecoveryNotice: String?
     @Published private(set) var terminalSurfacePreference = TerminalSurfacePreference.ghosttyDefault
     @Published private(set) var terminalAppearanceImport: GhosttyAppearanceImport?
     @Published private(set) var taskManagerSnapshot: TaskManagerSnapshot?
@@ -528,6 +531,17 @@ final class AppModel: ObservableObject {
         // under a sibling key or file, rather than deleted or overwritten
         // with the defaults the app then runs on.
         var loadIssues: [ConfigurationLoadIssue] = []
+        // A restore interrupted by a crash left its journal: before the
+        // workbench commit the stores go back as they were; after it the
+        // restored configuration stands. Either way the launch says so.
+        var recoveryNotice: String?
+        if let journal = ConfigurationRestoreJournal.read(in: applicationDirectory) {
+            if journal.state == .storesInProgress {
+                try? journal.snapshot(in: applicationDirectory).restore(defaults: preferences)
+            }
+            ConfigurationRestoreJournal.clear(in: applicationDirectory)
+            recoveryNotice = journal.recoveryNotice
+        }
         if let data = preferences.data(forKey: Self.terminalFontPreferenceKey) {
             do {
                 terminalFontPreference = try JSONDecoder().decode(TerminalFontPreference.self, from: data)
@@ -672,6 +686,7 @@ final class AppModel: ObservableObject {
             }
         }
         configurationLoadIssues = loadIssues
+        configurationRecoveryNotice = recoveryNotice
         favouriteFolders = workspaceContinuity.favouriteFolders
         notificationWorkspaceNames = Set(
             preferences.stringArray(forKey: Self.notificationWorkspacesKey) ?? []
@@ -810,6 +825,8 @@ final class AppModel: ObservableObject {
             reconcileNativeLayouts(workspaces: liveWorkspaces, panes: livePanes)
             do {
                 savedLayouts = try layoutStore.layouts()
+            configurationStoreWritten(.savedLayouts)
+        configurationStoreWritten(.savedLayouts)
             } catch {
                 // One unreadable layout file used to take the whole terminal
                 // stack down with "startupError"; it is one store.
@@ -1068,7 +1085,25 @@ final class AppModel: ObservableObject {
     /// launch is left out and named in `omittedStores`, so defaults are never
     /// exported as the person's choice.
     func makeConfigurationArchive(now: Date = Date()) -> ConfigurationArchive {
-        let unreadable = Set(configurationLoadIssues.map(\.store))
+        var unreadable = Set(configurationLoadIssues.map(\.store))
+        // The worktree repository list is read on demand, so its health is
+        // learnt here rather than at launch.
+        let worktreeRepositories: [String]
+        do {
+            worktreeRepositories = try worktreeRepositoryStore?.folders() ?? []
+        } catch {
+            worktreeRepositories = []
+            unreadable.insert(.worktreeRepositories)
+        }
+        // With the custom profiles unreadable, a reference to one would
+        // dangle and the writer would refuse the export; only built-in
+        // profile ids are kept then, and the preview says the store was left out.
+        let exportableProfileIDs: Set<String>? = unreadable.contains(.permissionProfiles) ? Set(PermissionProfileDefinition.builtIns.map(\.id)) : nil
+        func exportable(_ selection: PermissionProfileSelection?) -> PermissionProfileSelection? {
+            guard let selection else { return nil }
+            if let exportableProfileIDs, !exportableProfileIDs.contains(selection.profileID) { return nil }
+            return selection
+        }
         let groups = (try? controller?.listWorkspaceGroups()) ?? []
         let groupNames = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0.name) })
         let archivedWorkspaces = workspaces.map { workspace -> ArchivedWorkspace in
@@ -1091,9 +1126,9 @@ final class AppModel: ObservableObject {
                         role: pane.role,
                         isWorkspaceLead: pane.isWorkspaceLead,
                         launchFolder: pane.launchWorkingDirectory,
-                        profileID: pane.permissionSelection?.profileID,
-                        profileLifetime: pane.permissionSelection?.lifetime,
-                        approvals: pane.permissionSelection?.approvals,
+                        profileID: exportable(pane.permissionSelection)?.profileID,
+                        profileLifetime: exportable(pane.permissionSelection)?.lifetime,
+                        approvals: exportable(pane.permissionSelection)?.approvals,
                         wasContainer: pane.containerConfiguration != nil
                     )
                 },
@@ -1103,7 +1138,8 @@ final class AppModel: ObservableObject {
         }
         var defaultProfileIDs: [String: String] = [:]
         for kind in Self.agentKinds {
-            if let profileID = preferences.string(forKey: permissionProfilePreferenceKey(for: kind)) { defaultProfileIDs[kind.rawValue] = profileID }
+            if let profileID = preferences.string(forKey: permissionProfilePreferenceKey(for: kind)),
+               exportableProfileIDs?.contains(profileID) ?? true { defaultProfileIDs[kind.rawValue] = profileID }
         }
         // Nested values are projected: a saved layout loses its approved
         // roots and an imported appearance its source paths, so nothing a
@@ -1128,14 +1164,17 @@ final class AppModel: ObservableObject {
             exportedAt: now,
             groups: groups.map { ArchivedWorkspaceGroup(name: $0.name, isCollapsed: $0.isCollapsed) },
             workspaces: archivedWorkspaces,
-            savedLayouts: unreadable.contains(.savedLayouts) ? [] : savedLayouts.map { $0.strippingApprovedRoots() },
+            savedLayouts: unreadable.contains(.savedLayouts) ? [] : savedLayouts.map { layout in
+                let stripped = layout.strippingApprovedRoots()
+                return exportableProfileIDs.map { stripped.restrictingProfiles(to: $0) } ?? stripped
+            },
             customPermissionProfiles: unreadable.contains(.permissionProfiles) ? [] : permissionProfiles.filter { !$0.isBuiltIn },
             defaultProfileIDs: defaultProfileIDs,
             recipes: unreadable.contains(.handoffRecipes) ? [] : recipes,
             favouriteFolders: unreadable.contains(.favouriteFolders) ? [] : favouriteFolders,
-            worktreeRepositories: (try? worktreeRepositoryStore?.folders()) ?? [],
+            worktreeRepositories: worktreeRepositories,
             preferences: archivedPreferences,
-            omittedStores: configurationLoadIssues.map(\.store.rawValue)
+            omittedStores: ConfigurationStore.allCases.filter(unreadable.contains).map(\.rawValue)
         )
     }
 
@@ -1305,9 +1344,15 @@ final class AppModel: ObservableObject {
             preferenceKeys: restoredPreferenceKeys,
             defaults: preferences
         )
+        let omitted = Set(archive.omittedStores.compactMap(ConfigurationStore.init(rawValue:)))
         do {
-            try applyConfigurationStores(archive)
+            // The journal makes a crash between here and the end recoverable
+            // at the next launch: stores in progress are put back, a
+            // committed workbench is kept.
+            try ConfigurationRestoreJournal(state: .storesInProgress, startedAt: Date(), snapshot: snapshot).write(in: applicationDirectory)
+            try applyConfigurationStores(archive, omitted: omitted)
             _ = try controller.replaceWorkspaces(with: WorkbenchRestorePlan(archive: archive))
+            try? ConfigurationRestoreJournal(state: .workbenchCommitted, startedAt: Date(), snapshot: snapshot).write(in: applicationDirectory)
         } catch {
             var detail = error.localizedDescription
             do {
@@ -1317,6 +1362,7 @@ final class AppModel: ObservableObject {
             } catch let rollbackError {
                 detail += " Putting the stores back also failed: \(rollbackError.localizedDescription) Check Settings > General > Configuration and Status Center > Health."
             }
+            ConfigurationRestoreJournal.clear(in: applicationDirectory)
             let alert = NSAlert()
             alert.messageText = "Configuration Not Restored"
             alert.informativeText = detail
@@ -1327,14 +1373,16 @@ final class AppModel: ObservableObject {
         // The workbench is replaced. Favourites and the workspace order are
         // reset before the refresh reconciles the fresh workspaces, or the old
         // bookmarks would put them back in the old order by name.
-        workspaceContinuity = WorkspaceContinuityState(favouriteFolders: archive.favouriteFolders)
+        workspaceContinuity = WorkspaceContinuityState(favouriteFolders: omitted.contains(.favouriteFolders) ? favouriteFolders : archive.favouriteFolders)
         var layoutWarning: String?
         do {
             try refresh(includingRelay: false)
-            try rebuildNativeLayouts(from: archive)
+            if !omitted.contains(.workspaceRegistry) { try rebuildNativeLayouts(from: archive) }
         } catch {
             layoutWarning = error.localizedDescription
         }
+        ConfigurationRestoreJournal.clear(in: applicationDirectory)
+        configurationRecoveryNotice = nil
         workspaceContinuity.reconcile(workspaces)
         favouriteFolders = workspaceContinuity.favouriteFolders
         saveWorkspaceContinuity()
@@ -1375,33 +1423,46 @@ final class AppModel: ObservableObject {
     /// values follow. nil in the archive means the default (decision of 13
     /// October 2026), so identical archives give identical settings wherever
     /// they are restored.
-    private func applyConfigurationStores(_ archive: ConfigurationArchive) throws {
-        for layout in try layoutStore.layouts() { try layoutStore.delete(named: layout.name) }
-        for layout in archive.savedLayouts { try layoutStore.save(layout) }
-        savedLayouts = try layoutStore.layouts()
+    /// Each store is replaced whole, validated, without decoding what the
+    /// destination holds now, so a damaged destination never stops a healthy
+    /// backup. A store the export left out (`omitted`) is left as it is here.
+    private func applyConfigurationStores(_ archive: ConfigurationArchive, omitted: Set<ConfigurationStore>) throws {
+        if !omitted.contains(.savedLayouts) {
+            try layoutStore.replaceAll(archive.savedLayouts)
+            savedLayouts = try layoutStore.layouts()
+            configurationStoreWritten(.savedLayouts)
+        }
 
-        for profile in try permissionProfileStore.profiles() where !profile.isBuiltIn { try permissionProfileStore.deleteCustom(id: profile.id) }
-        for profile in archive.customPermissionProfiles { try permissionProfileStore.saveCustom(profile) }
-        permissionProfiles = try permissionProfileStore.profiles()
+        if !omitted.contains(.permissionProfiles) {
+            try permissionProfileStore.replaceCustom(archive.customPermissionProfiles)
+            permissionProfiles = try permissionProfileStore.profiles()
+            configurationStoreWritten(.permissionProfiles)
+        }
         for kind in Self.agentKinds { preferences.removeObject(forKey: permissionProfilePreferenceKey(for: kind)) }
         for (vendor, profileID) in archive.defaultProfileIDs {
             guard let kind = PaneKind(rawValue: vendor) else { continue }
             preferences.set(profileID, forKey: permissionProfilePreferenceKey(for: kind))
         }
 
-        try recipeStore.restoreDefaults()
-        for recipe in archive.recipes { try recipeStore.save(recipe) }
-        recipes = try recipeStore.recipes()
+        if !omitted.contains(.handoffRecipes) {
+            try recipeStore.replaceAll(archive.recipes)
+            recipes = try recipeStore.recipes()
+            configurationStoreWritten(.handoffRecipes)
+        }
 
-        if let store = worktreeRepositoryStore {
-            for folder in try store.folders() { try store.forget(folder) }
-            for folder in archive.worktreeRepositories { try store.add(folder) }
+        if !omitted.contains(.worktreeRepositories), let store = worktreeRepositoryStore {
+            try store.replace(folders: archive.worktreeRepositories)
+            configurationStoreWritten(.worktreeRepositories)
         }
 
         let archived = archive.preferences
         setTerminalTypePreference(archived.terminalType.flatMap(TerminalTypePreference.init(rawValue:)) ?? .default)
-        try updateTerminalAppearance(family: archived.font?.family, size: archived.font?.size, imported: archived.appearanceImport)
-        try updateTerminalSurfacePreference(archived.surfaceOptions ?? .ghosttyDefault)
+        if !omitted.contains(.terminalFont), !omitted.contains(.terminalAppearanceImport) {
+            try updateTerminalAppearance(family: archived.font?.family, size: archived.font?.size, imported: archived.appearanceImport)
+        }
+        if !omitted.contains(.terminalSurfaceOptions) {
+            try updateTerminalSurfacePreference(archived.surfaceOptions ?? .ghosttyDefault)
+        }
         voice.language = archived.voiceLanguage ?? "en-GB"
         voice.readAloudEnabled = archived.readAloud ?? false
         notificationWorkspaceNames = Set(archived.notificationWorkspaces)
@@ -1417,8 +1478,11 @@ final class AppModel: ObservableObject {
     /// and Ghostty must follow them.
     private func reloadConfigurationFromStores() throws {
         savedLayouts = try layoutStore.layouts()
+        configurationStoreWritten(.savedLayouts)
         permissionProfiles = try permissionProfileStore.profiles()
+        configurationStoreWritten(.permissionProfiles)
         recipes = try recipeStore.recipes()
+        configurationStoreWritten(.handoffRecipes)
         let decoder = JSONDecoder()
         let font = preferences.data(forKey: Self.terminalFontPreferenceKey).flatMap { try? decoder.decode(TerminalFontPreference.self, from: $0) } ?? .ghosttyDefault
         let imported = preferences.data(forKey: Self.terminalAppearanceImportKey).flatMap { try? decoder.decode(GhosttyAppearanceImport.self, from: $0) }
@@ -1521,6 +1585,8 @@ final class AppModel: ObservableObject {
         }
         terminalFontPreference = preference
         terminalAppearanceImport = appearance
+        configurationStoreWritten(.terminalFont)
+        configurationStoreWritten(.terminalAppearanceImport)
     }
 
     func updateTerminalFont(family: String?, size: Double?) throws {
@@ -1551,6 +1617,7 @@ final class AppModel: ObservableObject {
             preferences.set(try JSONEncoder().encode(preference), forKey: Self.terminalSurfacePreferenceKey)
         }
         terminalSurfacePreference = preference
+        configurationStoreWritten(.terminalSurfaceOptions)
     }
 
     func resetTerminalSurfacePreference() throws {
@@ -5457,6 +5524,7 @@ final class AppModel: ObservableObject {
     func saveCustomPermissionProfile(_ profile: PermissionProfileDefinition) throws -> PermissionProfileDefinition {
         try permissionProfileStore.saveCustom(profile)
         permissionProfiles = try permissionProfileStore.profiles()
+        configurationStoreWritten(.permissionProfiles)
         return profile
     }
 
@@ -7618,6 +7686,8 @@ final class AppModel: ObservableObject {
             )
             try recipeStore.save(updated)
             recipes = try recipeStore.recipes()
+            configurationStoreWritten(.handoffRecipes)
+        configurationStoreWritten(.handoffRecipes)
             terminalHandle.focus()
         }
     }
@@ -7633,6 +7703,8 @@ final class AppModel: ObservableObject {
         perform {
             try recipeStore.restoreDefaults()
             recipes = try recipeStore.recipes()
+            configurationStoreWritten(.handoffRecipes)
+        configurationStoreWritten(.handoffRecipes)
             terminalHandle.focus()
         }
     }
@@ -8992,6 +9064,8 @@ final class AppModel: ObservableObject {
                 automationPolicy: captured.automationPolicy
             ))
             savedLayouts = try layoutStore.layouts()
+            configurationStoreWritten(.savedLayouts)
+        configurationStoreWritten(.savedLayouts)
             terminalHandle.focus()
         }
     }
@@ -9055,6 +9129,8 @@ final class AppModel: ObservableObject {
         perform {
             try layoutStore.delete(named: layout.name)
             savedLayouts = try layoutStore.layouts()
+            configurationStoreWritten(.savedLayouts)
+        configurationStoreWritten(.savedLayouts)
             terminalHandle.focus()
         }
     }
@@ -9146,6 +9222,13 @@ final class AppModel: ObservableObject {
     private func saveWorkspaceContinuity() {
         guard let data = try? JSONEncoder().encode(workspaceContinuity) else { return }
         preferences.set(data, forKey: Self.workspaceContinuityKey)
+        configurationStoreWritten(.favouriteFolders)
+    }
+
+    /// A store written with validated content is readable again; its launch
+    /// issue goes, so Settings, Status Center and the exporter see it whole.
+    private func configurationStoreWritten(_ store: ConfigurationStore) {
+        configurationLoadIssues.removeAll { $0.store == store }
     }
 
     private func processNotifications(from handoffs: [RelayHandoff]) {

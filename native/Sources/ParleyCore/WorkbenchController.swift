@@ -1925,13 +1925,10 @@ public final class WorkbenchController: @unchecked Sendable {
                 document.workspaces.removeAll()
                 document.workspaceGroups = nil
                 document.activity = [:]
-                var groupIDs: [String: String] = [:]
                 var groups: [WorkspaceGroup] = []
                 for template in plan.groups {
                     let name = try WorkspaceGroup.validatedName(template.name, among: groups).get()
-                    let group = WorkspaceGroup(id: "group-" + UUID().uuidString.lowercased(), name: name, isCollapsed: template.isCollapsed)
-                    groups.append(group)
-                    groupIDs[name.lowercased()] = group.id
+                    groups.append(WorkspaceGroup(id: "group-" + UUID().uuidString.lowercased(), name: name, isCollapsed: template.isCollapsed))
                 }
                 document.workspaceGroups = groups.isEmpty ? nil : groups
                 var created: [[String]] = []
@@ -1948,10 +1945,12 @@ public final class WorkbenchController: @unchecked Sendable {
                     let index = try workspaceIndexLocked(workspace.id)
                     document.workspaces[index].pinned = template.pinned
                     if let groupName = template.groupName {
-                        guard let groupID = groupIDs[groupName.lowercased()] else {
+                        // The same comparison the group names were validated
+                        // with, so a name that validated also resolves.
+                        guard let group = groups.first(where: { $0.name.caseInsensitiveCompare(groupName) == .orderedSame }) else {
                             throw WorkbenchRestoreError.invalid("workspace \"\(template.name)\" names a group the plan does not define")
                         }
-                        document.workspaces[index].groupID = groupID
+                        document.workspaces[index].groupID = group.id
                     }
                     var ids: [String] = []
                     for paneTemplate in template.panes {

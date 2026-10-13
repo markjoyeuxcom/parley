@@ -13,6 +13,7 @@ public enum ConfigurationStore: String, CaseIterable, Identifiable, Sendable {
     case handoffRecipes
     case permissionProfiles
     case favouriteFolders
+    case worktreeRepositories
 
     public var id: String { rawValue }
 
@@ -26,6 +27,7 @@ public enum ConfigurationStore: String, CaseIterable, Identifiable, Sendable {
         case .handoffRecipes: "Recipes"
         case .permissionProfiles: "Permission profiles"
         case .favouriteFolders: "Favourite folders and workspace order"
+        case .worktreeRepositories: "Worktree repositories"
         }
     }
 
@@ -41,6 +43,7 @@ public enum ConfigurationStore: String, CaseIterable, Identifiable, Sendable {
         case .handoffRecipes: .file("handoff-recipes.json")
         case .permissionProfiles: .file("permission-profiles.json")
         case .favouriteFolders: .preference("parley.workspaceContinuity")
+        case .worktreeRepositories: .file("worktree-repositories.json")
         }
     }
 
@@ -55,6 +58,7 @@ public enum ConfigurationStore: String, CaseIterable, Identifiable, Sendable {
         case .handoffRecipes: "The built-in recipe texts are in use."
         case .permissionProfiles: "Only the built-in profiles are offered, and agent launches that need a custom profile are refused."
         case .favouriteFolders: "Favourites and the remembered workspace order start empty."
+        case .worktreeRepositories: "The Worktrees window lists only repositories Parley can see from panes and folders until the file is repaired or removed."
         }
     }
 }

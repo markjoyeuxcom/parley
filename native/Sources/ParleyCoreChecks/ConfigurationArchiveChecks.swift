@@ -140,6 +140,14 @@ func checkConfigurationArchiveValidatorRefusesBadShapes() throws {
     }
     try refused("no workspaces", { $0.workspaces = [] }, "no workspace")
     try refused("duplicate names", { $0.workspaces[1].name = "parley" }, "two workspaces are named")
+    // The stores compare names with caseInsensitiveCompare; lowercasing
+    // would have let Straße and STRASSE both through (Codex, 13 October).
+    try refused("names the stores call equal", { $0.workspaces[0].name = "Straße"; $0.workspaces[1].name = "STRASSE" }, "two workspaces are named")
+    try refused("layouts the store calls equal", {
+        let leaf = SavedLayoutLeaf(kind: .shell, name: "Shell", folder: folder, role: nil, isWorkspaceLead: false, permissionSelection: nil)
+        $0.savedLayouts = [SavedWorkspaceLayout(name: "Straße", defaultFolder: folder, root: .leaf(leaf), automationPolicy: .off),
+                           SavedWorkspaceLayout(name: "STRASSE", defaultFolder: folder, root: .leaf(leaf), automationPolicy: .off)]
+    }, "two saved layouts are named")
     try refused("a relative folder", { $0.workspaces[0].attachedFolders = ["relative"] }, "not an absolute path")
     try refused("an unknown group", { $0.workspaces[0].groupName = "Nowhere" }, "names a group the archive does not define")
     try refused("a role on a shell", { $0.workspaces[0].panes[2].role = "ops" }, "shell pane")
@@ -435,8 +443,19 @@ func checkAppModelConfigurationTransferIsGuarded() throws {
         "throw ConfigurationArchiveError.runtimeMismatch(archive: archive.runtime, current: currentRuntime)",
         "let blockers = configurationRestoreBlockers(fresh: true)\n        guard blockers.isEmpty else {",
         "coordinationUnreadable = true",
+        "try ConfigurationRestoreJournal(state: .storesInProgress, startedAt: Date(), snapshot: snapshot).write(in: applicationDirectory)",
+        "ConfigurationRestoreJournal(state: .workbenchCommitted",
+        "ConfigurationRestoreJournal.clear(in: applicationDirectory)",
+        "try layoutStore.replaceAll(archive.savedLayouts)",
+        "try permissionProfileStore.replaceCustom(archive.customPermissionProfiles)",
+        "try recipeStore.replaceAll(archive.recipes)",
+        "try store.replace(folders: archive.worktreeRepositories)",
+        "restrictingProfiles(to: $0)",
+        "unreadable.insert(.worktreeRepositories)",
+        "if let journal = ConfigurationRestoreJournal.read(in: applicationDirectory) {",
+        "private func configurationStoreWritten(_ store: ConfigurationStore) {",
         "let snapshot = ConfigurationStoreSnapshot.capture(",
-        "try applyConfigurationStores(archive)\n            _ = try controller.replaceWorkspaces(with: WorkbenchRestorePlan(archive: archive))",
+        "try applyConfigurationStores(archive, omitted: omitted)\n            _ = try controller.replaceWorkspaces(with: WorkbenchRestorePlan(archive: archive))",
         "try snapshot.restore(defaults: preferences)",
         "workspaceContinuity = WorkspaceContinuityState(favouriteFolders: archive.favouriteFolders)\n        var layoutWarning",
         "savedLayouts.map { $0.strippingApprovedRoots() }",
@@ -456,11 +475,93 @@ func checkAppModelConfigurationTransferIsGuarded() throws {
     }
     let sheet = try archiveSource("ParleyNative", "ConfigurationRestoreView.swift")
     try archiveExpect(sheet.contains(".disabled(!preview.canApply)"), "Replace is not disabled by the blockers")
+    try archiveExpect(sheet.contains("ScrollView {") && sheet.contains(".frame(maxHeight: 520)"), "the preview's facts do not scroll above the buttons")
     try archiveExpect(sheet.contains("Button(\"Cancel\") { model.cancelConfigurationRestore() }\n                    .keyboardShortcut(.cancelAction)"), "Cancel is not the escape")
     try archiveExpect(!sheet.contains("Button(\"Replace\") { model.applyConfigurationRestore() }\n                    .keyboardShortcut(.defaultAction)"), "Replace is the Return default")
 }
 
+/// The restore journal round-trips its snapshot and says what the next launch
+/// does with it; a store is replaced whole without decoding a damaged
+/// destination; a layout drops references to profiles it may not carry.
+func checkConfigurationRestoreJournalAndWholeStoreReplacement() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("parley-config-journal-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let suite = "com.markjoyeux.parley.checks.configuration-journal"
+    guard let defaults = UserDefaults(suiteName: suite) else { throw NSError(domain: "ConfigurationArchive", code: 7, userInfo: [NSLocalizedDescriptionKey: "no suite"]) }
+    defaults.removePersistentDomain(forName: suite)
+    defer { defaults.removePersistentDomain(forName: suite) }
+
+    let layoutsFile = root.appendingPathComponent("workspace-layouts.json")
+    let profilesFile = root.appendingPathComponent("permission-profiles.json")
+    try Data("{ garbage".utf8).write(to: layoutsFile)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: layoutsFile.path)
+    defaults.set("beta", forKey: "parley.releaseChannel")
+    defaults.set(Data([1, 2, 3]), forKey: "parley.terminalFontPreference")
+    let snapshot = ConfigurationStoreSnapshot.capture(files: [layoutsFile, profilesFile], preferenceKeys: ["parley.releaseChannel", "parley.terminalFontPreference", "parley.absent"], defaults: defaults)
+    let journal = ConfigurationRestoreJournal(state: .storesInProgress, startedAt: Date(timeIntervalSince1970: 1_760_500_000), snapshot: snapshot)
+    try journal.write(in: root)
+    let read = ConfigurationRestoreJournal.read(in: root)
+    try archiveExpect(read == journal, "the journal did not round-trip")
+    try archiveExpect(read?.files.map(\.name) == ["workspace-layouts.json", "permission-profiles.json"], "the journal names \(read?.files.map(\.name) ?? [])")
+    try archiveExpect(read?.recoveryNotice.contains("put back as they were") == true, "the in-progress notice reads \(read?.recoveryNotice ?? "")")
+    var committed = journal
+    committed.state = .workbenchCommitted
+    try archiveExpect(committed.recoveryNotice.contains("restored configuration stands"), "the committed notice reads \(committed.recoveryNotice)")
+
+    // A damaged owner-only layouts file: the store refuses to read it, and
+    // replaceAll writes a healthy document over it without reading.
+    let store = SavedWorkspaceLayoutStore(file: layoutsFile)
+    do { _ = try store.layouts(); throw NSError(domain: "ConfigurationArchive", code: 8, userInfo: [NSLocalizedDescriptionKey: "a damaged layouts file was read"]) } catch is SavedWorkspaceLayoutStoreError {}
+    let folder = root.path
+    let leaf = SavedLayoutLeaf(kind: .shell, name: "Shell", folder: folder, role: nil, isWorkspaceLead: false, permissionSelection: nil)
+    try store.replaceAll([SavedWorkspaceLayout(name: "Pair", defaultFolder: folder, root: .leaf(leaf), automationPolicy: .off)])
+    try archiveExpect(try store.layouts().map(\.name) == ["Pair"], "replaceAll did not replace the damaged file")
+    do {
+        try store.replaceAll([SavedWorkspaceLayout(name: "Straße", defaultFolder: folder, root: .leaf(leaf), automationPolicy: .off),
+                              SavedWorkspaceLayout(name: "STRASSE", defaultFolder: folder, root: .leaf(leaf), automationPolicy: .off)])
+        throw NSError(domain: "ConfigurationArchive", code: 8, userInfo: [NSLocalizedDescriptionKey: "two equal layout names were written"])
+    } catch is SavedWorkspaceLayoutStoreError {}
+    try Data("{ garbage".utf8).write(to: profilesFile)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: profilesFile.path)
+    let profiles = PermissionProfileStore(file: profilesFile)
+    let custom = PermissionProfileDefinition.builtIns[0].clone(id: "custom-one-12345678", name: "One")
+    try profiles.replaceCustom([custom])
+    try archiveExpect(try profiles.profiles().contains(custom), "replaceCustom did not replace the damaged file")
+    do { try profiles.replaceCustom([PermissionProfileDefinition.builtIns[0]]); throw NSError(domain: "ConfigurationArchive", code: 8, userInfo: [NSLocalizedDescriptionKey: "a built-in was written as custom"]) } catch is PermissionProfileError {}
+    let recipesFile = root.appendingPathComponent("handoff-recipes.json")
+    try Data("{ garbage".utf8).write(to: recipesFile)
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: recipesFile.path)
+    let recipeStore = HandoffRecipeStore(file: recipesFile)
+    let edited = HandoffRecipe(id: HandoffRecipe.defaults[0].id, name: HandoffRecipe.defaults[0].name, kind: HandoffRecipe.defaults[0].kind, instructions: "Edited for {{targets}}.")
+    try recipeStore.replaceAll([edited])
+    let recipes = try recipeStore.recipes()
+    try archiveExpect(recipes.count == HandoffRecipe.defaults.count && recipes[0].instructions == "Edited for {{targets}}." && recipes[1] == HandoffRecipe.defaults[1],
+                      "replaceAll did not keep the other defaults")
+    let worktrees = WorktreeRepositoryStore(file: root.appendingPathComponent("worktree-repositories.json"))
+    try worktrees.replace(folders: [root.path, root.path])
+    try archiveExpect(try worktrees.folders() == [GitWorktreeResolver.canonicalPath(root.path)], "replace(folders:) did not canonicalise and dedupe")
+
+    // After the journal is applied the snapshot restores the damaged bytes
+    // exactly; a rollback never repairs what it did not change.
+    try read!.snapshot(in: root).restore(defaults: defaults)
+    try archiveExpect(try Data(contentsOf: layoutsFile) == Data("{ garbage".utf8), "the rollback did not put the damaged layouts bytes back")
+    try archiveExpect(!FileManager.default.fileExists(atPath: profilesFile.path), "the rollback left a profiles file that did not exist")
+    try archiveExpect(defaults.data(forKey: "parley.terminalFontPreference") == Data([1, 2, 3]) && defaults.string(forKey: "parley.releaseChannel") == "beta" && defaults.object(forKey: "parley.absent") == nil,
+                      "the rollback did not put the preference values back")
+    ConfigurationRestoreJournal.clear(in: root)
+    try archiveExpect(ConfigurationRestoreJournal.read(in: root) == nil, "the journal was not cleared")
+
+    let rooted = SavedWorkspaceLayout(name: "Rooted", defaultFolder: folder,
+                                      root: .leaf(SavedLayoutLeaf(kind: .claude, name: "Lead", folder: folder, role: nil, isWorkspaceLead: false,
+                                                                  permissionSelection: PermissionProfileSelection(profileID: "custom-gone", approvedRoots: [], lifetime: .session))),
+                                      automationPolicy: .off)
+    try archiveExpect(rooted.restrictingProfiles(to: ["default"]).root.leaves[0].permissionSelection == nil, "a dangling profile reference survived restriction")
+    try archiveExpect(rooted.restrictingProfiles(to: ["custom-gone"]).root.leaves[0].permissionSelection?.profileID == "custom-gone", "an allowed profile reference was dropped")
+}
+
 @MainActor let configurationArchiveChecks: [(String, () throws -> Void)] = [
+    ("configuration restore journal and whole-store replacement", checkConfigurationRestoreJournalAndWholeStoreReplacement),
     ("configuration archive round trips", checkConfigurationArchiveRoundTrips),
     ("configuration archive validator refuses bad shapes", checkConfigurationArchiveValidatorRefusesBadShapes),
     ("configuration quiet runtime table", checkConfigurationQuietRuntimeTable),

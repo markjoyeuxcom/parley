@@ -290,6 +290,26 @@ public final class SavedWorkspaceLayoutStore: @unchecked Sendable {
         }
     }
 
+    /// Writes exactly these layouts, validated, without reading what the file
+    /// holds now: a configuration restore replaces a store whole, and a
+    /// damaged destination must not stop a healthy backup. The file must
+    /// still be an owner-only regular file if it exists; a link or a foreign
+    /// file is never written over.
+    public func replaceAll(_ layouts: [SavedWorkspaceLayout]) throws {
+        try lock.withLock {
+            guard layouts.count <= Self.maximumLayouts else {
+                throw SavedWorkspaceLayoutStoreError.invalid("at most \(Self.maximumLayouts) layouts may be saved")
+            }
+            for (index, layout) in layouts.enumerated() {
+                try Self.validate(layout)
+                if layouts[..<index].contains(where: { $0.name.caseInsensitiveCompare(layout.name) == .orderedSame }) {
+                    throw SavedWorkspaceLayoutStoreError.invalid("two layouts are named \(layout.name)")
+                }
+            }
+            try write(Document(version: Self.schemaVersion, layouts: layouts))
+        }
+    }
+
     public func delete(named name: String) throws {
         try lock.withLock {
             var document = try readDocument()

@@ -75,9 +75,12 @@ func checkConfigurationIssueSummariesAreComplete() throws {
 /// the terminal stack down.
 func checkAppModelReportsUnreadableStores() throws {
     let source = try configSource("ParleyNative", "AppModel.swift")
-    for store in ConfigurationStore.allCases {
+    // The worktree repository list is read on demand, so its health is
+    // learnt at export time (unreadable.insert), not as a launch issue.
+    for store in ConfigurationStore.allCases where store != .worktreeRepositories {
         try configExpect(source.contains("ConfigurationLoadIssue(store: .\(store.rawValue),"), "AppModel never records an issue for \(store.rawValue)")
     }
+    try configExpect(source.contains("unreadable.insert(.worktreeRepositories)"), "an unreadable worktree repository list is not left out of an export")
     for forbidden in [
         "(try? workspaceRegistry.records()) ?? []",
         "(try? recipeStore.recipes()) ?? HandoffRecipe.defaults",

@@ -136,6 +136,15 @@ public final class WorktreeRepositoryStore: @unchecked Sendable {
         }
     }
 
+    /// Writes exactly these folders, canonical and sorted, without reading the
+    /// file first (see SavedWorkspaceLayoutStore.replaceAll).
+    public func replace(folders: [String]) throws {
+        try lock.withLock {
+            let canonical = Array(Set(folders.map(GitWorktreeResolver.canonicalPath))).sorted()
+            try write(Document(folders: canonical))
+        }
+    }
+
     private func load() throws -> Document {
         guard FileManager.default.fileExists(atPath: file.path) else { return Document(folders: []) }
         return try JSONDecoder().decode(Document.self, from: Data(contentsOf: file))

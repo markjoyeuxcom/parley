@@ -623,6 +623,24 @@ public final class PermissionProfileStore: @unchecked Sendable {
         }
     }
 
+    /// Writes exactly these custom profiles, validated, without reading the
+    /// file first (see SavedWorkspaceLayoutStore.replaceAll).
+    public func replaceCustom(_ profiles: [PermissionProfileDefinition]) throws {
+        try lock.withLock {
+            for (index, profile) in profiles.enumerated() {
+                guard !profile.isBuiltIn, profile.id.hasPrefix("custom-"),
+                      !PermissionProfileDefinition.builtIns.contains(where: { $0.id == profile.id }) else {
+                    throw PermissionProfileError.invalid("Only custom permission profiles (ids beginning with custom-) are stored.")
+                }
+                try PermissionProfileValidator.validate(profile)
+                if profiles[..<index].contains(where: { $0.id == profile.id || $0.name.caseInsensitiveCompare(profile.name) == .orderedSame }) {
+                    throw PermissionProfileError.invalid("Two custom permission profiles share the id or name \(profile.name).")
+                }
+            }
+            try writeLocked(profiles)
+        }
+    }
+
     public func deleteCustom(id: String) throws {
         try lock.withLock {
             guard !PermissionProfileDefinition.builtIns.contains(where: { $0.id == id }) else {
