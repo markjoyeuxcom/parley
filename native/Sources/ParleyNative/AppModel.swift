@@ -338,6 +338,9 @@ final class AppModel: ObservableObject {
     @Published var paneChoiceRequest: PaneChoiceRequest?
     @Published private(set) var historyRetentionPolicy: CollaborationHistoryRetentionPolicy = .defaultPolicy
     @Published private(set) var terminalFontPreference = TerminalFontPreference.ghosttyDefault
+    /// Configuration stores that could not be read at launch; Settings › General
+    /// and Status Center › Health show them, and the exporter leaves them out.
+    @Published private(set) var configurationLoadIssues: [ConfigurationLoadIssue] = []
     @Published private(set) var terminalSurfacePreference = TerminalSurfacePreference.ghosttyDefault
     @Published private(set) var terminalAppearanceImport: GhosttyAppearanceImport?
     @Published private(set) var taskManagerSnapshot: TaskManagerSnapshot?
@@ -521,27 +524,34 @@ final class AppModel: ObservableObject {
         runtime = resolvedRuntime
         applicationDirectory = runtime.applicationDirectory
         preferences = UserDefaults(suiteName: runtime.preferenceSuiteName) ?? .standard
+        // A store that cannot be read is reported, and its bytes are kept
+        // under a sibling key or file, rather than deleted or overwritten
+        // with the defaults the app then runs on.
+        var loadIssues: [ConfigurationLoadIssue] = []
         if let data = preferences.data(forKey: Self.terminalFontPreferenceKey) {
-            if let stored = try? JSONDecoder().decode(TerminalFontPreference.self, from: data) {
-                terminalFontPreference = stored
-            } else {
-                preferences.removeObject(forKey: Self.terminalFontPreferenceKey)
+            do {
+                terminalFontPreference = try JSONDecoder().decode(TerminalFontPreference.self, from: data)
+            } catch {
+                let kept = ConfigurationPreservation.preserve(preferenceKey: Self.terminalFontPreferenceKey, in: preferences)
+                loadIssues.append(ConfigurationLoadIssue(store: .terminalFont, reason: error.localizedDescription, preservedCopy: kept))
             }
         }
         if let data = preferences.data(forKey: Self.terminalAppearanceImportKey) {
-            if let stored = try? JSONDecoder().decode(GhosttyAppearanceImport.self, from: data) {
-                terminalAppearanceImport = stored
-            } else {
-                preferences.removeObject(forKey: Self.terminalAppearanceImportKey)
+            do {
+                terminalAppearanceImport = try JSONDecoder().decode(GhosttyAppearanceImport.self, from: data)
+            } catch {
+                let kept = ConfigurationPreservation.preserve(preferenceKey: Self.terminalAppearanceImportKey, in: preferences)
+                loadIssues.append(ConfigurationLoadIssue(store: .terminalAppearanceImport, reason: error.localizedDescription, preservedCopy: kept))
             }
         }
         if let data = preferences.data(forKey: Self.terminalSurfacePreferenceKey) {
             // Decoding validates; a stored value outside today's bounds is
-            // dropped rather than clamped into something nobody chose.
-            if let stored = try? JSONDecoder().decode(TerminalSurfacePreference.self, from: data) {
-                terminalSurfacePreference = stored
-            } else {
-                preferences.removeObject(forKey: Self.terminalSurfacePreferenceKey)
+            // kept aside rather than clamped into something nobody chose.
+            do {
+                terminalSurfacePreference = try JSONDecoder().decode(TerminalSurfacePreference.self, from: data)
+            } catch {
+                let kept = ConfigurationPreservation.preserve(preferenceKey: Self.terminalSurfacePreferenceKey, in: preferences)
+                loadIssues.append(ConfigurationLoadIssue(store: .terminalSurfaceOptions, reason: error.localizedDescription, preservedCopy: kept))
             }
         }
         if let stored = preferences.string(forKey: Self.lastAgentVendorKey), let kind = PaneKind(rawValue: stored), kind.isAgent {
@@ -561,7 +571,15 @@ final class AppModel: ObservableObject {
         workspaceRegistry = WorkspaceRegistry(
             file: applicationDirectory.appendingPathComponent("workspace-registry.json")
         )
-        let workspaceRecords = (try? workspaceRegistry.records()) ?? []
+        let workspaceRecords: [WorkspaceRegistryRecord]
+        do {
+            workspaceRecords = try workspaceRegistry.records()
+        } catch {
+            workspaceRecords = []
+            let file = applicationDirectory.appendingPathComponent("workspace-registry.json")
+            let kept = try? ConfigurationPreservation.preserve(file: file).path
+            loadIssues.append(ConfigurationLoadIssue(store: .workspaceRegistry, reason: error.localizedDescription, preservedCopy: kept))
+        }
         nativeLayouts = workspaceRecords.reduce(into: [:]) { $0[$1.workspaceID] = $1.layout }
         nativeSplitFractions = workspaceRecords.reduce(into: [:]) {
             $0[$1.workspaceID] = $1.splitFractions
@@ -585,9 +603,22 @@ final class AppModel: ObservableObject {
             startupError = runtimeResolutionError
             startupRequiresQuit = true
         }
-        recipes = (try? recipeStore.recipes()) ?? HandoffRecipe.defaults
-        permissionProfiles = (try? permissionProfileStore.profiles())
-            ?? PermissionProfileDefinition.builtIns
+        do {
+            recipes = try recipeStore.recipes()
+        } catch {
+            recipes = HandoffRecipe.defaults
+            let file = applicationDirectory.appendingPathComponent("handoff-recipes.json")
+            let kept = try? ConfigurationPreservation.preserve(file: file).path
+            loadIssues.append(ConfigurationLoadIssue(store: .handoffRecipes, reason: error.localizedDescription, preservedCopy: kept))
+        }
+        do {
+            permissionProfiles = try permissionProfileStore.profiles()
+        } catch {
+            permissionProfiles = PermissionProfileDefinition.builtIns
+            let file = applicationDirectory.appendingPathComponent("permission-profiles.json")
+            let kept = try? ConfigurationPreservation.preserve(file: file).path
+            loadIssues.append(ConfigurationLoadIssue(store: .permissionProfiles, reason: error.localizedDescription, preservedCopy: kept))
+        }
         do {
             try ghosttyRegistry.applyTerminalAppearance(
                 font: terminalFontPreference,
@@ -595,12 +626,19 @@ final class AppModel: ObservableObject {
                 surface: terminalSurfacePreference
             )
         } catch {
+            // Ghostty refused the saved appearance: keep what was saved aside
+            // and run on defaults, saying so.
             terminalFontPreference = .ghosttyDefault
             terminalAppearanceImport = nil
             terminalSurfacePreference = .ghosttyDefault
-            preferences.removeObject(forKey: Self.terminalFontPreferenceKey)
-            preferences.removeObject(forKey: Self.terminalAppearanceImportKey)
-            preferences.removeObject(forKey: Self.terminalSurfacePreferenceKey)
+            for (key, store) in [
+                (Self.terminalFontPreferenceKey, ConfigurationStore.terminalFont),
+                (Self.terminalAppearanceImportKey, ConfigurationStore.terminalAppearanceImport),
+                (Self.terminalSurfacePreferenceKey, ConfigurationStore.terminalSurfaceOptions),
+            ] {
+                guard let kept = ConfigurationPreservation.preserve(preferenceKey: key, in: preferences) else { continue }
+                loadIssues.append(ConfigurationLoadIssue(store: store, reason: "Ghostty refused the saved appearance: \(error.localizedDescription)", preservedCopy: kept))
+            }
             try? ghosttyRegistry.applyTerminalFont(.ghosttyDefault)
         }
         if runtime.mode == .production {
@@ -623,10 +661,17 @@ final class AppModel: ObservableObject {
         }
         recentFolders = preferences.stringArray(forKey: Self.recentFoldersKey) ?? []
         pruneMissingRecentFolders()
-        if let data = preferences.data(forKey: Self.workspaceContinuityKey),
-           let decoded = try? JSONDecoder().decode(WorkspaceContinuityState.self, from: data) {
-            workspaceContinuity = decoded
+        if let data = preferences.data(forKey: Self.workspaceContinuityKey) {
+            do {
+                workspaceContinuity = try JSONDecoder().decode(WorkspaceContinuityState.self, from: data)
+            } catch {
+                // The fresh state is saved again below; without this the
+                // person's favourites were silently written over.
+                let kept = ConfigurationPreservation.preserve(preferenceKey: Self.workspaceContinuityKey, in: preferences)
+                loadIssues.append(ConfigurationLoadIssue(store: .favouriteFolders, reason: error.localizedDescription, preservedCopy: kept))
+            }
         }
+        configurationLoadIssues = loadIssues
         favouriteFolders = workspaceContinuity.favouriteFolders
         notificationWorkspaceNames = Set(
             preferences.stringArray(forKey: Self.notificationWorkspacesKey) ?? []
@@ -763,7 +808,15 @@ final class AppModel: ObservableObject {
             }
             controller.configureTerminalTransport(makeGhosttyTerminalTransport())
             reconcileNativeLayouts(workspaces: liveWorkspaces, panes: livePanes)
-            savedLayouts = try layoutStore.layouts()
+            do {
+                savedLayouts = try layoutStore.layouts()
+            } catch {
+                // One unreadable layout file used to take the whole terminal
+                // stack down with "startupError"; it is one store.
+                savedLayouts = []
+                let kept = try? ConfigurationPreservation.preserve(file: applicationDirectory.appendingPathComponent("workspace-layouts.json")).path
+                configurationLoadIssues.append(ConfigurationLoadIssue(store: .savedLayouts, reason: error.localizedDescription, preservedCopy: kept))
+            }
             rememberFolder(defaultFolder)
             scheduleProjectContextRefresh(force: true)
             schedulePaneListeningPortRefresh(force: true)
@@ -993,6 +1046,15 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: Settings and appearance
+
+    /// Shows an unreadable configuration file in Finder, beside the copy
+    /// Parley kept, so the person can repair or remove it. Only the fixed
+    /// store names under this runtime's directory are ever revealed.
+    func revealConfigurationFile(named name: String) {
+        guard ConfigurationStore.allCases.contains(where: { $0.location == .file(name) }) else { return }
+        let file = applicationDirectory.appendingPathComponent(name)
+        NSWorkspace.shared.activateFileViewerSelecting([file])
+    }
 
     func showSettings(_ section: ApplicationSettingsSection = .general) {
         selectedSettingsSection = section

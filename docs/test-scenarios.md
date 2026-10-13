@@ -541,6 +541,15 @@ other than the command shown.
 - Prepare to Uninstall: confirm what it removes before doing it on a scratch
   setup only.
 
+
+## P3.8 Unreadable configuration store (13 October 2026)
+
+1. Quit Parley. In the Development runtime's directory, replace handoff-recipes.json with `{ not json` and append garbage to workspace-layouts.json.
+2. Launch (`npm run dev`). Panes and the terminal stack come up normally. Settings › General › Configuration lists Recipes and Saved layouts as unreadable with the reason, the fallback and the kept copy; Reveal in Finder selects the file. Status Center › Health reads "2 UNREADABLE".
+3. Both original files are unchanged on disk and a `.unreadable-<time>` copy sits beside each. Edit a recipe: the save is refused (the store loads first) rather than overwriting the file.
+4. Remove the two files and relaunch: Configuration reads "Every configuration store loaded"; recipes and layouts are defaults.
+
+**Fail:** the app refusing to start over a layouts file; a corrupt file silently replaced by defaults; favourites lost after a corrupt continuity value.
 ---
 
 # After the pass
