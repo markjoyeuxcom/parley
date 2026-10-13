@@ -1047,6 +1047,327 @@ final class AppModel: ObservableObject {
 
     // MARK: Settings and appearance
 
+    // MARK: Configuration export and restore
+
+    /// A restore the person has not yet confirmed: the archive and what it
+    /// would replace. Settings presents it as a sheet; Replace applies it.
+    struct ConfigurationRestoreProposal: Identifiable {
+        let id = UUID()
+        let archive: ConfigurationArchive
+        let preview: ConfigurationRestorePreview
+        let sourceName: String
+    }
+
+    @Published private(set) var configurationRestoreProposal: ConfigurationRestoreProposal?
+    @Published private(set) var configurationTransferring = false
+
+    private static let agentKinds: [PaneKind] = PaneKind.allCases.filter(\.isAgent)
+
+    /// The configuration as it is now, from allowlisted typed values only
+    /// (decision of 13 October 2026). A store that could not be read at
+    /// launch is left out and named in `omittedStores`, so defaults are never
+    /// exported as the person's choice.
+    func makeConfigurationArchive(now: Date = Date()) -> ConfigurationArchive {
+        let unreadable = Set(configurationLoadIssues.map(\.store))
+        let groups = (try? controller?.listWorkspaceGroups()) ?? []
+        let groupNames = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0.name) })
+        let archivedWorkspaces = workspaces.map { workspace -> ArchivedWorkspace in
+            let workspacePanes = panes.filter { $0.workspaceID == workspace.workspaceID }
+            let paneIDs = workspacePanes.map(\.id)
+            let layout = unreadable.contains(.workspaceRegistry)
+                ? nil
+                : nativeLayouts[workspace.workspaceID].flatMap { ArchivedLayoutNode.archiving($0, paneIDs: paneIDs) }
+            return ArchivedWorkspace(
+                name: workspace.name,
+                attachedFolders: workspace.attachedFolders,
+                newPaneFolder: workspace.newPaneFolder,
+                automationPolicy: workspace.automationPolicy,
+                pinned: workspace.pinned,
+                groupName: workspace.groupID.flatMap { groupNames[$0] },
+                panes: workspacePanes.map { pane in
+                    ArchivedPane(
+                        kind: pane.kind,
+                        name: pane.customName,
+                        role: pane.role,
+                        isWorkspaceLead: pane.isWorkspaceLead,
+                        launchFolder: pane.launchWorkingDirectory,
+                        profileID: pane.permissionSelection?.profileID,
+                        profileLifetime: pane.permissionSelection?.lifetime,
+                        approvals: pane.permissionSelection?.approvals,
+                        wasContainer: pane.containerConfiguration != nil
+                    )
+                },
+                layout: layout,
+                splitFractions: unreadable.contains(.workspaceRegistry) ? [:] : (nativeSplitFractions[workspace.workspaceID] ?? [:])
+            )
+        }
+        var defaultProfileIDs: [String: String] = [:]
+        for kind in Self.agentKinds {
+            if let profileID = preferences.string(forKey: permissionProfilePreferenceKey(for: kind)) { defaultProfileIDs[kind.rawValue] = profileID }
+        }
+        let archivedPreferences = ArchivedPreferences(
+            terminalType: terminalTypePreference == .default ? nil : terminalTypePreference.rawValue,
+            font: unreadable.contains(.terminalFont) || terminalFontPreference == .ghosttyDefault ? nil : terminalFontPreference,
+            appearanceImport: unreadable.contains(.terminalAppearanceImport) ? nil : terminalAppearanceImport,
+            surfaceOptions: unreadable.contains(.terminalSurfaceOptions) || terminalSurfacePreference == .ghosttyDefault ? nil : terminalSurfacePreference,
+            voiceLanguage: preferences.string(forKey: "voice.language"),
+            readAloud: preferences.object(forKey: "voice.readAloud") == nil ? nil : preferences.bool(forKey: "voice.readAloud"),
+            notificationWorkspaces: notificationWorkspaceNames.sorted(),
+            collaborationDockVisible: collaborationDockVisible,
+            swiftPMCompatibility: swiftPMCompatibilityEnabled,
+            releaseChannel: releaseChannel.rawValue,
+            lastAgentVendor: lastAgentVendor.rawValue,
+            historyRetention: historyRetentionPolicy.maximumRecords
+        )
+        return ConfigurationArchive(
+            appVersion: (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "development",
+            runtime: runtime.mode,
+            exportedAt: now,
+            groups: groups.map { ArchivedWorkspaceGroup(name: $0.name, isCollapsed: $0.isCollapsed) },
+            workspaces: archivedWorkspaces,
+            savedLayouts: unreadable.contains(.savedLayouts) ? [] : savedLayouts,
+            customPermissionProfiles: unreadable.contains(.permissionProfiles) ? [] : permissionProfiles.filter { !$0.isBuiltIn },
+            defaultProfileIDs: defaultProfileIDs,
+            recipes: unreadable.contains(.handoffRecipes) ? [] : recipes,
+            favouriteFolders: unreadable.contains(.favouriteFolders) ? [] : favouriteFolders,
+            worktreeRepositories: (try? worktreeRepositoryStore?.folders()) ?? [],
+            preferences: archivedPreferences,
+            omittedStores: configurationLoadIssues.map(\.store.rawValue)
+        )
+    }
+
+    func exportConfiguration() {
+        guard !configurationTransferring else { return }
+        let panel = NSSavePanel()
+        panel.title = "Export Parley Configuration"
+        panel.message = "Saves this runtime's workspaces, groups, layouts, profiles, recipes, favourites and preferences as one JSON file. Credentials, history, context, container ids and the session-only switches are never included."
+        panel.prompt = "Export"
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = Self.configurationFilename()
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        let archive = makeConfigurationArchive()
+        configurationTransferring = true
+        Task { [weak self] in
+            do {
+                try await Task.detached(priority: .utility) {
+                    try ConfigurationArchiveCoder.write(archive, to: destination)
+                }.value
+                guard let self else { return }
+                self.configurationTransferring = false
+                let alert = NSAlert()
+                alert.messageText = "Configuration Exported"
+                var detail = "Parley saved \(archive.workspaces.count) workspace\(archive.workspaces.count == 1 ? "" : "s"), \(archive.paneCount) pane template\(archive.paneCount == 1 ? "" : "s"), \(archive.savedLayouts.count) saved layout\(archive.savedLayouts.count == 1 ? "" : "s") and your preferences to \(destination.lastPathComponent). Nothing was uploaded."
+                if !archive.omittedStores.isEmpty {
+                    detail += " Left out because they could not be read at launch: \(archive.omittedStores.compactMap { ConfigurationStore(rawValue: $0)?.title }.joined(separator: ", "))."
+                }
+                alert.informativeText = detail
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            } catch {
+                guard let self else { return }
+                self.configurationTransferring = false
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
+    /// Reads a chosen export, refuses anything that is not a valid archive
+    /// for this runtime, and shows the preview; nothing changes until the
+    /// person chooses Replace there.
+    func chooseConfigurationToRestore() {
+        guard !configurationTransferring, configurationRestoreProposal == nil else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Restore Parley Configuration"
+        panel.message = "Choose a configuration Parley exported. You will see what it replaces before anything changes."
+        panel.prompt = "Preview"
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let source = panel.url else { return }
+        configurationTransferring = true
+        let currentRuntime = runtime.mode
+        Task { [weak self] in
+            let loaded: Result<ConfigurationArchive, Error> = await Task.detached(priority: .utility) {
+                do {
+                    let data = try BoundedRegularFile.read(source, maximumBytes: ConfigurationArchive.maximumBytes)
+                    let archive = try ConfigurationArchiveCoder.decode(data)
+                    try ConfigurationArchiveValidator.validate(archive)
+                    guard archive.runtime == currentRuntime else {
+                        throw ConfigurationArchiveError.runtimeMismatch(archive: archive.runtime, current: currentRuntime)
+                    }
+                    return .success(archive)
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            guard let self else { return }
+            self.configurationTransferring = false
+            switch loaded {
+            case let .success(archive):
+                self.configurationRestoreProposal = ConfigurationRestoreProposal(
+                    archive: archive,
+                    preview: self.makeConfigurationRestorePreview(for: archive),
+                    sourceName: source.lastPathComponent
+                )
+            case let .failure(error):
+                NSAlert(error: error).runModal()
+            }
+        }
+    }
+
+    func makeConfigurationRestorePreview(for archive: ConfigurationArchive) -> ConfigurationRestorePreview {
+        ConfigurationRestorePreview(
+            incoming: archive,
+            current: makeConfigurationArchive(),
+            currentRetention: historyRetentionPolicy.maximumRecords,
+            blockers: configurationRestoreBlockers(),
+            folderExists: { FileManager.default.fileExists(atPath: $0) }
+        )
+    }
+
+    /// What must be finished before a restore may apply, from the live
+    /// facts the model already holds; empty means quiet.
+    func configurationRestoreBlockers() -> [String] {
+        ConfigurationQuietRuntime.blockers(
+            startedPanes: panes.filter { $0.isStarted && !$0.isDead }.count,
+            activeHandoffs: latestKnownHandoffs.filter { $0.state.isActive }.count,
+            waitingConsultations: consultations.count,
+            liveCommandRuns: commandRuns.filter { !$0.state.isTerminal }.count,
+            liveTeamSessions: teamSessions.filter { !$0.state.isTerminal }.count,
+            containerWork: controller?.hasContainerWorkInProgress() ?? false,
+            voiceActive: voiceController.map { $0.session.captureActive || $0.playbackActive } ?? false,
+            recipeRunning: activeRecipeRun != nil,
+            comparisonRunning: askManyComparisonRun != nil,
+            terminating: controller?.isTerminatingSurface ?? false,
+            uninstalling: preparingToUninstall
+        )
+    }
+
+    func cancelConfigurationRestore() {
+        configurationRestoreProposal = nil
+    }
+
+    /// Replaces this runtime's configuration with the previewed archive. The
+    /// blockers are read again at this moment; the workbench change is one
+    /// saved commit; if a later store fails, the configuration from just
+    /// before is put back, best effort, and the alert says what happened.
+    /// Every pane comes back stopped and nothing is launched.
+    func applyConfigurationRestore() {
+        guard let proposal = configurationRestoreProposal, let controller else { return }
+        let blockers = configurationRestoreBlockers()
+        guard blockers.isEmpty else {
+            configurationRestoreProposal = nil
+            NSAlert(error: ConfigurationArchiveError.notQuiet(blockers)).runModal()
+            return
+        }
+        let before = makeConfigurationArchive()
+        configurationRestoreProposal = nil
+        configurationTransferring = true
+        defer { configurationTransferring = false }
+        do {
+            try applyConfigurationArchive(proposal.archive, controller: controller)
+        } catch {
+            var detail = error.localizedDescription
+            do {
+                try applyConfigurationArchive(before, controller: controller)
+                detail += " The configuration from just before was put back."
+            } catch let rollbackError {
+                detail += " Putting the previous configuration back also failed: \(rollbackError.localizedDescription) Check Settings > General > Configuration and Status Center > Health."
+            }
+            let alert = NSAlert()
+            alert.messageText = "Configuration Not Restored"
+            alert.informativeText = detail
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+        let archive = proposal.archive
+        let alert = NSAlert()
+        alert.messageText = "Configuration Restored"
+        alert.informativeText = "\(archive.workspaces.count) workspace\(archive.workspaces.count == 1 ? "" : "s") with \(archive.paneCount) pane template\(archive.paneCount == 1 ? "" : "s") replaced the previous ones from \(proposal.sourceName). Every pane is stopped: start each from its menu, agents through their launch review. No credential, history record or grant was touched."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+        if let retention = archive.preferences.historyRetention, retention != historyRetentionPolicy.maximumRecords {
+            // A lower limit prunes history, so it stays its own confirmed step.
+            setHistoryRetention(maximumRecords: retention)
+        }
+    }
+
+    private func applyConfigurationArchive(_ archive: ConfigurationArchive, controller: WorkbenchController) throws {
+        let paneIDs = try controller.replaceWorkspaces(with: WorkbenchRestorePlan(archive: archive))
+        try refresh(includingRelay: false)
+        let liveWorkspaces = workspaces
+        var layouts: [String: NativeLayoutNode] = [:]
+        var fractions: [String: [String: Double]] = [:]
+        for (index, archived) in archive.workspaces.enumerated() where index < paneIDs.count {
+            guard let live = liveWorkspaces.first(where: { $0.name == archived.name }) ?? (index < liveWorkspaces.count ? liveWorkspaces[index] : nil) else { continue }
+            if let node = archived.layout?.restoring(paneIDs: paneIDs[index]) { layouts[live.workspaceID] = node }
+            if !archived.splitFractions.isEmpty { fractions[live.workspaceID] = archived.splitFractions }
+        }
+        nativeLayouts = layouts
+        nativeSplitFractions = fractions
+        for record in try workspaceRegistry.records() where !liveWorkspaces.contains(where: { $0.workspaceID == record.workspaceID }) {
+            try workspaceRegistry.remove(workspaceID: record.workspaceID)
+        }
+        _ = try workspaceRegistry.synchronize(workspaces: liveWorkspaces)
+        for (workspaceID, node) in layouts { try workspaceRegistry.updateLayout(workspaceID: workspaceID, layout: node) }
+        for (workspaceID, recorded) in fractions { try workspaceRegistry.updateSplitFractions(workspaceID: workspaceID, fractions: recorded) }
+
+        for layout in try layoutStore.layouts() { try layoutStore.delete(named: layout.name) }
+        for layout in archive.savedLayouts { try layoutStore.save(layout) }
+        savedLayouts = try layoutStore.layouts()
+
+        for profile in try permissionProfileStore.profiles() where !profile.isBuiltIn { try permissionProfileStore.deleteCustom(id: profile.id) }
+        for profile in archive.customPermissionProfiles { try permissionProfileStore.saveCustom(profile) }
+        permissionProfiles = try permissionProfileStore.profiles()
+        for kind in Self.agentKinds { preferences.removeObject(forKey: permissionProfilePreferenceKey(for: kind)) }
+        for (vendor, profileID) in archive.defaultProfileIDs {
+            guard let kind = PaneKind(rawValue: vendor) else { continue }
+            preferences.set(profileID, forKey: permissionProfilePreferenceKey(for: kind))
+        }
+
+        try recipeStore.restoreDefaults()
+        for recipe in archive.recipes { try recipeStore.save(recipe) }
+        recipes = try recipeStore.recipes()
+
+        workspaceContinuity = WorkspaceContinuityState(favouriteFolders: archive.favouriteFolders)
+        workspaceContinuity.reconcile(liveWorkspaces)
+        favouriteFolders = workspaceContinuity.favouriteFolders
+        saveWorkspaceContinuity()
+
+        if let store = worktreeRepositoryStore {
+            for folder in try store.folders() { try store.forget(folder) }
+            for folder in archive.worktreeRepositories { try store.add(folder) }
+        }
+
+        let archived = archive.preferences
+        setTerminalTypePreference(archived.terminalType.flatMap(TerminalTypePreference.init(rawValue:)) ?? .default)
+        try updateTerminalAppearance(family: archived.font?.family, size: archived.font?.size, imported: archived.appearanceImport)
+        try updateTerminalSurfacePreference(archived.surfaceOptions ?? .ghosttyDefault)
+        if let language = archived.voiceLanguage { voice.language = language }
+        if let readAloud = archived.readAloud { voice.readAloudEnabled = readAloud }
+        notificationWorkspaceNames = Set(archived.notificationWorkspaces)
+        saveNotificationWorkspaces()
+        if let dockVisible = archived.collaborationDockVisible {
+            collaborationDockVisible = dockVisible
+            preferences.set(dockVisible, forKey: Self.collaborationDockVisibleKey)
+        }
+        setSwiftPMCompatibilityEnabled(archived.swiftPMCompatibility)
+        setReleaseChannel(archived.releaseChannel.flatMap(UpdateChannel.init(rawValue:)) ?? .stable)
+        if let vendor = archived.lastAgentVendor.flatMap(PaneKind.init(rawValue:)) { rememberAgentVendor(vendor) }
+        try refresh()
+    }
+
+    private static func configurationFilename(at date: Date = Date()) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyyMMdd-HHmmss'Z'"
+        return "Parley-Configuration-\(formatter.string(from: date)).json"
+    }
+
     /// Shows an unreadable configuration file in Finder, beside the copy
     /// Parley kept, so the person can repair or remove it. Only the fixed
     /// store names under this runtime's directory are ever revealed.

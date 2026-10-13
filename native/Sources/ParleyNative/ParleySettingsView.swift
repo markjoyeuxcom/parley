@@ -196,6 +196,26 @@ private struct GeneralSettingsView: View {
                 }
             }
 
+            Section("Backup") {
+                HStack(alignment: .top) {
+                    Text("One JSON file with this runtime's workspaces and their panes as stopped templates, groups, pins, split and saved layouts, custom permission profiles and default choices, recipes, favourite folders, worktree repositories and preferences. Restore shows what it replaces first and needs every agent stopped and every shell closed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 6) {
+                        Button("Export Configuration…") { model.exportConfiguration() }
+                            .disabled(model.configurationTransferring)
+                            .help("Save this runtime's configuration as a JSON file you can keep or move to another Mac")
+                        Button("Restore Configuration…") { model.chooseConfigurationToRestore() }
+                            .disabled(model.configurationTransferring || model.configurationRestoreProposal != nil)
+                            .help("Choose an exported configuration and preview what it would replace")
+                    }
+                }
+                Text("Never in the file: relay credentials, control tokens, tickets, handoff and activity history, context captures, container daemon and container ids, worktree receipts, command-run trust, team grants, launch generations, the session-only switches and the recent-folder history. A Production export is restored only into Production, a Development export only into Development.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section {
                 Label("These two choices last for this app session only and reset to off when Parley quits.", systemImage: "clock")
                     .font(.caption)
@@ -240,6 +260,12 @@ private struct GeneralSettingsView: View {
         }
         .formStyle(.grouped)
         .padding(.horizontal, 12)
+        .sheet(item: Binding(
+            get: { model.configurationRestoreProposal },
+            set: { if $0 == nil { model.cancelConfigurationRestore() } }
+        )) { proposal in
+            ConfigurationRestoreView(model: model, proposal: proposal)
+        }
     }
 }
 

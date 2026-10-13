@@ -84,9 +84,29 @@ Built-in themes, named themes under the XDG Ghostty themes folder and explicit
 absolute theme files are supported. Parley deliberately ignores `command`,
 `keybind`, `config-file`, shell integration, opacity, cursor behavior and every
 other option; raw Ghostty configuration text is never retained or passed to a
-terminal. The Terminal Appearance panel in Settings reports both imported and
-ignored setting counts before **Apply**. The sanitized snapshot is stored in the active Production or
-Development preference namespace, and Parley overrides continue to win.
+terminal. Settings › Appearance reports both imported and ignored setting
+counts, and like every other Settings control it applies and saves each change
+as you make it; there is no Apply button. The sanitized snapshot is stored in
+the active Production or Development preference namespace, and Parley overrides
+continue to win. The same tab holds the Ghostty options about how a pane looks
+(catalogue themes, contrast, glyph thickening, ligatures, line height,
+background and padding); Settings › Terminal holds the ones about how it
+behaves (cursor, scrollback, mouse and clipboard, shell integration). Each
+section's header says when a change reaches a pane.
+
+### Configuration export and restore
+
+Settings › General › Backup writes this runtime's configuration to one JSON
+file: workspaces with their panes as stopped templates, groups and pins, split
+and saved layouts, custom permission profiles and default choices, recipes,
+favourite folders, worktree repositories and preferences. It is built from
+allowlisted values, never a copy of Application Support, so it never holds
+relay credentials, control tokens, history, context captures, container or
+worktree identifiers, grants, launch generations or the session-only switches.
+Restore shows what the file replaces before anything changes, needs every
+agent stopped and every shell closed, replaces the whole configuration in one
+saved change with fresh identities, starts nothing, and only accepts an export
+from the same runtime (Production or Development).
 
 ### Terminal type for remote hosts
 

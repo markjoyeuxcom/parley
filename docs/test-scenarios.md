@@ -165,6 +165,16 @@ Use the packaged app: the window picker and macOS's own consent need a bundle.
    capture in an agent's draft stays until that draft is sent or its saved
    context is deleted.
 
+
+## P1.8 Configuration export and restore (13 October 2026)
+
+1. In a Development build with two workspaces (one grouped and pinned, one with a split and a named agent pane with a role), a saved layout, a custom profile and an edited recipe: Settings › General › Backup › Export Configuration…. Open the JSON: it names the workspaces, panes as templates, groups, layouts, profiles, recipes and preferences; search it for `relay-tokens`, any 48-hex token, `handoffs`, `containerID`: nothing.
+2. Restore Configuration… with a pane running: the preview lists the running pane as a blocker and Replace is disabled. Stop the pane; choose Restore again: Replace is enabled.
+3. Rename a workspace and delete the recipe edit, then Replace with the export: the old names are back, every pane is a stopped placeholder, the split structure and group are back, the recipe text is back, nothing started.
+4. Edit the JSON: set `schemaVersion` to 9: refused by number. Set `runtime` to `production`: refused as the wrong runtime. Point a pane folder at `/nonexistent`: the preview lists it under missing folders and the restored pane shows MISSING.
+5. Export from Production and try to restore it in Development: refused; the reverse too.
+
+**Fail:** anything secret in the file; Replace enabled with live work; a pane started by a restore; a merge instead of a replacement; a lower retention applied without its own confirmation.
 ---
 
 # Priority 2 — core functions

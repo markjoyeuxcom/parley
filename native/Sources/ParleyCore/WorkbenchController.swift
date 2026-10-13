@@ -1895,6 +1895,92 @@ public final class WorkbenchController: @unchecked Sendable {
     /// for a place to work (a fresh install, Open Folder) or only for a
     /// container (New Workspace, which starts empty; a layout restore, which
     /// adds its own leaves). A workspace may hold no panes.
+    /// Whether a container pane is being prepared, or was prepared and not yet
+    /// confirmed stopped: work a configuration restore must wait for.
+    public func hasContainerWorkInProgress() -> Bool {
+        lock.withLock {
+            !containerPreparations.isEmpty
+                || preparedContainerIDs.keys.contains { confirmedContainerStops[$0] == nil }
+        }
+    }
+
+    /// Replaces every workspace, group and pane with the restored
+    /// configuration's templates, all stopped, in one saved change: the
+    /// document is put back whole if the save fails. Refuses while any pane is
+    /// started or any container is unconfirmed, so no process is pulled out
+    /// from under a live session; the panes it removes are stopped
+    /// placeholders whose surfaces, if any, end only after the save. Returns
+    /// the new pane ids per restored workspace, in template order, so the
+    /// caller can rebuild split layouts over them.
+    public func replaceWorkspaces(with plan: WorkbenchRestorePlan) throws -> [[String]] {
+        try lock.withLock {
+            try requireNoTerminationInProgress()
+            let running = document.panes.filter { $0.isStarted && !$0.isDead }
+            guard running.isEmpty else { throw WorkbenchRestoreError.panesRunning(running.count) }
+            for pane in document.panes { try requireTerminableLocked(pane.id) }
+            guard !plan.workspaces.isEmpty else { throw WorkbenchRestoreError.invalid("a restore needs at least one workspace") }
+            let removedPaneIDs = document.panes.map(\.id)
+            let paneIDs: [[String]] = try commitLocked {
+                document.panes.removeAll()
+                document.workspaces.removeAll()
+                document.workspaceGroups = nil
+                document.activity = [:]
+                var groupIDs: [String: String] = [:]
+                var groups: [WorkspaceGroup] = []
+                for template in plan.groups {
+                    let name = try WorkspaceGroup.validatedName(template.name, among: groups).get()
+                    let group = WorkspaceGroup(id: "group-" + UUID().uuidString.lowercased(), name: name, isCollapsed: template.isCollapsed)
+                    groups.append(group)
+                    groupIDs[name.lowercased()] = group.id
+                }
+                document.workspaceGroups = groups.isEmpty ? nil : groups
+                var created: [[String]] = []
+                for template in plan.workspaces {
+                    let launchFolder = template.newPaneFolder ?? template.attachedFolders.first ?? fileManager.homeDirectoryForCurrentUser.path
+                    let workspace = try createWorkspaceLocked(
+                        launchFolder: launchFolder,
+                        name: template.name,
+                        attachedFolders: template.attachedFolders,
+                        newPaneFolder: template.newPaneFolder,
+                        initialShell: false,
+                        automationPolicy: template.automationPolicy
+                    )
+                    let index = try workspaceIndexLocked(workspace.id)
+                    document.workspaces[index].pinned = template.pinned
+                    if let groupName = template.groupName {
+                        guard let groupID = groupIDs[groupName.lowercased()] else {
+                            throw WorkbenchRestoreError.invalid("workspace \"\(template.name)\" names a group the plan does not define")
+                        }
+                        document.workspaces[index].groupID = groupID
+                    }
+                    var ids: [String] = []
+                    for paneTemplate in template.panes {
+                        var pane = try makePane(kind: paneTemplate.kind, cwd: paneTemplate.launchFolder, workspace: workspace, started: false, permissionProfile: nil)
+                        pane.launchFolder = paneTemplate.launchFolder
+                        pane.customName = paneTemplate.customName
+                        pane.role = paneTemplate.role
+                        pane.isWorkspaceLead = paneTemplate.isWorkspaceLead
+                        pane.permissionSelection = paneTemplate.permissionSelection
+                        pane.isActive = ids.isEmpty
+                        document.panes.append(pane)
+                        ids.append(pane.id)
+                    }
+                    created.append(ids)
+                }
+                if let first = document.workspaces.first { try selectWorkspaceLocked(first.id) }
+                normalizeSelectionLocked()
+                return created
+            }
+            for paneID in removedPaneIDs {
+                endSurfaceLocked(paneID)
+                copilotTrustConfirmations[paneID] = nil
+                agentLaunchRequests[paneID] = nil
+                try? relayRuntime?.credentials.forget(paneID)
+            }
+            return paneIDs
+        }
+    }
+
     private func createWorkspaceLocked(
         launchFolder: String,
         name: String?,
@@ -2166,5 +2252,92 @@ public final class WorkbenchController: @unchecked Sendable {
         scrubbed["TMUX"] = nil
         scrubbed["TMUX_PANE"] = nil
         return scrubbed
+    }
+}
+
+/// The workspaces, groups and stopped pane templates a configuration restore
+/// asks the controller to replace the workbench with.
+public struct WorkbenchRestorePlan: Equatable, Sendable {
+    public struct Group: Equatable, Sendable {
+        public var name: String
+        public var isCollapsed: Bool
+        public init(name: String, isCollapsed: Bool) { self.name = name; self.isCollapsed = isCollapsed }
+    }
+
+    public struct Pane: Equatable, Sendable {
+        public var kind: PaneKind
+        public var customName: String?
+        public var role: String?
+        public var isWorkspaceLead: Bool
+        public var launchFolder: String
+        public var permissionSelection: PermissionProfileSelection?
+        public init(kind: PaneKind, customName: String?, role: String?, isWorkspaceLead: Bool, launchFolder: String, permissionSelection: PermissionProfileSelection?) {
+            self.kind = kind
+            self.customName = customName
+            self.role = role
+            self.isWorkspaceLead = isWorkspaceLead
+            self.launchFolder = launchFolder
+            self.permissionSelection = permissionSelection
+        }
+    }
+
+    public struct Workspace: Equatable, Sendable {
+        public var name: String
+        public var attachedFolders: [String]
+        public var newPaneFolder: String?
+        public var automationPolicy: WorkspaceAutomationPolicy
+        public var pinned: Bool
+        public var groupName: String?
+        public var panes: [Pane]
+        public init(name: String, attachedFolders: [String], newPaneFolder: String?, automationPolicy: WorkspaceAutomationPolicy, pinned: Bool, groupName: String?, panes: [Pane]) {
+            self.name = name
+            self.attachedFolders = attachedFolders
+            self.newPaneFolder = newPaneFolder
+            self.automationPolicy = automationPolicy
+            self.pinned = pinned
+            self.groupName = groupName
+            self.panes = panes
+        }
+    }
+
+    public var groups: [Group]
+    public var workspaces: [Workspace]
+
+    public init(groups: [Group], workspaces: [Workspace]) {
+        self.groups = groups
+        self.workspaces = workspaces
+    }
+
+    /// The plan an archive describes.
+    public init(archive: ConfigurationArchive) {
+        groups = archive.groups.map { Group(name: $0.name, isCollapsed: $0.isCollapsed) }
+        workspaces = archive.workspaces.map { workspace in
+            Workspace(
+                name: workspace.name,
+                attachedFolders: workspace.attachedFolders,
+                newPaneFolder: workspace.newPaneFolder,
+                automationPolicy: workspace.automationPolicy,
+                pinned: workspace.pinned,
+                groupName: workspace.groupName,
+                panes: workspace.panes.map {
+                    Pane(kind: $0.kind, customName: $0.name, role: $0.role, isWorkspaceLead: $0.isWorkspaceLead,
+                         launchFolder: $0.launchFolder, permissionSelection: $0.permissionSelection)
+                }
+            )
+        }
+    }
+}
+
+public enum WorkbenchRestoreError: LocalizedError, Equatable {
+    case panesRunning(Int)
+    case invalid(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case let .panesRunning(count):
+            "\(count) pane\(count == 1 ? " is" : "s are") still running; stop every agent and close every shell before restoring a configuration."
+        case let .invalid(reason):
+            "The configuration cannot be restored: \(reason)."
+        }
     }
 }

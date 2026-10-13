@@ -211,7 +211,7 @@ public final class HandoffRecipeStore: @unchecked Sendable {
 
     public func save(_ recipe: HandoffRecipe) throws {
         try lock.withLock {
-            try validate(recipe)
+            try Self.validate(recipe)
             var current = try loadLocked()
             guard let index = current.firstIndex(where: { $0.id == recipe.id }) else {
                 throw HandoffRecipeError.invalid("Unknown recipe \(recipe.id).")
@@ -233,7 +233,7 @@ public final class HandoffRecipeStore: @unchecked Sendable {
             guard let expectedIDs = Self.builtInIDsByVersion[document.version] else {
                 throw HandoffRecipeError.unreadable("Unsupported handoff recipe version \(document.version).")
             }
-            try document.recipes.forEach(validate)
+            try document.recipes.forEach(Self.validate)
             guard document.recipes.count == expectedIDs.count,
                   Set(document.recipes.map(\.id)) == Set(expectedIDs) else {
                 throw HandoffRecipeError.unreadable("The handoff recipe set is incomplete.")
@@ -255,7 +255,7 @@ public final class HandoffRecipeStore: @unchecked Sendable {
     }
 
     private func writeLocked(_ recipes: [HandoffRecipe]) throws {
-        try recipes.forEach(validate)
+        try recipes.forEach(Self.validate)
         let directory = file.deletingLastPathComponent()
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
@@ -265,7 +265,7 @@ public final class HandoffRecipeStore: @unchecked Sendable {
         try OwnerOnlyFile.write(try encoder.encode(Document(version: Self.currentVersion, recipes: recipes)), to: file, fileManager: fileManager)
     }
 
-    private func validate(_ recipe: HandoffRecipe) throws {
+    public static func validate(_ recipe: HandoffRecipe) throws {
         guard let definition = HandoffRecipe.defaults.first(where: { $0.id == recipe.id }) else {
             throw HandoffRecipeError.invalid("Unknown recipe id.")
         }
