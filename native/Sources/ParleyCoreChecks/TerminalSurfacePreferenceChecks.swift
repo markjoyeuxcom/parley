@@ -265,7 +265,37 @@ func checkTerminalSurfaceSectionsCoverEveryField() throws {
     ], "the section titles changed; Settings and Help name them")
 }
 
+/// Every section sits in exactly one Settings tab, and resetting a tab's
+/// sections puts back only the fields those sections own.
+func checkTerminalSurfaceSectionsSplitAcrossTabs() throws {
+    let appearance = TerminalSurfaceSection.sections(in: .appearance)
+    let terminal = TerminalSurfaceSection.sections(in: .terminal)
+    try tsExpect(appearance == [.theme, .font, .background], "Appearance shows \(appearance.map(\.rawValue))")
+    try tsExpect(terminal == [.cursor, .scrollback, .mouse, .shell], "Terminal shows \(terminal.map(\.rawValue))")
+    try tsExpect(Set(appearance + terminal) == Set(TerminalSurfaceSection.allCases), "a section is shown in no tab")
+    for section in TerminalSurfaceSection.allCases {
+        try tsExpect(!section.scope.isEmpty, "\(section.rawValue) has no scope label")
+    }
+    var everything = TerminalSurfacePreference.ghosttyDefault
+    everything.lightTheme = "Builtin Solarized Light"
+    everything.fontThicken = true
+    everything.cursorShape = .bar
+    everything.backgroundOpacity = 0.8
+    everything.scrollbackLimitMegabytes = 200
+    everything.copyOnSelect = true
+    everything.shellSudo = true
+    let appearanceReset = everything.resetting(appearance)
+    try tsExpect(TerminalSurfaceSection.changed(from: TerminalSurfacePreference.ghosttyDefault, to: appearanceReset) == terminal,
+                 "restoring the Appearance tab touched \(TerminalSurfaceSection.changed(from: .ghosttyDefault, to: appearanceReset).map(\.rawValue))")
+    let terminalReset = everything.resetting(terminal)
+    try tsExpect(TerminalSurfaceSection.changed(from: TerminalSurfacePreference.ghosttyDefault, to: terminalReset) == appearance,
+                 "restoring the Terminal tab touched \(TerminalSurfaceSection.changed(from: .ghosttyDefault, to: terminalReset).map(\.rawValue))")
+    try tsExpect(everything.resetting(TerminalSurfaceSection.allCases) == .ghosttyDefault, "resetting every section is not Ghostty's default")
+    try tsExpect(everything.resetting([]) == everything, "resetting no section changed something")
+}
+
 @MainActor let terminalSurfacePreferenceChecks: [(String, () throws -> Void)] = [
+    ("terminal surface sections split across tabs", checkTerminalSurfaceSectionsSplitAcrossTabs),
     ("terminal surface sections cover every field", checkTerminalSurfaceSectionsCoverEveryField),
     ("ghostty accepts the curated surface lines", checkGhosttyAcceptsTheCuratedSurfaceLines),
     ("terminal surface defaults render explicit ghostty lines", checkTerminalSurfaceDefaultsRenderExplicitGhosttyLines),

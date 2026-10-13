@@ -619,18 +619,18 @@ public enum ParleyHelpGuide {
                     title: "Terminal fonts and Ghostty appearance",
                     paragraphs: [
                         "Open Settings > Appearance. Choose an explicit font family or leave the family at Parley Default (or Imported when an import supplies it). Enable the font size Override to choose a size; turn Override off to inherit it. Your explicit font choices take precedence over imported values.",
-                        "Import… reads the supported Ghostty configuration and theme locations into an appearance preview. Refresh… rereads those locations when an import already exists. Remove clears the staged import. Only appearance values are imported: font family, font size, theme, palette and colours. Commands, keybindings, shell integration, config-file includes and other behavioural settings are not imported.",
-                        "Apply saves your staged font and import choices and updates existing terminal surfaces without restarting running sessions; new panes use the same appearance. Import, Refresh and Remove need Apply before they take effect. Restore Parley Defaults applies immediately: it clears both explicit font overrides and imported appearance.",
-                        "Closing Settings discards unapplied appearance edits. Saved settings are retained. General switches take effect when changed; they do not wait for the Appearance Apply button.",
+                        "Import… reads the supported Ghostty configuration and theme locations and applies the result at once. Refresh… rereads those locations when an import already exists. Remove stops using the import. Only appearance values are imported: font family, font size, theme, palette and colours. Commands, keybindings, shell integration, config-file includes and other behavioural settings are not imported.",
+                        "Every change in Settings applies immediately and is saved; there is no Apply button anywhere in Settings. Font and colour changes update existing terminal surfaces without restarting running sessions, and new panes use the same appearance. Restore Parley Defaults puts the Parley default font back, removes the imported appearance and restores the Appearance tab's Ghostty options.",
+                        "Each section's header says when a change reaches a pane: Current and new panes, New panes, or New shells. Saved settings are kept when Settings closes.",
                     ]
                 ),
                 ParleyHelpSection(
                     id: "settings-ghostty",
                     title: "Ghostty surface options",
                     paragraphs: [
-                        "Settings > Terminal also holds a fixed set of Ghostty options for every pane's surface: a theme from the bundled Ghostty catalogue for the light and the dark appearance, minimum contrast, glyph thickening, programming ligatures, line height, cursor shape, blink and opacity, background opacity and blur, padding, the scrollback limit, mouse and clipboard behaviour, and the shell integration features. Each change applies to every surface at once and is kept until you change it; Restore Ghostty Defaults puts the whole set back.",
+                        "Settings holds a fixed set of Ghostty options for every pane's surface, split by what they change. Settings > Appearance, beside the font and the imported colours: a theme from the bundled Ghostty catalogue for the light and the dark appearance, minimum contrast, glyph thickening, programming ligatures, line height, background opacity and blur, and padding. Settings > Terminal, beside the terminal type: cursor shape, blink and opacity, the scrollback limit, mouse and clipboard behaviour, and the shell integration features. Each change applies to every surface at once and is kept until you change it. Restore Ghostty Defaults in Terminal and Restore Parley Defaults in Appearance each put back the options of their own tab.",
                         "Two options are read only when a pane is created: the scrollback limit (1 to 1000 MB of uncompressed history per pane; Ghostty's default is 50 MB) and the background opacity with its blur. Panes created afterwards use the new value and running panes keep theirs. Shell integration features reach shells started afterwards.",
-                        "An imported Ghostty appearance (Settings > Appearance) supplies colours itself, so while one is in use the two catalogue themes are not applied. If Ghostty refuses a value, Settings shows its message beside the section you changed and keeps the previous options.",
+                        "An imported Ghostty appearance supplies colours itself, so while one is in use the two catalogue theme pickers are disabled and offer Remove Imported Appearance. If Ghostty refuses a value, Settings shows its message beside the section you changed and keeps the previous options.",
                         "The set is deliberately closed: no option can name a program, a file, an environment variable or a key binding, and Parley never loads a raw Ghostty configuration file. The agent launch review owns what a pane runs.",
                     ]
                 ),
@@ -638,14 +638,14 @@ public enum ParleyHelpGuide {
                     id: "settings-other",
                     title: "Other Settings sections",
                     items: [
-                        "Terminal > Terminal type chooses whether new panes advertise xterm-ghostty or xterm-256color. See Terminal type for remote hosts above. The Ghostty surface options below it are described in Ghostty surface options.",
+                        "Terminal > Terminal type chooses whether new panes advertise xterm-ghostty or xterm-256color. See Terminal type for remote hosts above. The Ghostty options for cursor, scrollback, mouse and shell integration sit below it; those for theme, font rendering and background sit in Appearance. See Ghostty surface options.",
                         "General > Agent command runs controls automatic approval and clean Shell pane removal. See Requested command runs for the exact lifetimes and exceptions.",
                         "General > Swift package builds enables the optional compatibility wrapper for newly started agent panes. See CLI permissions and Troubleshooting before retrying a nested-sandbox error.",
                         "General > Software updates controls the opt-in Production stable update checks and the separate manual Stable/Beta release channel. See Compatibility, updates and feedback.",
                         "General > Local history chooses how many finished handoff and activity records Parley keeps on this Mac (100, 250 or 500 of each); it is the same choice as Status Center > History, and Manage History… opens that view. A lower limit asks before pruning.",
                         "General > Agent command runs holds the two session-only switches last, under a This session only header, because they reset to off whenever Parley quits.",
                         "Voice holds the dictation language, the local speech model download and read-aloud. See Voice input.",
-                        "Appearance holds the shared pane font and the imported Ghostty appearance. See Terminal fonts and Ghostty appearance.",
+                        "Appearance holds the shared pane font, the imported Ghostty appearance and the Ghostty options for theme, font rendering, background and padding. See Terminal fonts and Ghostty appearance.",
                         "Every section can be opened from the command palette (Command-K): type Settings, or a word such as font, scrollback or notifications, and choose the matching Settings… command.",
                         "Notifications controls local attention notifications. They use content-free collaboration facts rather than terminal text; workspace notifications are opt-in.",
                     ]
@@ -654,7 +654,7 @@ public enum ParleyHelpGuide {
                     id: "settings-window-lifetime",
                     title: "Close, minimise and hide",
                     paragraphs: [
-                        "When you close Status Center, Settings, Help or About, that window’s content is released. On reopening, window-local filters, search, selections and toggles return to their defaults; unapplied edits are discarded. This does not erase saved settings, workspaces or collaboration history.",
+                        "When you close Status Center, Settings, Help or About, that window’s content is released. On reopening, window-local filters, search, selections and toggles return to their defaults. Settings saves every change as you make it, so closing it loses nothing, and this does not erase saved settings, workspaces or collaboration history.",
                         "If you minimise one of those windows or hide Parley, its drafts and local controls stay in memory while live refresh pauses. Restore the window or unhide the app to continue. Closing the window is different from minimising it or hiding the app.",
                         "Closing the main window keeps app-resident panes running and coordination alive. Quitting ends those processes; auxiliary window closure does not.",
                     ]

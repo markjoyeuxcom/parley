@@ -39,11 +39,7 @@ struct ParleySettingsView: View {
                     .tabItem { Label(ApplicationSettingsSection.voice.title, systemImage: ApplicationSettingsSection.voice.systemImage) }
                     .tag(ApplicationSettingsSection.voice)
 
-                ScrollView {
-                    TerminalFontSettingsView(model: model, dismissAfterApply: false, showsTitle: false)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 4)
-                }
+                AppearanceSettingsView(model: model)
                 .tabItem {
                     Label(
                         ApplicationSettingsSection.appearance.title,
@@ -216,7 +212,8 @@ private struct GeneralSettingsView: View {
 }
 
 /// The terminal type panes advertise, which takes effect for panes started
-/// or restarted afterwards, and the curated Ghostty surface options, which
+/// or restarted afterwards, and the curated Ghostty surface options about
+/// how a pane behaves (the ones about how it looks sit in Appearance), which
 /// apply to every surface at once except where Ghostty reads them only at
 /// creation.
 private struct TerminalSettingsView: View {
@@ -274,7 +271,7 @@ private struct TerminalSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            TerminalSurfaceSettingsSections(model: model)
+            TerminalSurfaceSettingsSections(model: model, tab: .terminal, restoreTitle: "Restore Ghostty Defaults")
         }
         .formStyle(.grouped)
         .padding(.horizontal, 12)

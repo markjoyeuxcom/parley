@@ -209,11 +209,27 @@ func checkSettingsNavigationPolish() throws {
     try frictionExpect(settings.contains("model.requestStatusCenterSegment(.history)"), "Manage History… no longer opens Status Center on History")
     let surface = try nativeSource("ParleyNative", "TerminalSurfaceSettingsView.swift").text
     for section in TerminalSurfaceSection.allCases {
-        try frictionExpect(surface.contains("Section(\"\(section.title)\") {\n            sectionError(.\(section.rawValue))"),
-                           "the \(section.title) section does not show its own refusal")
+        try frictionExpect(surface.contains("surfaceSection(.\(section.rawValue)) {"),
+                           "the \(section.title) section is not built by surfaceSection, so it has no scope header or refusal row")
     }
+    try frictionExpect(surface.contains("sectionError(section)\n            content()"), "a section's refusal row no longer comes first")
+    try frictionExpect(surface.contains("Text(section.scope)"), "section headers lost their scope label")
     try frictionExpect(surface.contains("errorSection = TerminalSurfaceSection.changed(from: stored, to: requested).first"),
                        "a refused Ghostty option is not attributed to its section")
+    try frictionExpect(surface.contains(".disabled(imported)"), "the theme pickers stay live while an imported appearance supplies the colours")
+    try frictionExpect(surface.contains("Button(\"Remove Imported Appearance\")"), "the theme section lost its way to remove the import")
+    // Appearance: one grouped form, no Apply button, no fixed width, the look
+    // sections beside the font (13 October 2026 review).
+    let appearance = try nativeSource("ParleyNative", "AppearanceSettingsView.swift").text
+    try frictionExpect(!appearance.contains(".frame(width: 560)"), "the Appearance tab has a fixed width again")
+    try frictionExpect(!appearance.contains("Button(\"Apply\")") && !appearance.contains("Button(\"Cancel\""),
+                       "the Appearance tab has an Apply or Cancel button; Settings saves every change at once")
+    try frictionExpect(appearance.contains("TerminalSurfaceSettingsSections(model: model, tab: .appearance)"),
+                       "the look-related Ghostty options are not in the Appearance tab")
+    try frictionExpect(appearance.contains(".formStyle(.grouped)"), "the Appearance tab is not a grouped form like the other tabs")
+    try frictionExpect(settings.contains("TerminalSurfaceSettingsSections(model: model, tab: .terminal, restoreTitle: \"Restore Ghostty Defaults\")"),
+                       "the Terminal tab does not show the behaviour sections with their restore button")
+    try frictionExpect(!settings.contains("TerminalFontSettingsView"), "Settings still embeds the retired TerminalFontSettingsView")
 }
 
 private func frictionRange(_ text: String, _ needle: String) throws -> Range<String.Index> {
