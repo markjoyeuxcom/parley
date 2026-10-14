@@ -2,9 +2,12 @@
 
 Parley embeds the following MIT-licensed software:
 
-- Ghostty 1.3.2-dev (upstream commit 35a81a98) — Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
+- Ghostty 1.3.2-dev (upstream commit 1e9e14af, plus upstream commit ffaaf5d7
+  "renderer: only start and stop the CVDisplayLink on the main thread" applied
+  as a patch) — Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
 - libghostty-spm — Copyright (c) 2026 @Lakr233 (consumed through the
-  markjoyeuxcom fork, which only compiles its string catalog)
+  markjoyeuxcom fork, which compiles its string catalog and, for this
+  release, builds the GhosttyKit XCFramework itself with that patch)
 - DisplayLink — Copyright (c) 2024 Lakr Aream
 - Sparkle 2.10.0 — Copyright (c) 2006-2013 Andy Matuschak; Copyright (c)
   2009-2013 Elgato Systems GmbH; Copyright (c) 2011-2014 Kornel Lesiński;
