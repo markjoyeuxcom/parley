@@ -78,11 +78,13 @@ npm run test:vm
 ```
 
 Root npm scripts use the dependency-free `scripts/run-native-swift.mjs`; never
-run `npm install` here. The Command Line Tools must stay enough to build:
-libghostty-spm is pinned to a `<tag>-clt` release of the markjoyeuxcom fork,
-whose workflow republishes each upstream tag with the string catalog
-compiled, since upstream needs Xcode's `xcstringstool`
-(Lakr233/libghostty-spm#81). Prefer `npm run test:vm` for full checks. Its local
+run `npm install` here. The Command Line Tools must stay enough to build.
+libghostty-spm comes through the markjoyeuxcom fork: upstream ships its
+string catalog precompiled since 2.2.2026101301 (#81 closed), so the fork's
+`<tag>-clt` twins now change nothing, and its `<tag>-clt.<label>` builds
+carry Ghostty fixes merged upstream but not yet in a wrapper release
+(`Script/clt/ghostty-patches`). Pin upstream directly once a wrapper release
+carries every patch. Prefer `npm run test:vm` for full checks. Its local
 Tart VM `parley-dev` is cloned once from `.github/workflows/ci.yml`'s pinned
 image, and it runs only from the primary checkout, one run per VM at a time.
 Pass npm arguments through, e.g. `npm run test:vm -- run test:checks -- --only
@@ -497,9 +499,11 @@ Never recall package or tool versions from memory; verify the registry at
 query time. Before changing Ghostty's wrapper pin, verify the upstream release behind
 the fork's `<tag>-clt` twin (the fork's CLT release workflow makes one per
 upstream tag) and never pin a wrapper whose Ghostty commit lacks upstream
-`72cf508` (check with GitHub's compare API: `ahead`, `behind_by` 0). Verify Sparkle's release and
-artifact digest. Keep `Package.swift`, `Package.resolved` and
-`THIRD_PARTY_NOTICES.md` consistent.
+`72cf508` and `ffaaf5d7` (check with GitHub's compare API: `ahead`,
+`behind_by` 0), unless the fork's `<tag>-clt.<label>` build carries the
+missing commit as a patch under `Script/clt/ghostty-patches`. Verify
+Sparkle's release and artifact digest. Keep `Package.swift`,
+`Package.resolved` and `THIRD_PARTY_NOTICES.md` consistent.
 
 ## Repository safety
 
