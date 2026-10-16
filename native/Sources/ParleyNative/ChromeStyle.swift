@@ -74,10 +74,29 @@ enum ChromeColor {
     }
 }
 
+/// Surfaces: paper around glass. The window, sidebar and dock share one
+/// ground; cards, sheets and controls sit one step up; fields sit one step
+/// down; the terminal is the only dark surface, and Ghostty owns its inside.
+/// One hue, four steps, separated by hairlines rather than shadows.
+enum ChromeSurface {
+    static let paper = Color(nsColor: .windowBackgroundColor)
+    static let raised = Color(nsColor: .controlBackgroundColor)
+    static let inset = Color.primary.opacity(0.06)
+    static let glass = Color(nsColor: NSColor(white: 0.075, alpha: 1))
+}
+
+/// Rules: a hairline where a boundary matters, a softer one between rows.
+enum ChromeRule {
+    static let hairline = Color(nsColor: .separatorColor)
+    static let soft = Color(nsColor: .separatorColor).opacity(0.55)
+}
+
 /// The type ramp for chrome. Nothing renders below 9 pt; uppercase is used
 /// only through `heading`. Terminal text is governed by Ghostty, not here.
 enum ChromeFont {
+    static let sheetTitle = Font.system(size: 17, weight: .semibold)
     static let title = Font.system(size: 15, weight: .semibold)
+    static let windowTitle = Font.system(size: 13, weight: .semibold)
     static let body = Font.system(size: 11)
     static let bodyMedium = Font.system(size: 11, weight: .medium)
     static let bodySemibold = Font.system(size: 11, weight: .semibold)
@@ -154,10 +173,51 @@ struct ChromeMonogram: View {
             RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .strokeBorder(Color(nsColor: .separatorColor).opacity(0.8), lineWidth: 1)
             Text(ChromeIdentity.monogram(kind))
-                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .font(.system(size: size < 18 ? 8 : 9, weight: .bold, design: .monospaced))
                 .foregroundStyle(.secondary)
         }
         .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+/// The one glyph for a handoff: a thin line with an arrowhead, pointing at
+/// the pane that owes the reply. Accent while the handoff is live, red when
+/// it failed, secondary once it settled; nothing else in the chrome draws an
+/// arrow, so the eye learns it once.
+struct ChromeWireLine: View {
+    var color: Color = .accentColor
+    var length: CGFloat = 12
+
+    var body: some View {
+        Canvas { context, size in
+            let y = size.height / 2
+            var path = Path()
+            path.move(to: CGPoint(x: 0, y: y))
+            path.addLine(to: CGPoint(x: size.width - 1, y: y))
+            path.move(to: CGPoint(x: size.width - 4, y: y - 3))
+            path.addLine(to: CGPoint(x: size.width - 1, y: y))
+            path.addLine(to: CGPoint(x: size.width - 4, y: y + 3))
+            context.stroke(path, with: .color(color), lineWidth: 1)
+        }
+        .frame(width: length, height: 8)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Source and target monograms joined by the wire: the unit of attribution
+/// in the dock, the Status Center timeline and the composer.
+struct ChromeWire: View {
+    let handoff: RelayHandoff
+    var size: CGFloat = 16
+    var length: CGFloat = 12
+
+    var body: some View {
+        HStack(spacing: 3) {
+            if let kind = handoff.sourceKind { ChromeMonogram(kind: kind, size: size) }
+            ChromeWireLine(color: ChromeColor.handoff(handoff), length: length)
+            if let kind = handoff.targetKind { ChromeMonogram(kind: kind, size: size) }
+        }
         .accessibilityHidden(true)
     }
 }

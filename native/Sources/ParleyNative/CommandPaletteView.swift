@@ -122,10 +122,17 @@ struct CommandPaletteView: View {
             run(command)
         } label: {
             HStack(spacing: 10) {
-                Image(systemName: command.item.category.systemImage)
-                    .font(.system(size: 12))
-                    .foregroundStyle(command.item.category == .ask ? Color.accentColor : Color.secondary)
-                    .frame(width: 18)
+                // A handoff command carries the wire, the chrome's one glyph
+                // for a handoff; everything else keeps its category symbol.
+                if command.item.category == .ask {
+                    ChromeWireLine(color: .accentColor, length: 14)
+                        .frame(width: 18)
+                } else {
+                    Image(systemName: command.item.category.systemImage)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18)
+                }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(command.item.title)
                         .font(.system(size: 12, weight: .medium))
@@ -136,12 +143,12 @@ struct CommandPaletteView: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 10)
-                Text(command.item.category.label)
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                Text(ChromeLabel.chipCase(command.item.category.label))
+                    .font(ChromeFont.meta)
                     .foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 14)
-            .frame(maxWidth: .infinity, minHeight: 46, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
             .contentShape(Rectangle())
             .background(
                 RoundedRectangle(cornerRadius: 5)

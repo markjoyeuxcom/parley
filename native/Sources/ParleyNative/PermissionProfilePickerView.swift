@@ -62,11 +62,11 @@ struct PermissionProfilePickerView: View {
                 Text(request.isFolderAccessReview
                     ? "Folder Access for \(kind.label)"
                     : isCreation ? "New Agent Pane" : "Permissions for \(kind.label)")
-                    .font(.title2.weight(.semibold))
+                    .font(ChromeFont.sheetTitle)
                 Text(request.isFolderAccessReview
                     ? "Review the exact folders this pane receives at launch. Applying a change restarts the vendor session; its working folder does not change."
-                    : isCreation ? "Choose the vendor, then review the pane’s folders and launch permissions."
-                    : "Review this pane’s folders and launch permissions.")
+                    : isCreation ? "Choose on the left. The right side is the exact review Parley attaches to the launch."
+                    : "Review this pane’s folders and launch permissions. The right side is what the launch carries.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -82,22 +82,41 @@ struct PermissionProfilePickerView: View {
 
             Divider()
 
+            // Choices on the left; on the right, the review Parley attaches to
+            // the launch, on its own paper so it reads as the record it is.
+            // The text of that review is the same whichever column it sits in.
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    if isCreation { vendorSection }
-                    runsSection
-                    if !(runInContainer && bypassVendorPermissions) { profileChoice }
-                    if let profile = selectedProfile {
-                        if runInContainer && bypassVendorPermissions {
-                            Text("The saved permission profile is not applied to this container. Turning bypass off restores the profile controls.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        } else {
-                            capabilitySummary(profile)
-                            approvalsSection
+                HStack(alignment: .top, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        if isCreation { vendorSection }
+                        runsSection
+                        if !(runInContainer && bypassVendorPermissions) { profileChoice }
+                        if let profile = selectedProfile {
+                            if runInContainer && bypassVendorPermissions {
+                                Text("The saved permission profile is not applied to this container. Turning bypass off restores the profile controls.")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                capabilitySummary(profile)
+                                approvalsSection
+                            }
+                            rootScope(profile)
                         }
-                        rootScope(profile)
-                        carriedSection(profile)
-                        notCarriedSection(profile)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    if let profile = selectedProfile {
+                        VStack(alignment: .leading, spacing: 18) {
+                            carriedSection(profile)
+                            notCarriedSection(profile)
+                        }
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(ChromeSurface.paper)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(ChromeRule.hairline, lineWidth: 1)
+                                .accessibilityHidden(true)
+                        }
                     }
                 }
                 .padding(20)
@@ -130,7 +149,7 @@ struct PermissionProfilePickerView: View {
         }
         // The middle scrolls, so the review may be shorter than its ideal on
         // a small display and wider or taller for larger text.
-        .frame(minWidth: 610, idealWidth: 610, maxWidth: 900, minHeight: 440, idealHeight: 660, maxHeight: .infinity)
+        .frame(minWidth: 760, idealWidth: 840, maxWidth: 1100, minHeight: 440, idealHeight: 680, maxHeight: .infinity)
         .disabled(model.applyingPanePermissions)
         .interactiveDismissDisabled()
         .sheet(item: $editingProfile) { profile in
@@ -892,8 +911,10 @@ private extension PermissionCapability {
 }
 
 private extension View {
+    /// The review's section labels share the chrome's one heading style.
     func permissionSectionLabel() -> some View {
-        font(.system(size: 10, weight: .semibold))
+        font(ChromeFont.heading)
             .foregroundStyle(.secondary)
+            .accessibilityAddTraits(.isHeader)
     }
 }

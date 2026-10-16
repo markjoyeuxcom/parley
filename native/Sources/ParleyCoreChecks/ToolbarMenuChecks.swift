@@ -203,7 +203,13 @@ func checkToolbarMenuSurvivesUpdatesWhileTracking(_ name: String, interruptFirst
             throw ToolbarMenuFailure("\(name) retained an old action or changed its toolbar label")
         }
         probe.tick = 5
-        RunLoop.main.run(until: Date().addingTimeInterval(0.1))
+        // The deferred chrome update lands on a later run-loop turn; a hosted
+        // runner sometimes needs more than one tenth of a second to reach it
+        // (CI run 38877487278, 16 October 2026). Wait, bounded, for the fact.
+        let deadline = Date().addingTimeInterval(3)
+        while popup.isEnabled, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
         guard !popup.isEnabled else {
             throw ToolbarMenuFailure("\(name) did not apply its latest disabled state after closing")
         }

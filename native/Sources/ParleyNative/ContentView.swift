@@ -34,10 +34,6 @@ struct ContentView: View {
                 CommandRunNotice(model: model)
                 TeamSessionNotice(model: model)
                 Divider()
-                if let top = noticeLane.first {
-                    noticeLaneView(top: top, lane: noticeLane)
-                    Divider()
-                }
                 if model.handoffComposerDraft != nil {
                     handoffComposer
                     Divider()
@@ -158,7 +154,7 @@ struct ContentView: View {
                         favouritesExpanded.toggle()
                     } label: {
                         Label("FAVOURITE FOLDERS", systemImage: favouritesExpanded ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
+                            .font(ChromeFont.heading)
                             .foregroundStyle(.secondary)
                             .contentShape(Rectangle())
                     }
@@ -192,7 +188,7 @@ struct ContentView: View {
             Divider()
             VStack(alignment: .leading, spacing: 5) {
                 Text("NEW PANE FOLDER")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(ChromeFont.heading)
                     .foregroundStyle(.secondary)
                     .accessibilityAddTraits(.isHeader)
                 Menu {
@@ -300,7 +296,7 @@ struct ContentView: View {
                     workspaceShortcutRow(workspace, trailing: "\(count)", spokenTrailing: "\(count) waiting on you", emphasised: true)
                 }
             } header: {
-                sidebarSectionHeader("NEEDS ATTENTION")
+                sidebarSectionHeader("NEEDS ATTENTION", tone: .orange)
             }
         }
         if !sections.pinned.isEmpty {
@@ -373,6 +369,8 @@ struct ContentView: View {
                 } label: {
                     Label("ALL WORKSPACES (\(model.workspaces.count))", systemImage: allExpanded ? "chevron.down" : "chevron.right")
                         .labelStyle(.titleAndIcon)
+                        .font(ChromeFont.heading)
+                        .foregroundStyle(.secondary)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -447,7 +445,10 @@ struct ContentView: View {
         }
     }
 
-    private func sidebarSectionHeader(_ title: String, expanded: Binding<Bool>? = nil, detail: String? = nil) -> some View {
+    /// Section headings are the chrome's only uppercase: 9 pt mono, secondary,
+    /// or a semantic tone when the section itself states a fact.
+    private func sidebarSectionHeader(_ title: String, expanded: Binding<Bool>? = nil, detail: String? = nil,
+                                      tone: Color? = nil) -> some View {
         HStack(spacing: 6) {
             if let expanded {
                 Button {
@@ -464,11 +465,14 @@ struct ContentView: View {
             }
             if let detail {
                 Text(detail)
+                    .font(ChromeFont.secondary)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
         }
+        .font(ChromeFont.heading)
+        .foregroundStyle(tone ?? Color.secondary)
     }
 
     @ViewBuilder private func paneRows(_ panes: [WorkbenchPane]) -> some View {
@@ -521,9 +525,11 @@ struct ContentView: View {
                     .truncationMode(.middle)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 if let trailing {
+                    // Emphasis here means the person is needed, so it is orange,
+                    // the same tone as the section heading above it.
                     Text(trailing)
                         .font(.system(size: 9, weight: .semibold, design: .monospaced).monospacedDigit())
-                        .foregroundStyle(emphasised ? Color.accentColor : Color.secondary)
+                        .foregroundStyle(emphasised ? Color.orange : Color.secondary)
                 }
             }
             .padding(.horizontal, 7)
@@ -1541,32 +1547,72 @@ struct ContentView: View {
         }
     }
 
+    /// One line under the grid carrying every honest fact: the connection,
+    /// what is in flight and what came back, the top notice with its one
+    /// action and the rest behind "+N", then the selected pane, the protocol
+    /// and the palette. The notices used to stack as banners above the grid.
     private var workbenchStatusBar: some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(ChromeColor.connection(model.connectionState))
-                .frame(width: 6, height: 6)
-                .accessibilityHidden(true)
-            Text(WorkbenchChromeProjection.connectionLabel(model.connectionState))
-                .foregroundStyle(model.connectionState == .connected ? Color.secondary : ChromeColor.connection(model.connectionState))
-            Text("Protocol \(AgentProtocol.version)")
-            Text("\(model.visiblePanes.count) pane\(model.visiblePanes.count == 1 ? "" : "s")")
-            if let pane = model.activePane {
-                Text(ChromeIdentity.monogram(pane.kind))
-                    .font(ChromeFont.chip)
+        let lane = noticeLane
+        // Both counts are this workspace's: the global consultation and
+        // delegation lists would show work from a workspace that is not here.
+        let live: Set<RelayHandoffState> = [.created, .delivered, .waiting]
+        let inFlight = model.workspaceHandoffs.count { live.contains($0.state) }
+        let returned = model.activeWorkspace.map { model.unreadResultCount(forWorkspace: $0.id) } ?? 0
+        return HStack(spacing: 10) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(ChromeColor.connection(model.connectionState))
+                    .frame(width: 6, height: 6)
                     .accessibilityHidden(true)
-                Text(pane.displayName)
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if let role = pane.role {
-                    Text("@\(role)")
-                        .foregroundStyle(Color.accentColor)
+                Text(WorkbenchChromeProjection.connectionLabel(model.connectionState))
+                    .foregroundStyle(model.connectionState == .connected ? Color.secondary : ChromeColor.connection(model.connectionState))
+            }
+            .help("Coordination core: \(WorkbenchChromeProjection.connectionLabel(model.connectionState))")
+            if inFlight > 0 || returned > 0 {
+                statusSeparator
+                HStack(spacing: 5) {
+                    ChromeWireLine(color: inFlight > 0 ? .accentColor : .secondary, length: 10)
+                    Text([inFlight > 0 ? "\(inFlight) in flight" : nil, returned > 0 ? "\(returned) returned" : nil]
+                        .compactMap { $0 }.joined(separator: " · "))
                 }
-                Text("selected")
-                    .foregroundStyle(.secondary)
+                .help("Questions and delegations awaiting a result, and results waiting to be read in this workspace")
+                .accessibilityElement(children: .combine)
+            }
+            if let top = lane.first {
+                statusSeparator
+                statusNotice(top: top, rest: Array(lane.dropFirst()))
             }
             Spacer(minLength: 6)
+            if let pane = model.activePane {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 5) {
+                        ChromeMonogram(kind: pane.kind, size: 14)
+                        Text(pane.displayName)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        if let role = pane.role {
+                            Text("@\(role)")
+                                .foregroundStyle(Color.accentColor)
+                        }
+                        Text("selected")
+                    }
+                    .lineLimit(1)
+                    .fixedSize()
+                    // A real zero-size candidate, so the group is dropped
+                    // rather than squeezed when the notice needs the room.
+                    Color.clear.frame(width: 0, height: 0)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(pane.displayName) selected\(pane.role.map { ", @\($0)" } ?? "")")
+            }
+            ViewThatFits(in: .horizontal) {
+                Text("Protocol \(AgentProtocol.version) · \(model.visiblePanes.count) pane\(model.visiblePanes.count == 1 ? "" : "s")")
+                    .font(ChromeFont.meta)
+                    .fixedSize()
+                Color.clear.frame(width: 0, height: 0)
+            }
+            .help("Protocol \(AgentProtocol.version) · \(model.visiblePanes.count) retained pane\(model.visiblePanes.count == 1 ? "" : "s")")
             if !model.workspaceHandoffs.isEmpty {
                 activityHistoryMenu
                     .fixedSize()
@@ -1584,8 +1630,81 @@ struct ContentView: View {
         .font(ChromeFont.secondary.monospacedDigit())
         .foregroundStyle(.secondary)
         .padding(.horizontal, 9)
-        .frame(height: 25)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .frame(height: 26)
+        .background(ChromeSurface.paper)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var statusSeparator: some View {
+        Rectangle()
+            .fill(ChromeRule.hairline)
+            .frame(width: 1, height: 12)
+            .accessibilityHidden(true)
+    }
+
+    /// The top notice as one line: a dot in its tone, the title, the detail
+    /// while there is room, its single action, and the remaining notices in
+    /// priority order behind "+N". The detail is always in the help.
+    private func statusNotice(top: WorkbenchNotice, rest: [WorkbenchNotice]) -> some View {
+        let tone = ChromeColor.tone(top.tone)
+        return HStack(spacing: 7) {
+            Circle()
+                .fill(tone)
+                .frame(width: 6, height: 6)
+                .accessibilityHidden(true)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    Text(top.title)
+                        .font(ChromeFont.secondaryMedium)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(top.detail)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                Text(top.title)
+                    .font(ChromeFont.secondaryMedium)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(top.title). \(top.detail)")
+            if let label = top.actionLabel, let action = top.action {
+                // The one action never shrinks; the text beside it truncates.
+                Button(label) { perform(action) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+                    .fixedSize()
+                    .layoutPriority(1)
+                    .accessibilityHint(noticeActionHint(action))
+            }
+            if !rest.isEmpty {
+                Menu {
+                    ForEach(rest) { notice in
+                        Section {
+                            Text(notice.detail)
+                            if let label = notice.actionLabel, let action = notice.action {
+                                Button(label) { perform(action) }
+                            }
+                        } header: {
+                            Text(notice.title)
+                        }
+                    }
+                } label: {
+                    Text("+\(rest.count)")
+                        .font(ChromeFont.secondaryMedium.monospacedDigit())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help(rest.map(\.title).joined(separator: "\n"))
+                .accessibilityLabel("\(rest.count) more notice\(rest.count == 1 ? "" : "s")")
+                .accessibilityHint("Open the remaining notices in priority order")
+            }
+        }
+        .help(top.detail)
         .accessibilityElement(children: .contain)
     }
 
@@ -1637,86 +1756,6 @@ struct ContentView: View {
             dockVisible: model.collaborationDockVisible,
             protocolVersion: AgentProtocol.version
         )
-    }
-
-    private func noticeLaneView(top: WorkbenchNotice, lane: [WorkbenchNotice]) -> some View {
-        let tone = ChromeColor.tone(top.tone)
-        let rest = Array(lane.dropFirst())
-        return HStack(spacing: 10) {
-            Image(systemName: noticeSymbol(top.kind))
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(tone)
-                .frame(width: 16)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(top.title)
-                    .font(ChromeFont.bodySemibold)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(top.detail)
-                    .font(ChromeFont.secondary)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(top.kind == .activity ? 1 : 2)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("\(top.title). \(top.detail)")
-            Spacer(minLength: 8)
-            if let label = top.actionLabel, let action = top.action {
-                Button(label) { perform(action) }
-                    .accessibilityHint(noticeActionHint(action))
-            }
-            if !rest.isEmpty {
-                Menu {
-                    ForEach(rest) { notice in
-                        Section {
-                            Text(notice.detail)
-                            if let label = notice.actionLabel, let action = notice.action {
-                                Button(label) { perform(action) }
-                            }
-                        } header: {
-                            Text(notice.title)
-                        }
-                    }
-                } label: {
-                    Text("+\(rest.count)")
-                        .font(ChromeFont.secondaryMedium.monospacedDigit())
-                }
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help(rest.map(\.title).joined(separator: "\n"))
-                .accessibilityLabel("\(rest.count) more notice\(rest.count == 1 ? "" : "s")")
-                .accessibilityHint("Open the remaining notices in priority order")
-            }
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .frame(minHeight: 34)
-        .background(tone.opacity(0.07))
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(tone)
-                .frame(width: 3)
-                .accessibilityHidden(true)
-        }
-        .help(top.detail)
-        .accessibilityElement(children: .contain)
-    }
-
-    private func noticeSymbol(_ kind: WorkbenchNoticeKind) -> String {
-        switch kind {
-        case .permission: "hand.raised"
-        case .failure: "xmark.circle"
-        case .protocolStale: "arrow.triangle.2.circlepath.circle"
-        case .relayUnavailable: "link.badge.plus"
-        case .worktreeCollision: "exclamationmark.triangle"
-        case .connection: "bolt.horizontal.circle"
-        case .targetAttention: "exclamationmark.bubble"
-        case .paneStopped: "pause.circle"
-        case .activity: "arrow.triangle.branch"
-        case .recipe: "text.badge.checkmark"
-        }
     }
 
     private func noticeActionHint(_ action: WorkbenchNoticeAction) -> String {
@@ -1975,25 +2014,25 @@ struct ContentView: View {
                 focusPaneID: model.focusCanvasPaneID,
                 fractionForPath: model.nativeSplitFraction,
                 onFractionCommit: model.persistNativeSplitFraction
-            ) { paneID in
-                nativePaneLeaf(representativePaneID: paneID)
+            ) { [wires = liveWireHandoffs] paneID in
+                nativePaneLeaf(representativePaneID: paneID, wire: wires[paneID])
             }
             .background(Color(nsColor: .windowBackgroundColor))
         }
     }
 
     @ViewBuilder
-    private func nativePaneLeaf(representativePaneID: String) -> some View {
+    private func nativePaneLeaf(representativePaneID: String, wire: RelayHandoff?) -> some View {
         if let paneSurface = model.nativePaneSurfaces.first(where: {
             $0.representativePaneID == representativePaneID
         }), let pane = model.visiblePanes.first(where: { $0.id == representativePaneID }) {
             let attention = model.paneAttention(for: pane.id)
             VStack(spacing: 0) {
-                paneChromeHeader(pane)
+                paneChromeHeader(pane, wire: wire)
                 nativeTerminalLeaf(paneSurface)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .background(Color(nsColor: NSColor(white: 0.075, alpha: 1)))
+            .background(ChromeSurface.glass)
             .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
             .overlay {
                 // The outer ring is selection and nothing else; attention is a
@@ -2021,14 +2060,33 @@ struct ContentView: View {
         }
     }
 
-    private func paneChromeHeader(_ pane: WorkbenchPane) -> some View {
-        HStack(spacing: 7) {
-            ChromeMonogram(kind: pane.kind, size: 17)
+    /// The newest live handoff each pane is party to, drawn as the wire in its
+    /// header. Built once per render of the split, not once per pane.
+    private var liveWireHandoffs: [String: RelayHandoff] {
+        let live: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
+        var byPane: [String: RelayHandoff] = [:]
+        for handoff in model.workspaceHandoffs where live.contains(handoff.state) {
+            if byPane[handoff.sourcePaneID] == nil { byPane[handoff.sourcePaneID] = handoff }
+            if byPane[handoff.targetPaneID] == nil { byPane[handoff.targetPaneID] = handoff }
+        }
+        return byPane
+    }
+
+    /// Left to right: who, what it is called, how it routes, who it is
+    /// talking to, what state that is in; facts sit right in mono. Selection
+    /// is the ring and the name's weight, never a tinted header.
+    private func paneChromeHeader(_ pane: WorkbenchPane, wire: RelayHandoff?) -> some View {
+        let git = model.projectContext(for: pane)
+        return HStack(spacing: 7) {
+            ChromeMonogram(kind: pane.kind, size: 18)
             Text(pane.displayName)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: 11, weight: pane.isActive ? .semibold : .medium))
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .layoutPriority(2)
+            if pane.isWorkspaceLead {
+                ChromeChip("Lead", color: .secondary)
+            }
             if let role = pane.role {
                 Text("@\(role)")
                     .font(ChromeFont.meta)
@@ -2036,15 +2094,45 @@ struct ContentView: View {
                     .lineLimit(1)
                     .layoutPriority(1)
             }
-            ViewThatFits(in: .horizontal) {
-                Text(WorkspaceFolderIdentity.displayName(for: pane.cwd))
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                EmptyView()
+            if let handoff = wire {
+                let outgoing = handoff.sourcePaneID == pane.id
+                let other = outgoing ? handoff.targetKind : handoff.sourceKind
+                let otherName = outgoing ? handoff.targetName : handoff.sourceName
+                HStack(spacing: 3) {
+                    if !outgoing, let other { ChromeMonogram(kind: other, size: 14) }
+                    ChromeWireLine(color: ChromeColor.handoff(handoff))
+                    if outgoing, let other { ChromeMonogram(kind: other, size: 14) }
+                }
+                .help("\(handoff.kind.label) \(outgoing ? "to" : "from") \(otherName) · \(handoff.state.rawValue)")
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(handoff.kind.label) \(outgoing ? "to" : "from") \(otherName), \(handoff.state.rawValue)")
             }
             Spacer(minLength: 4)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 5) {
+                    Text(WorkspaceFolderIdentity.displayName(for: pane.cwd))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let git {
+                        Text("·")
+                        Text(git.branch)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        if git.isDirty {
+                            Text("dirty")
+                                .foregroundStyle(Color.orange)
+                        }
+                    }
+                }
+                Text(WorkspaceFolderIdentity.displayName(for: pane.cwd))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                // A real zero-size candidate: EmptyView offers none, so the
+                // text above would be kept and squeezed instead of dropped.
+                Color.clear.frame(width: 0, height: 0)
+            }
+            .font(ChromeFont.meta)
+            .foregroundStyle(.secondary)
             if let attention = model.paneAttention(for: pane.id) {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
                     ChromeChip(attention.label(at: context.date), color: ChromeColor.attention(attention.reason))
@@ -2077,8 +2165,10 @@ struct ContentView: View {
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
         .contentShape(Rectangle())
-        .background(pane.isActive ? Color.accentColor.opacity(0.12) : Color.clear)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(ChromeSurface.paper)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(ChromeRule.soft).frame(height: 1).accessibilityHidden(true)
+        }
         .onTapGesture(count: 2) {
             model.toggleFocusCanvas(paneID: pane.id)
         }
@@ -2327,9 +2417,8 @@ private struct PaneRow: View {
                                 + (configuration.publishedPort.map { " · port \($0) forwarded from this Mac’s loopback" } ?? ""))
                     }
                     if pane.isWorkspaceLead {
-                        Text("Lead")
-                            .font(ChromeFont.meta)
-                            .foregroundStyle(Color.accentColor)
+                        // Lead is identity, not a state or a route: neutral.
+                        ChromeChip("Lead", color: .secondary)
                     }
                     if let role = pane.role {
                         Text("@\(role)")

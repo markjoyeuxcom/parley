@@ -111,7 +111,8 @@ Prax notes: "Parley runtime…"; "Parley durable records…"; "Parley in-process
 relay broker…"; "Parley transport liveness…"; "Parley Sparkle updates…";
 "Parley workspaces…"; "Parley Settings › Terminal: curated Ghostty surface
 options"; "Parley configuration stores and unreadable-store handling";
-"Parley configuration export and restore…".
+"Parley configuration export and restore…"; "Parley chrome design
+language: paper around glass".
 
 - Runtime files live under `~/Library/Application Support/Parley Native/`
   (Production) or a separate Development directory.
@@ -147,6 +148,15 @@ options"; "Parley configuration stores and unreadable-store handling";
   endpoints whose capability is gone. The shim stages stdin before the request
   exists; "not running" and "could not write the request" mean nothing was
   sent.
+- Chrome is paper around glass: `ChromeSurface` (paper, raised, inset,
+  glass) and `ChromeRule` hairlines, never shadows or tinted headers;
+  colour states a fact (`ChromeColor`), never a vendor. `ChromeWireLine` is
+  the only arrow, drawn for a handoff and pointing at the pane that owes
+  the reply; `ChromeMonogram` is the vendor. A pane header reads monogram,
+  name, Lead chip, role, wire, state chip, then facts in mono; selection is
+  the ring and the name's weight. Notices live in the status bar (top
+  notice, its one action, "+N"), never as banners above the grid. Settings
+  sections are a sidebar.
 - Settings › Appearance (look) and › Terminal (behaviour) render
   `TerminalSurfacePreference` as explicit Ghostty lines for a closed, bounded
   key set (`renderedKeys`, grouped by `TerminalSurfaceSection`); never a
