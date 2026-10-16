@@ -212,20 +212,17 @@ struct StatusCenterView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Rectangle()
+            // The condition is a dot in its tone beside the title: the same
+            // grammar as the status bar and the dock, not a bar and an icon.
+            Circle()
                 .fill(conditionColor)
-                .frame(width: 4, height: 36)
-                .accessibilityHidden(true)
-            Image(systemName: conditionIcon)
-                .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(conditionColor)
-                .frame(width: 24)
+                .frame(width: 8, height: 8)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(conditionTitle)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(ChromeFont.windowTitle)
                 Text(conditionDetail)
-                    .font(.system(size: 11))
+                    .font(ChromeFont.body)
                     .foregroundStyle(.secondary)
             }
             .accessibilityRepresentation {
@@ -340,8 +337,8 @@ struct StatusCenterView: View {
             .accessibilityHint("Filter agents, collaboration, results, counts, and activity by workspace")
         }
         .padding(.horizontal, 16)
-        .frame(height: 62)
-        .background(conditionColor.opacity(0.055))
+        .frame(height: 56)
+        .background(ChromeSurface.paper)
     }
 
     private var countStrip: some View {
@@ -353,8 +350,8 @@ struct StatusCenterView: View {
             countCell("Results", snapshot.counts.unreadResults, kind: .unreadResults)
             countCell("Failures", snapshot.counts.failures, kind: .failures, warning: snapshot.counts.failures > 0)
         }
-        .background(Color.secondary.opacity(0.11))
-        .frame(height: 58)
+        .background(ChromeRule.soft)
+        .frame(height: 54)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Status Center totals. \(WorkbenchAccessibility.counts(snapshot.counts))")
     }
@@ -381,7 +378,7 @@ struct StatusCenterView: View {
                     .foregroundStyle(isCurrent ? Color.primary : Color.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color(nsColor: .windowBackgroundColor))
+            .background(ChromeSurface.paper)
             .overlay(alignment: .bottom) {
                 Rectangle()
                     .fill(isCurrent ? Color.accentColor : Color.clear)
@@ -602,17 +599,24 @@ struct StatusCenterView: View {
         }
     }
 
+    /// One ledger row: the time in a fixed column, the wire between the two
+    /// monograms, the names, the subject, then the chips on the right.
     private func handoffRow(_ handoff: RelayHandoff) -> some View {
         Button {
             select(handoff)
         } label: {
-            HStack(spacing: 10) {
+            HStack(alignment: .top, spacing: 10) {
+                Text(handoff.updatedAt.formatted(date: .omitted, time: .shortened))
+                    .font(ChromeFont.meta)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 40, alignment: .leading)
+                    .padding(.top, 3)
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 5) {
+                    HStack(spacing: 6) {
+                        ChromeWire(handoff: handoff, size: 16, length: 12)
                         Text(handoff.sourceName)
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 9))
-                            .foregroundStyle(.tertiary)
+                        Text("to")
+                            .foregroundStyle(.secondary)
                         Text(handoff.targetName)
                     }
                     .font(.system(size: 11, weight: .medium))
@@ -650,10 +654,14 @@ struct StatusCenterView: View {
                 }
             }
             .padding(9)
-            .background(
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(selectedHandoffID == handoff.id ? Color.accentColor.opacity(0.10) : Color.clear)
-            )
+            .background(selectedHandoffID == handoff.id ? Color.accentColor.opacity(0.10) : Color.clear)
+            .overlay(alignment: .leading) {
+                // Selection is the wire colour at the row's edge, as in the dock.
+                Rectangle()
+                    .fill(selectedHandoffID == handoff.id ? Color.accentColor : Color.clear)
+                    .frame(width: 2)
+                    .accessibilityHidden(true)
+            }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -819,8 +827,13 @@ struct StatusCenterView: View {
                 select(handoff)
             } label: {
                 HStack(spacing: 8) {
+                    Text(handoff.updatedAt.formatted(date: .omitted, time: .shortened))
+                        .font(ChromeFont.meta)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .leading)
+                    ChromeWire(handoff: handoff, size: 14, length: 10)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text("\(handoff.sourceName) → \(handoff.targetName)")
+                        Text("\(handoff.sourceName) to \(handoff.targetName)")
                             .font(.system(size: 10, weight: .medium))
                         Text(subject(handoff.text))
                             .font(.system(size: 9))
@@ -912,26 +925,23 @@ struct StatusCenterView: View {
         let attention = snapshot.handoffs.first(where: { $0.targetPaneID == pane.id && $0.attention != nil })
         return HStack(alignment: .top, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(processColor(pane))
-                    .frame(width: 4, height: 32)
-                    .accessibilityHidden(true)
+                // The vendor is the monogram; the process state is the chip.
+                ChromeMonogram(kind: pane.kind, size: 22)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
                         Text(pane.displayName)
                             .font(.system(size: 11, weight: .medium))
-                        Text(pane.kind.label)
-                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                        if pane.isWorkspaceLead {
+                            ChromeChip("Lead", color: .secondary)
+                        }
                         if let role = pane.role {
                             Text("@\(role)")
                                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(Color.accentColor)
                         }
+                        ChromeChip(processState(pane), color: processColor(pane))
                         if attention != nil {
-                            Text("ATTENTION")
-                                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                .foregroundStyle(Color.orange)
+                            ChromeChip("Attention", color: .orange)
                         }
                     }
                     Text(work.map { subject($0.text) } ?? "No tracked work")
@@ -941,16 +951,14 @@ struct StatusCenterView: View {
                 }
                 Spacer(minLength: 8)
                 VStack(alignment: .trailing, spacing: 3) {
-                    Text(processState(pane))
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
                     Text(pane.workspaceName ?? pane.workspaceID)
-                        .font(.system(size: 9, design: .monospaced))
+                        .font(ChromeFont.meta)
                         .foregroundStyle(.secondary)
-                    Text(protocolLabel(pane))
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    Text(ChromeLabel.chipCase(protocolLabel(pane)))
+                        .font(ChromeFont.meta)
                         .foregroundStyle(protocolColor(pane))
-                    Text(readiness(pane))
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    Text(ChromeLabel.chipCase(readiness(pane)))
+                        .font(ChromeFont.meta)
                         .foregroundStyle(readinessColor(pane))
                 }
             }
@@ -1282,8 +1290,11 @@ struct StatusCenterView: View {
                         Text("SELECTED ITEM")
                             .font(.system(size: 9, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.secondary)
-                        Text("\(handoff.sourceName) → \(handoff.targetName)")
-                            .font(.system(size: 16, weight: .semibold))
+                        HStack(spacing: 8) {
+                            ChromeWire(handoff: handoff, size: 20, length: 16)
+                            Text("\(handoff.sourceName) to \(handoff.targetName)")
+                                .font(.system(size: 15, weight: .semibold))
+                        }
                         HStack(spacing: 7) {
                             statusChip(handoff.kind.label.uppercased(), color: .secondary)
                             statusChip(handoff.state.rawValue.uppercased(), color: stateColor(handoff))
@@ -2201,9 +2212,9 @@ struct StatusCenterView: View {
             ChromeHeading(title)
             content()
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.secondary.opacity(0.035))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.12), lineWidth: 1))
+                .background(ChromeSurface.raised)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(ChromeRule.hairline, lineWidth: 1))
         }
     }
 
@@ -2247,17 +2258,6 @@ struct StatusCenterView: View {
             ? "No folders attached."
             : "\(workspace.attachedFolders.count) folder\(workspace.attachedFolders.count == 1 ? "" : "s") attached."
         return "\(status) \(folders)"
-    }
-
-    private var conditionIcon: String {
-        switch snapshot.condition {
-        case .allClear: "checkmark.circle"
-        case .resultsAvailable: "envelope.badge"
-        case .agentsWaiting: "clock"
-        case .humanInputRequired: "exclamationmark.triangle"
-        case .interruptedWork: "bolt.horizontal.circle"
-        case .coreUnavailable: "network.slash"
-        }
     }
 
     private var conditionColor: Color {

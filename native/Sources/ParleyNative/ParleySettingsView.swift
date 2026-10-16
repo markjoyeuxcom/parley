@@ -5,10 +5,14 @@ import SwiftUI
 struct ParleySettingsView: View {
     @ObservedObject var model: AppModel
 
-    private var selection: Binding<ApplicationSettingsSection> {
+    /// Sidebar order: the durable choices, then how things look, then how
+    /// the terminal behaves, then the two opt-in surfaces.
+    private static let sections: [ApplicationSettingsSection] = [.general, .appearance, .terminal, .voice, .notifications]
+
+    private var sidebarSelection: Binding<ApplicationSettingsSection?> {
         Binding(
             get: { model.selectedSettingsSection },
-            set: { model.selectSettingsSection($0) }
+            set: { if let section = $0 { model.selectSettingsSection(section) } }
         )
     }
 
@@ -16,52 +20,53 @@ struct ParleySettingsView: View {
         VStack(spacing: 0) {
             RuntimeBanner(runtime: model.runtime)
             if model.runtime.visibleMarker != nil { Divider() }
-            TabView(selection: selection) {
-                GeneralSettingsView(model: model)
-                    .tabItem {
-                        Label(
-                            ApplicationSettingsSection.general.title,
-                            systemImage: ApplicationSettingsSection.general.systemImage
-                        )
+            HStack(spacing: 0) {
+                // Sections as a sidebar, the way System Settings and the
+                // palette's "<Section> Settings…" commands already name them.
+                List(selection: sidebarSelection) {
+                    ForEach(Self.sections) { section in
+                        Label(section.title, systemImage: section.systemImage)
+                            .font(.system(size: 12))
+                            .tag(section)
+                            .accessibilityHint("Show \(section.title) settings")
                     }
-                    .tag(ApplicationSettingsSection.general)
-
-                TerminalSettingsView(model: model)
-                    .tabItem {
-                        Label(
-                            ApplicationSettingsSection.terminal.title,
-                            systemImage: ApplicationSettingsSection.terminal.systemImage
-                        )
-                    }
-                    .tag(ApplicationSettingsSection.terminal)
-
-                VoiceSettingsView(voice: model.voice)
-                    .tabItem { Label(ApplicationSettingsSection.voice.title, systemImage: ApplicationSettingsSection.voice.systemImage) }
-                    .tag(ApplicationSettingsSection.voice)
-
-                AppearanceSettingsView(model: model)
-                .tabItem {
-                    Label(
-                        ApplicationSettingsSection.appearance.title,
-                        systemImage: ApplicationSettingsSection.appearance.systemImage
-                    )
                 }
-                .tag(ApplicationSettingsSection.appearance)
-
-                NotificationSettingsView(model: model)
-                    .tabItem {
-                        Label(
-                            ApplicationSettingsSection.notifications.title,
-                            systemImage: ApplicationSettingsSection.notifications.systemImage
-                        )
+                .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
+                .background(ChromeSurface.paper)
+                .frame(width: 176)
+                .accessibilityLabel("Settings sections")
+                Divider()
+                VStack(spacing: 0) {
+                    HStack(spacing: 10) {
+                        Text(model.selectedSettingsSection.title)
+                            .font(ChromeFont.windowTitle)
+                        Spacer()
+                        Text("Every change applies and saves at once.")
+                            .font(ChromeFont.secondary)
+                            .foregroundStyle(.secondary)
                     }
-                    .tag(ApplicationSettingsSection.notifications)
+                    .padding(.horizontal, 20)
+                    .frame(height: 40)
+                    Divider()
+                    sectionContent
+                }
             }
-            .padding(.top, 8)
         }
         // Flexible, so larger text or a long section can grow the window
         // rather than clip; the minimum is the size it always had.
-        .frame(minWidth: 680, idealWidth: 680, maxWidth: 1000, minHeight: 590, idealHeight: 590, maxHeight: .infinity)
+        .frame(minWidth: 760, idealWidth: 820, maxWidth: 1100, minHeight: 590, idealHeight: 620, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var sectionContent: some View {
+        switch model.selectedSettingsSection {
+        case .general: GeneralSettingsView(model: model)
+        case .appearance: AppearanceSettingsView(model: model)
+        case .terminal: TerminalSettingsView(model: model)
+        case .voice: VoiceSettingsView(voice: model.voice)
+        case .notifications: NotificationSettingsView(model: model)
+        }
     }
 }
 
