@@ -317,7 +317,16 @@ func checkMissingExchangeFoldersAreRecreated() throws {
         try waitExpect(!TransportFixture.replied(response), "a reply was written through a \(folder) link")
         try waitExpect(try elsewhereUntouched(), "a \(folder) link led the transport to change the folder it points to")
         try FileManager.default.removeItem(at: path)
-        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        // The transport's own tick may put the folder back between the removal
+        // and this create (CI run 38471070507, 13 October 2026): "already
+        // exists" is the fact this step wants, provided it is a real folder.
+        do {
+            try FileManager.default.createDirectory(at: path, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileWriteFileExistsError {
+            let attributes = try FileManager.default.attributesOfItem(atPath: path.path)
+            try waitExpect((attributes[.type] as? FileAttributeType) == .typeDirectory,
+                           "the \(folder) path came back as something other than a folder")
+        }
     }
 }
 
