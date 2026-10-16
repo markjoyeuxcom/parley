@@ -185,6 +185,9 @@ struct HandoffComposerView: View {
     }
 }
 
+/// The Collaboration Dock as a ledger: what is in flight, what came back and
+/// is waiting to be read, the runtime facts, then the day's record with a
+/// time column. Every handoff is drawn with the wire, source to target.
 struct CollaborationDockView: View {
     @ObservedObject var model: AppModel
     let openStatus: () -> Void
@@ -192,17 +195,18 @@ struct CollaborationDockView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 7) {
-                Image(systemName: "arrow.triangle.branch")
-                    .foregroundStyle(Color.accentColor)
                 Text("Collaboration")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(ChromeFont.windowTitle)
                 Spacer()
                 Button {
                     model.toggleCollaborationDock()
                 } label: {
                     Image(systemName: "sidebar.trailing")
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
                 .accessibilityLabel("Hide Collaboration Dock")
             }
             .padding(.horizontal, 11)
@@ -211,46 +215,50 @@ struct CollaborationDockView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    sectionTitle("Active handoff")
+                    sectionTitle("In flight")
                     if let handoff = model.primaryActivity {
-                        activeHandoff(handoff)
+                        card { activeHandoff(handoff) }
                     } else {
-                        Text("No collaboration is currently waiting or in flight.")
+                        Text("Nothing is waiting or in flight.")
                             .font(ChromeFont.secondary)
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 11)
                             .padding(.bottom, 12)
                     }
                     if let recipe = model.activeRecipeRun {
-                        Divider()
                         sectionTitle("Recipe")
-                        recipeSection(recipe)
+                        card { recipeSection(recipe) }
                     }
-                    Divider()
+                    let returned = returnedHandoffs
+                    if !returned.isEmpty {
+                        sectionTitle("Returned")
+                        ForEach(returned.prefix(3)) { handoff in
+                            card { returnedHandoff(handoff) }
+                        }
+                    }
                     sectionTitle("Runtime")
                     fact(
-                        icon: "circle.fill",
                         label: "Coordination core",
                         value: WorkbenchChromeProjection.connectionLabel(model.connectionState),
                         color: ChromeColor.connection(model.connectionState)
                     )
                     let protocolFact = WorkbenchChromeProjection.protocolLabel(panes: model.panes)
-                    fact(icon: "bolt.horizontal", label: "Protocol", value: protocolFact.value,
-                         color: protocolFact.needsRestart ? .orange : .secondary)
-                    fact(icon: "rectangle.split.3x1", label: "Retained panes", value: "\(model.visiblePanes.count)", color: .secondary)
-                    Divider().padding(.top, 10)
+                    fact(label: "Protocol", value: protocolFact.value, color: protocolFact.needsRestart ? .orange : .secondary)
+                    fact(label: "Retained panes", value: "\(model.visiblePanes.count)", color: .secondary)
                     sectionTitle("Recent")
                     if model.workspaceHandoffs.isEmpty {
                         Text("No handoffs recorded in this workspace.")
                             .font(ChromeFont.secondary)
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 11)
+                            .padding(.bottom, 12)
                     } else {
-                        ForEach(Array(model.workspaceHandoffs.prefix(6))) { handoff in
+                        ForEach(Array(model.workspaceHandoffs.prefix(8))) { handoff in
                             recentHandoff(handoff)
                         }
                     }
                 }
+                .padding(.bottom, 8)
             }
 
             Divider()
@@ -266,14 +274,38 @@ struct CollaborationDockView: View {
             .controlSize(.small)
             .padding(10)
         }
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(ChromeSurface.paper)
+    }
+
+    /// Results that returned to a pane in this workspace and have not been
+    /// read: the dock's second section, so a result is never only a chip.
+    private var returnedHandoffs: [RelayHandoff] {
+        let unread = Set(model.unreadHandoffs.map(\.id))
+        guard !unread.isEmpty else { return [] }
+        return model.workspaceHandoffs.filter { unread.contains($0.id) }
     }
 
     private func sectionTitle(_ title: String) -> some View {
         ChromeHeading(title)
             .padding(.horizontal, 11)
             .padding(.top, 12)
-            .padding(.bottom, 8)
+            .padding(.bottom, 6)
+    }
+
+    /// One raised card per live item: the only elevation in the dock.
+    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ChromeSurface.raised)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(ChromeRule.hairline, lineWidth: 1)
+                    .accessibilityHidden(true)
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 6)
     }
 
     private func recipeSection(_ recipe: ActiveRecipeRun) -> some View {
@@ -303,39 +335,49 @@ struct CollaborationDockView: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
         }
-        .padding(.horizontal, 11)
-        .padding(.bottom, 12)
         .help(recipe.instructions)
         .accessibilityElement(children: .contain)
     }
 
     private func activeHandoff(_ handoff: RelayHandoff) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 7) {
-                Button(handoff.sourceName) { model.focus(handoff, target: false) }
-                    .disabled(!model.canFocus(handoff.sourcePaneID))
-                Image(systemName: "arrow.right")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-                Button(handoff.targetName) { model.focus(handoff, target: true) }
-                    .disabled(!model.canFocus(handoff.targetPaneID))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Button { model.focus(handoff, target: false) } label: {
+                    HStack(spacing: 4) {
+                        if let kind = handoff.sourceKind { ChromeMonogram(kind: kind, size: 18) }
+                        Text(handoff.sourceName)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .disabled(!model.canFocus(handoff.sourcePaneID))
+                .accessibilityLabel("Focus \(handoff.sourceName)")
+                ChromeWireLine(color: ChromeColor.handoff(handoff), length: 16)
+                Button { model.focus(handoff, target: true) } label: {
+                    HStack(spacing: 4) {
+                        if let kind = handoff.targetKind { ChromeMonogram(kind: kind, size: 18) }
+                        Text(handoff.targetName)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .disabled(!model.canFocus(handoff.targetPaneID))
+                .accessibilityLabel("Focus \(handoff.targetName)")
+                Spacer(minLength: 4)
+                ChromeChip("\(handoff.kind.label) · \(stateLabel(handoff))", color: ChromeColor.handoff(handoff))
             }
             .buttonStyle(.plain)
-            .font(ChromeFont.secondaryMedium)
+            .font(ChromeFont.bodyMedium)
             Text(subject(handoff.text))
-                .font(ChromeFont.secondary)
+                .font(ChromeFont.body)
                 .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
             TimelineView(.periodic(from: .now, by: 1)) { context in
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
-                        Text(handoff.kind.rawValue.capitalized)
-                            .font(ChromeFont.secondary)
-                        Spacer()
+                        Text(String(handoff.id.prefix(12)))
+                        Text("·")
                         Text(timing(handoff, at: context.date))
-                            .font(ChromeFont.meta)
-                        ChromeChip(stateLabel(handoff), color: ChromeColor.handoff(handoff))
                     }
+                    .font(ChromeFont.meta)
                     if let facts = model.delegationVisibility(for: handoff, at: context.date) {
                         delegationFacts(facts)
                     }
@@ -343,9 +385,44 @@ struct CollaborationDockView: View {
                 .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 11)
-        .padding(.bottom, 12)
         .accessibilityElement(children: .contain)
+    }
+
+    /// A returned result waiting to be read: the wire runs back to the pane
+    /// that asked, and the one action reads it.
+    private func returnedHandoff(_ handoff: RelayHandoff) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                if let kind = handoff.targetKind { ChromeMonogram(kind: kind, size: 18) }
+                ChromeWireLine(color: .green, length: 16)
+                if let kind = handoff.sourceKind { ChromeMonogram(kind: kind, size: 18) }
+                Text("to \(handoff.sourceName)")
+                    .font(ChromeFont.bodyMedium)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+                ChromeChip("\(handoff.kind.label) · returned", color: .green)
+            }
+            Text(subject(handoff.resultText ?? handoff.text))
+                .font(ChromeFont.body)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                Text(String(handoff.id.prefix(12)))
+                Text("·")
+                Text(handoff.updatedAt.formatted(date: .omitted, time: .shortened))
+                Spacer()
+                Button("Open in Status", action: openStatus)
+                Button("Mark Read") { model.markRead(handoff) }
+                    .accessibilityHint("Mark this result as read without opening it")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .font(ChromeFont.meta)
+            .foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(WorkbenchAccessibility.handoff(handoff))
     }
 
     private func delegationFacts(_ facts: DelegationVisibility) -> some View {
@@ -368,48 +445,54 @@ struct CollaborationDockView: View {
         .accessibilityLabel(facts.accessibilityDescription)
     }
 
-    private func fact(icon: String, label: String, value: String, color: Color) -> some View {
+    private func fact(label: String, value: String, color: Color) -> some View {
         HStack(spacing: 7) {
-            Image(systemName: icon)
-                .font(.system(size: 9))
-                .foregroundStyle(color)
-                .frame(width: 11)
+            Circle()
+                .fill(color)
+                .frame(width: 5, height: 5)
                 .accessibilityHidden(true)
             Text(label)
                 .font(ChromeFont.secondary)
             Spacer()
             Text(value)
                 .font(ChromeFont.meta)
-                .foregroundStyle(color)
+                .foregroundStyle(color == .secondary ? Color.secondary : color)
                 .lineLimit(1)
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 3)
+        .accessibilityElement(children: .combine)
     }
 
+    /// One ledger row: the time in a fixed column, the wire, the kind, the
+    /// state. The row opens the target pane when it can.
     private func recentHandoff(_ handoff: RelayHandoff) -> some View {
         Button {
             if model.canFocus(handoff.targetPaneID) { model.focus(handoff, target: true) }
         } label: {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack {
-                    Text("\(handoff.sourceName) → \(handoff.targetName)")
-                        .font(ChromeFont.secondaryMedium)
-                        .lineLimit(1)
-                    Spacer()
-                    ChromeChip(stateLabel(handoff), color: ChromeColor.handoff(handoff))
-                }
-                Text(subject(handoff.text))
-                    .font(ChromeFont.secondary)
+            HStack(spacing: 8) {
+                Text(handoff.updatedAt.formatted(date: .omitted, time: .shortened))
+                    .font(ChromeFont.meta)
                     .foregroundStyle(.secondary)
+                    .frame(width: 38, alignment: .leading)
+                ChromeWire(handoff: handoff, size: 14, length: 10)
+                Text(handoff.kind.label)
+                    .font(ChromeFont.secondary)
                     .lineLimit(1)
+                Spacer(minLength: 4)
+                ChromeChip(stateLabel(handoff), color: ChromeColor.handoff(handoff))
             }
             .padding(.horizontal, 11)
-            .padding(.vertical, 6)
+            .frame(height: 26)
             .contentShape(Rectangle())
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(ChromeRule.soft).frame(height: 1).padding(.horizontal, 11)
+                    .accessibilityHidden(true)
+            }
         }
         .buttonStyle(.plain)
         .disabled(!model.canFocus(handoff.targetPaneID))
+        .help(subject(handoff.text))
         .accessibilityLabel(WorkbenchAccessibility.handoff(handoff))
     }
 
