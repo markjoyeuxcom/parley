@@ -3771,6 +3771,24 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Unread results that returned to a pane of the active workspace, from
+    /// the authoritative unread records rather than the recent-history window,
+    /// so a result stays listed however many newer handoffs follow it.
+    var workspaceUnreadHandoffs: [RelayHandoff] {
+        guard let workspaceID = activeWorkspace?.workspaceID else { return unreadHandoffs }
+        let aliases = workspaceAliases(for: workspaceID)
+        return unreadHandoffs.filter {
+            aliases.contains($0.sourceWorkspaceID) || aliases.contains($0.targetWorkspaceID)
+        }
+    }
+
+    /// Open Status Center on exactly this handoff: scope widened and the
+    /// record selected through the same path the attention inbox uses.
+    func revealInStatusCenter(_ handoff: RelayHandoff) {
+        guard openAttentionNavigation(.handoff(handoff.id)) else { return }
+        statusCenterOpenRequestID = UUID()
+    }
+
     var primaryActivity: RelayHandoff? {
         let activeStates: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
         return workspaceHandoffs.first(where: { activeStates.contains($0.state) })

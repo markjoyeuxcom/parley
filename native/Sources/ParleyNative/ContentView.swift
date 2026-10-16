@@ -1553,7 +1553,10 @@ struct ContentView: View {
     /// and the palette. The notices used to stack as banners above the grid.
     private var workbenchStatusBar: some View {
         let lane = noticeLane
-        let inFlight = model.consultations.count + model.activeDelegations.count
+        // Both counts are this workspace's: the global consultation and
+        // delegation lists would show work from a workspace that is not here.
+        let live: Set<RelayHandoffState> = [.created, .delivered, .waiting]
+        let inFlight = model.workspaceHandoffs.count { live.contains($0.state) }
         let returned = model.activeWorkspace.map { model.unreadResultCount(forWorkspace: $0.id) } ?? 0
         return HStack(spacing: 10) {
             HStack(spacing: 6) {
@@ -1594,7 +1597,11 @@ struct ContentView: View {
                         }
                         Text("selected")
                     }
-                    EmptyView()
+                    .lineLimit(1)
+                    .fixedSize()
+                    // A real zero-size candidate, so the group is dropped
+                    // rather than squeezed when the notice needs the room.
+                    Color.clear.frame(width: 0, height: 0)
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("\(pane.displayName) selected\(pane.role.map { ", @\($0)" } ?? "")")
@@ -1602,8 +1609,10 @@ struct ContentView: View {
             ViewThatFits(in: .horizontal) {
                 Text("Protocol \(AgentProtocol.version) · \(model.visiblePanes.count) pane\(model.visiblePanes.count == 1 ? "" : "s")")
                     .font(ChromeFont.meta)
-                EmptyView()
+                    .fixedSize()
+                Color.clear.frame(width: 0, height: 0)
             }
+            .help("Protocol \(AgentProtocol.version) · \(model.visiblePanes.count) retained pane\(model.visiblePanes.count == 1 ? "" : "s")")
             if !model.workspaceHandoffs.isEmpty {
                 activityHistoryMenu
                     .fixedSize()
@@ -1663,9 +1672,12 @@ struct ContentView: View {
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(top.title). \(top.detail)")
             if let label = top.actionLabel, let action = top.action {
+                // The one action never shrinks; the text beside it truncates.
                 Button(label) { perform(action) }
                     .buttonStyle(.bordered)
                     .controlSize(.mini)
+                    .fixedSize()
+                    .layoutPriority(1)
                     .accessibilityHint(noticeActionHint(action))
             }
             if !rest.isEmpty {
@@ -2002,21 +2014,21 @@ struct ContentView: View {
                 focusPaneID: model.focusCanvasPaneID,
                 fractionForPath: model.nativeSplitFraction,
                 onFractionCommit: model.persistNativeSplitFraction
-            ) { paneID in
-                nativePaneLeaf(representativePaneID: paneID)
+            ) { [wires = liveWireHandoffs] paneID in
+                nativePaneLeaf(representativePaneID: paneID, wire: wires[paneID])
             }
             .background(Color(nsColor: .windowBackgroundColor))
         }
     }
 
     @ViewBuilder
-    private func nativePaneLeaf(representativePaneID: String) -> some View {
+    private func nativePaneLeaf(representativePaneID: String, wire: RelayHandoff?) -> some View {
         if let paneSurface = model.nativePaneSurfaces.first(where: {
             $0.representativePaneID == representativePaneID
         }), let pane = model.visiblePanes.first(where: { $0.id == representativePaneID }) {
             let attention = model.paneAttention(for: pane.id)
             VStack(spacing: 0) {
-                paneChromeHeader(pane)
+                paneChromeHeader(pane, wire: wire)
                 nativeTerminalLeaf(paneSurface)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -2048,20 +2060,23 @@ struct ContentView: View {
         }
     }
 
-    /// The live handoff this pane is party to, if any: drawn as the wire in
-    /// its header so a glance says who it is talking to.
-    private func wireHandoff(for pane: WorkbenchPane) -> RelayHandoff? {
+    /// The newest live handoff each pane is party to, drawn as the wire in its
+    /// header. Built once per render of the split, not once per pane.
+    private var liveWireHandoffs: [String: RelayHandoff] {
         let live: Set<RelayHandoffState> = [.created, .delivered, .waiting, .answered]
-        return model.workspaceHandoffs.first {
-            live.contains($0.state) && ($0.sourcePaneID == pane.id || $0.targetPaneID == pane.id)
+        var byPane: [String: RelayHandoff] = [:]
+        for handoff in model.workspaceHandoffs where live.contains(handoff.state) {
+            if byPane[handoff.sourcePaneID] == nil { byPane[handoff.sourcePaneID] = handoff }
+            if byPane[handoff.targetPaneID] == nil { byPane[handoff.targetPaneID] = handoff }
         }
+        return byPane
     }
 
     /// Left to right: who, what it is called, how it routes, who it is
     /// talking to, what state that is in; facts sit right in mono. Selection
     /// is the ring and the name's weight, never a tinted header.
-    private func paneChromeHeader(_ pane: WorkbenchPane) -> some View {
-        let facts = model.sidebarFacts(for: pane)
+    private func paneChromeHeader(_ pane: WorkbenchPane, wire: RelayHandoff?) -> some View {
+        let git = model.projectContext(for: pane)
         return HStack(spacing: 7) {
             ChromeMonogram(kind: pane.kind, size: 18)
             Text(pane.displayName)
@@ -2079,7 +2094,7 @@ struct ContentView: View {
                     .lineLimit(1)
                     .layoutPriority(1)
             }
-            if let handoff = wireHandoff(for: pane) {
+            if let handoff = wire {
                 let outgoing = handoff.sourcePaneID == pane.id
                 let other = outgoing ? handoff.targetKind : handoff.sourceKind
                 let otherName = outgoing ? handoff.targetName : handoff.sourceName
@@ -2098,7 +2113,7 @@ struct ContentView: View {
                     Text(WorkspaceFolderIdentity.displayName(for: pane.cwd))
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    if let git = facts.gitContext {
+                    if let git {
                         Text("·")
                         Text(git.branch)
                             .lineLimit(1)
@@ -2112,7 +2127,9 @@ struct ContentView: View {
                 Text(WorkspaceFolderIdentity.displayName(for: pane.cwd))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                EmptyView()
+                // A real zero-size candidate: EmptyView offers none, so the
+                // text above would be kept and squeezed instead of dropped.
+                Color.clear.frame(width: 0, height: 0)
             }
             .font(ChromeFont.meta)
             .foregroundStyle(.secondary)

@@ -30,13 +30,20 @@ struct HandoffComposerView: View {
                         .accessibilityAddTraits(.isHeader)
                     // The same wire as the pane headers and the dock: source
                     // monogram, line, target monogram, then the names.
-                    ChromeMonogram(kind: draft.sourceKind, size: 16)
-                    Text(draft.voiceSource?.label ?? draft.sourceName)
-                        .font(ChromeFont.secondaryMedium)
-                    ChromeWireLine(color: .accentColor, length: 14)
-                    ChromeMonogram(kind: draft.targetKind, size: 16)
-                    Text(draft.voiceTarget?.label ?? draft.targetName)
-                        .font(ChromeFont.secondaryMedium)
+                    HStack(spacing: 7) {
+                        ChromeMonogram(kind: draft.sourceKind, size: 16)
+                        Text(draft.voiceSource?.label ?? draft.sourceName)
+                            .font(ChromeFont.secondaryMedium)
+                        ChromeWireLine(color: .accentColor, length: 14)
+                        ChromeMonogram(kind: draft.targetKind, size: 16)
+                        Text(draft.voiceTarget?.label ?? draft.targetName)
+                            .font(ChromeFont.secondaryMedium)
+                    }
+                    // The monograms are decorative; the vendors are spoken here.
+                    .help("\(draft.sourceName) · \(draft.sourceKind.label) to \(draft.targetName) · \(draft.targetKind.label)")
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(
+                        "From \(draft.voiceSource?.label ?? draft.sourceName), \(draft.sourceKind.label), to \(draft.voiceTarget?.label ?? draft.targetName), \(draft.targetKind.label)")
                     ChromeChip(draft.actionLabel, color: .secondary)
                     Spacer()
                     Button {
@@ -281,9 +288,7 @@ struct CollaborationDockView: View {
     /// Results that returned to a pane in this workspace and have not been
     /// read: the dock's second section, so a result is never only a chip.
     private var returnedHandoffs: [RelayHandoff] {
-        let unread = Set(model.unreadHandoffs.map(\.id))
-        guard !unread.isEmpty else { return [] }
-        return model.workspaceHandoffs.filter { unread.contains($0.id) }
+        model.workspaceUnreadHandoffs
     }
 
     private func sectionTitle(_ title: String) -> some View {
@@ -342,28 +347,36 @@ struct CollaborationDockView: View {
 
     private func activeHandoff(_ handoff: RelayHandoff) -> some View {
         VStack(alignment: .leading, spacing: 8) {
+            // The named endpoints have the row to themselves; the kind, state
+            // and timing sit on the next line, so names stay whole at the
+            // dock's narrowest width.
             HStack(spacing: 6) {
                 Button { model.focus(handoff, target: false) } label: {
                     HStack(spacing: 4) {
                         if let kind = handoff.sourceKind { ChromeMonogram(kind: kind, size: 18) }
                         Text(handoff.sourceName)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                     .contentShape(Rectangle())
                 }
                 .disabled(!model.canFocus(handoff.sourcePaneID))
-                .accessibilityLabel("Focus \(handoff.sourceName)")
+                .help("Focus \(handoff.sourceName) · \(handoff.sourceKind?.label ?? "pane")")
+                .accessibilityLabel("Focus \(handoff.sourceName), \(handoff.sourceKind?.label ?? "pane")")
                 ChromeWireLine(color: ChromeColor.handoff(handoff), length: 16)
                 Button { model.focus(handoff, target: true) } label: {
                     HStack(spacing: 4) {
                         if let kind = handoff.targetKind { ChromeMonogram(kind: kind, size: 18) }
                         Text(handoff.targetName)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
                     .contentShape(Rectangle())
                 }
                 .disabled(!model.canFocus(handoff.targetPaneID))
-                .accessibilityLabel("Focus \(handoff.targetName)")
-                Spacer(minLength: 4)
-                ChromeChip("\(handoff.kind.label) · \(stateLabel(handoff))", color: ChromeColor.handoff(handoff))
+                .help("Focus \(handoff.targetName) · \(handoff.targetKind?.label ?? "pane")")
+                .accessibilityLabel("Focus \(handoff.targetName), \(handoff.targetKind?.label ?? "pane")")
+                Spacer(minLength: 0)
             }
             .buttonStyle(.plain)
             .font(ChromeFont.bodyMedium)
@@ -374,6 +387,7 @@ struct CollaborationDockView: View {
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
+                        ChromeChip("\(handoff.kind.label) · \(stateLabel(handoff))", color: ChromeColor.handoff(handoff))
                         Text(String(handoff.id.prefix(12)))
                         Text("·")
                         Text(timing(handoff, at: context.date))
@@ -413,7 +427,9 @@ struct CollaborationDockView: View {
                 Text("·")
                 Text(handoff.updatedAt.formatted(date: .omitted, time: .shortened))
                 Spacer()
-                Button("Open in Status", action: openStatus)
+                // Opens Status Center on this exact record, not just the window.
+                Button("Open in Status") { model.revealInStatusCenter(handoff) }
+                    .accessibilityHint("Show this result's record in Status Center")
                 Button("Mark Read") { model.markRead(handoff) }
                     .accessibilityHint("Mark this result as read without opening it")
             }
@@ -477,9 +493,12 @@ struct CollaborationDockView: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 38, alignment: .leading)
                 ChromeWire(handoff: handoff, size: 14, length: 10)
-                Text(handoff.kind.label)
+                // The named route stays visible: two same-vendor pairs would
+                // otherwise be told apart only by their tooltips.
+                Text("\(handoff.sourceName) to \(handoff.targetName)")
                     .font(ChromeFont.secondary)
                     .lineLimit(1)
+                    .truncationMode(.middle)
                 Spacer(minLength: 4)
                 ChromeChip(stateLabel(handoff), color: ChromeColor.handoff(handoff))
             }
@@ -493,7 +512,7 @@ struct CollaborationDockView: View {
         }
         .buttonStyle(.plain)
         .disabled(!model.canFocus(handoff.targetPaneID))
-        .help(subject(handoff.text))
+        .help("\(handoff.kind.label) · \(handoff.sourceName) to \(handoff.targetName)\n\(subject(handoff.text))")
         .accessibilityLabel(WorkbenchAccessibility.handoff(handoff))
     }
 
