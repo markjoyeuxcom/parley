@@ -215,11 +215,15 @@ public enum AgentProtocol {
       A result file may use `## Implemented`, `## Tested` and
       `## Unable to test` headings. These are agent-declared completion
       evidence shown as unchecked claims, never verification or a human verdict.
-    - Name one agent pane by pane name, `@role` or pane id. The bare vendor
-      name resolves only while exactly one other pane of that vendor exists;
-      when several panes share a vendor, as in a workspace that uses one
-      vendor only, the vendor alone is refused as ambiguous, so use the
-      `@role`, pane name or pane id that `parley panes` lists. Your own name
+    - Name one agent pane by pane name, `@role` or pane id. A pane id is
+      exact. A name, `@role` or vendor never matches your own pane; it is
+      looked up among the other panes of your workspace first, and across
+      workspaces only when none there match, and must match exactly one.
+      So a bare vendor name resolves only while that lookup finds one pane
+      of the vendor (or one named after it). When several panes share a
+      vendor, as in a workspace that uses one vendor only, the vendor alone
+      is refused as ambiguous: use the `@role`, pane name or pane id that
+      `parley panes` lists, or an address the refusal offers. Your own name
       and role are in `parley whoami`; when you ask or delegate, say which
       pane you are by role or name, so a same-vendor peer can tell you apart.
       Same-vendor routes are allowed only when source and target are

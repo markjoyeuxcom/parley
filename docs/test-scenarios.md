@@ -642,16 +642,20 @@ test routing.
 
 1. **Identity at creation.** In a workspace with one Claude pane, choose
    Pane > Agent. The review shows IDENTITY with the name proposed as
-   "Claude 2" and an empty role, and the hint says the vendor alone cannot be
-   addressed once two share it. Change the vendor to Codex and back: the
+   "Claude 2" and an empty role, and the hint says the vendor alone reaches
+   a pane only while it matches one pane besides the sender. Change the vendor to Codex and back: the
    proposal follows while untouched, and a name you typed stays. Enter the
    role of the existing pane: Start Pane is held with "already assigned".
    Enter `@x` or `a/b` as the name: held with the reason. Start with name
    "API" and role `api`: the header reads API @api.
-2. **Refusal that teaches.** From one Claude pane run
-   `parley ask claude "test"`. The refusal lists each other Claude pane as
-   `@role = Workspace/Name = pane-id`, says they share the vendor, and
-   `parley ask @api "test"` resolves instead. `parley whoami` shows the role.
+2. **Refusal that teaches.** With three Claude panes in one workspace,
+   from one of them run `parley ask claude "test"`. The refusal lists each
+   other Claude pane as `Workspace/Name @role (address as @role or pane-id)`,
+   says they share the vendor, and `parley ask @api "test"` resolves
+   instead. With only two, `claude` reaches the other one. Give a pane in a
+   second workspace the role `api`: from the first workspace, its listed
+   address is `Workspace/@api`, never bare `@api`. `parley whoami` shows the
+   role.
 3. **Distinct labels.** With two panes both named Claude, one with a role,
    the Ask toolbar menu and ⌘K Ask rows read "Ask Claude @role" and "Ask
    Claude"; rename one and both revert to plain names. With neither roled and

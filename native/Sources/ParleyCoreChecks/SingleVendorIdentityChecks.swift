@@ -154,17 +154,17 @@ let singleVendorIdentityChecks: [(String, () throws -> Void)] = [
         )
         let refusal = broker.handleAsk(token: sourceToken, target: "claude", text: "Which of you owns the API?", idempotencyKey: "shared-vendor-1")
         try svExpect(refusal.status == 400, "a shared vendor name was not refused: \(refusal.status) \(refusal.text)")
-        for phrase in ["@reviewer", "%2", "%3", "Work/Claude", "share the vendor claude", "@role, pane name or pane id"] {
+        for phrase in ["Work/Claude @reviewer (address as @reviewer or %2)", "Work/Claude (address as %3)",
+                       "share the vendor claude", "use an address listed for the pane you mean"] {
             try svExpect(refusal.text.contains(phrase), "the refusal omitted \(phrase): \(refusal.text)")
         }
         try svExpect(!refusal.text.contains("%1"), "the refusal offered the sender itself: \(refusal.text)")
         try svExpect(broker.consultations().isEmpty, "a refused Ask left a consultation behind")
 
         // Two renamed panes that share a name are listed with what differs.
-        let message = RelayBroker.ambiguousTargetMessage("Pair", candidates: [
-            svPane("%2", kind: .codex, name: "Pair", role: "reviewer"), svPane("%3", name: "Pair"),
-        ])
-        try svExpect(message.contains("@reviewer = Work/Pair = %2") && message.contains("Work/Pair = %3")
+        let pair = [svPane("%2", kind: .codex, name: "Pair", role: "reviewer"), svPane("%3", name: "Pair")]
+        let message = RelayBroker.ambiguousTargetMessage("Pair", candidates: pair, panes: [panes[0]] + pair, sender: panes[0])
+        try svExpect(message.contains("Work/Pair @reviewer (address as @reviewer or %2)") && message.contains("Work/Pair (address as %3)")
                      && !message.contains("share the vendor"), "a name shared across vendors was described as a vendor collision: \(message)")
     }),
 
@@ -194,18 +194,68 @@ let singleVendorIdentityChecks: [(String, () throws -> Void)] = [
         try svExpect(panes.filter(\.isWorkspaceLead).map(\.role) == ["implementer"], "the implementer is not the restored lead")
         try svExpect(PaneNaming.distinctLabels(for: panes).values.sorted() == ["Implementer", "Reviewer"],
                      "the pair's names needed decoration to be distinct")
-        // Agents address the pair by role; the bare vendor is ambiguous between them.
-        try svExpect(RelayBroker.ambiguousTargetMessage("claude", candidates: panes).contains("@implementer")
-                     && RelayBroker.ambiguousTargetMessage("claude", candidates: panes).contains("@reviewer"),
-                     "the refusal for the pair did not name both roles")
+        // Another vendor's pane beside the pair addresses it by role; the
+        // bare vendor is ambiguous between them. Each Claude reaches the
+        // other by the vendor alone, since its own pane never matches.
+        let codex = svPane("codex", kind: .codex, workspaceID: restored.workspaceID, workspaceName: panes.first?.workspaceName)
+        let beside = panes + [codex]
+        let refusal = RelayBroker.ambiguousTargetMessage("claude", candidates: panes, panes: beside, sender: codex)
+        try svExpect(RelayBroker.resolveTargets("claude", panes: beside, sender: codex).count == 2
+                     && refusal.contains("(address as @implementer or Implementer or") && refusal.contains("(address as @reviewer or Reviewer or"),
+                     "the refusal for the pair did not offer both roles and names: \(refusal)")
+        for member in panes {
+            try svExpect(RelayBroker.resolveTargets("claude", panes: beside, sender: member).map(\.id) == panes.filter { $0.id != member.id }.map(\.id),
+                         "a pair member could not reach the other by the vendor alone")
+        }
+    }),
+
+    ("a refusal offers only addresses that reach their pane alone, and labels never collide", {
+        // Codex's case (review of 28 October 2026): a bare @reviewer offered
+        // for another workspace's pane reached the sender's own @reviewer.
+        let sender = svPane("sender", kind: .codex)
+        let localReviewer = svPane("local-reviewer", kind: .codex, role: "reviewer")
+        let remoteB = svPane("remote-b", role: "reviewer", workspaceID: "@1", workspaceName: "B")
+        let remoteC = svPane("remote-c", role: "reviewer", workspaceID: "@2", workspaceName: "C")
+        let all = [sender, localReviewer, remoteB, remoteC]
+        let candidates = RelayBroker.resolveTargets("claude", panes: all, sender: sender)
+        try svExpect(candidates.map(\.id) == ["remote-b", "remote-c"], "claude did not fall through to the other workspaces: \(candidates.map(\.id))")
+        try svExpect(RelayBroker.resolveTargets("@reviewer", panes: all, sender: sender).map(\.id) == ["local-reviewer"],
+                     "a bare role did not resolve in the sender's workspace first")
+        let message = RelayBroker.ambiguousTargetMessage("claude", candidates: candidates, panes: all, sender: sender)
+        try svExpect(!message.contains("address as @reviewer") && message.contains("B/Claude @reviewer (address as B/@reviewer")
+                     && message.contains("C/Claude @reviewer (address as C/@reviewer"), "the refusal offered a bare role that reaches another pane: \(message)")
+        // Every offered address, run through the resolver itself, reaches its pane alone.
+        let groups = message.components(separatedBy: "(address as ").dropFirst().map { segment in segment.prefix { $0 != ")" } }
+        try svExpect(groups.count == candidates.count, "the refusal did not give each candidate its addresses: \(message)")
+        for (candidate, group) in zip(candidates, groups) {
+            for address in group.components(separatedBy: " or ") {
+                let reached = RelayBroker.resolveTargets(address, panes: all, sender: sender).map(\.id)
+                try svExpect(reached == [candidate.id], "\(address) was offered for \(candidate.id) but reaches \(reached)")
+            }
+        }
+
+        // A decorated label must not equal another pane's literal name.
+        let labelled = [
+            svPane("pane-aaaaaaaa-1", role: "reviewer"), svPane("pane-bbbbbbbb-1"), svPane("pane-cccccccc-1", name: "Claude @reviewer"),
+            svPane("pane-12345678-x", kind: .codex, name: "Twin"), svPane("pane-12345678-y", kind: .codex, name: "Twin"),
+        ]
+        let labels = PaneNaming.distinctLabels(for: labelled)
+        try svExpect(labels.count == labelled.count && Set(labels.values.map { $0.lowercased() }).count == labelled.count,
+                     "two panes share a label: \(labels)")
+        try svExpect(labels["pane-bbbbbbbb-1"] == "Claude" && labels["pane-cccccccc-1"] == "Claude @reviewer",
+                     "a label was decorated further than its collision needed: \(labels)")
+        try svExpect(labels["pane-12345678-x"]?.hasSuffix("pane-12345678-x") == true,
+                     "ids that share their start were not told apart by the full id: \(labels)")
     }),
 
     ("the protocol and Help tell a shared-vendor workspace how to address its panes", {
         for phrase in [
             "Name one agent pane by pane name, `@role` or pane id.",
-            "when several panes share a vendor",
-            "the vendor alone is refused as ambiguous",
-            "`parley panes` lists",
+            "A name, `@role` or vendor never matches your own pane",
+            "looked up among the other panes of your workspace first, and across",
+            "workspaces only when none there match, and must match exactly one.",
+            "is refused as ambiguous",
+            "`parley panes` lists, or an address the refusal offers.",
             "Your own name",
             "and role are in `parley whoami`",
             "pane you are by role or name",
@@ -219,6 +269,7 @@ let singleVendorIdentityChecks: [(String, () throws -> Void)] = [
                      "Help omits the pair template")
         let handoffs = try svHelpTopic("handoffs")
         try svExpect(handoffs.searchableText.contains("refuses the vendor as ambiguous"), "Help omits the shared-vendor refusal")
+        try svExpect(handoffs.searchableText.contains("looked up in the sender's workspace first"), "Help omits where a name is looked up")
         try svExpect(handoffs.searchableText.contains("Ask menus and the command palette add the role, folder or id"), "Help omits the distinct labels")
     }),
 ]

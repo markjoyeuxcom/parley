@@ -4406,7 +4406,11 @@ public final class RelayBroker: @unchecked Sendable {
         }
     }
 
-    private func resolve(_ requested: String, panes: [WorkbenchPane], sender: WorkbenchPane) -> [WorkbenchPane] {
+    /// The panes `requested` names for `sender`: never the sender itself, an
+    /// exact pane id first, then `workspace/pane`, then a name, @role or
+    /// vendor among the sender's own workspace, and across workspaces only
+    /// when nothing there matches. One pane resolves; several are ambiguous.
+    public static func resolveTargets(_ requested: String, panes: [WorkbenchPane], sender: WorkbenchPane) -> [WorkbenchPane] {
         let available = panes.filter { $0.id != sender.id }
         if let exact = available.first(where: { $0.id == requested }) { return [exact] }
 
@@ -4427,7 +4431,7 @@ public final class RelayBroker: @unchecked Sendable {
         return available.filter { paneMatches(requested, pane: $0) }
     }
 
-    private func paneMatches(_ requested: String, pane: WorkbenchPane) -> Bool {
+    private static func paneMatches(_ requested: String, pane: WorkbenchPane) -> Bool {
         if requested.hasPrefix("@") {
             let role = String(requested.dropFirst())
             guard PaneRoleRules.validationError(role) == nil else { return false }
@@ -4455,18 +4459,26 @@ public final class RelayBroker: @unchecked Sendable {
         }
     }
 
-    /// The refusal for a target several panes match. Each candidate is named
-    /// by the forms that would have resolved it alone, @role first, so a
-    /// workspace whose panes share a vendor learns the address that works
-    /// instead of two identical "Claude (pane-…)" entries.
-    public static func ambiguousTargetMessage(_ requested: String, candidates: [WorkbenchPane]) -> String {
+    /// The refusal for a target several panes match. Each candidate is
+    /// described by workspace, name and role, then given only the addresses
+    /// the resolver itself takes, from this sender, to that pane alone: a
+    /// bare @role or name is looked up in the sender's own workspace first,
+    /// so another workspace's pane may be offered it only qualified, and its
+    /// pane id always. A workspace whose panes share a vendor learns the
+    /// address that works instead of two identical "Claude (pane-…)" entries.
+    public static func ambiguousTargetMessage(_ requested: String, candidates: [WorkbenchPane],
+                                              panes: [WorkbenchPane], sender: WorkbenchPane) -> String {
         let listed = candidates.map { pane -> String in
-            var forms: [String] = []
-            if let role = pane.role { forms.append("@\(role)") }
-            let qualified = pane.workspaceName.map { "\($0)/\(pane.displayName)" } ?? pane.displayName
-            forms.append(qualified)
-            forms.append(pane.id)
-            return forms.joined(separator: " = ")
+            let workspace = pane.workspaceName ?? pane.workspaceID
+            let described = "\(workspace)/\(pane.displayName)" + (pane.role.map { " @\($0)" } ?? "")
+            var forms = [(pane.displayName, "\(workspace)/\(pane.displayName)")]
+            if let role = pane.role { forms.insert(("@\(role)", "\(workspace)/@\(role)"), at: 0) }
+            // The short form where it is enough, else the qualified one.
+            var addresses = forms.compactMap { short, qualified in
+                [short, qualified].first { address in resolveTargets(address, panes: panes, sender: sender).map(\.id) == [pane.id] }
+            }
+            addresses.append(pane.id)
+            return "\(described) (address as \(addresses.joined(separator: " or ")))"
         }.joined(separator: "; ")
         let sharedVendor = Set(candidates.map(\.kind)).count == 1
             && candidates.allSatisfy { pane in
@@ -4474,8 +4486,8 @@ public final class RelayBroker: @unchecked Sendable {
                     || requested.caseInsensitiveCompare(pane.kind.label) == .orderedSame
             }
         let advice = sharedVendor
-            ? " These panes share the vendor \(requested), so the vendor alone never resolves; address one by @role, pane name or pane id."
-            : " Address one by @role, pane name or pane id."
+            ? " These panes share the vendor \(requested), so the vendor alone cannot tell them apart; use an address listed for the pane you mean."
+            : " Use an address listed for the pane you mean."
         return "ambiguous target \(requested); choose one of: \(listed).\(advice)"
     }
 
@@ -4484,10 +4496,11 @@ public final class RelayBroker: @unchecked Sendable {
         let livePanes = try panes()
         let requested = requestedTarget.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !requested.isEmpty else { throw BrokerFailure(status: 400, message: "name a target pane") }
-        let candidates = resolve(requested, panes: livePanes, sender: sender)
+        let candidates = Self.resolveTargets(requested, panes: livePanes, sender: sender)
         guard candidates.count == 1, let target = candidates.first else {
             if candidates.isEmpty { throw BrokerFailure(status: 400, message: "no pane named \(requested)") }
-            throw BrokerFailure(status: 400, message: Self.ambiguousTargetMessage(requested, candidates: candidates))
+            throw BrokerFailure(status: 400, message: Self.ambiguousTargetMessage(
+                requested, candidates: candidates, panes: livePanes, sender: sender))
         }
         guard target.kind.isAgent else {
             throw BrokerFailure(status: 400, message: "relay target must be an agent pane")

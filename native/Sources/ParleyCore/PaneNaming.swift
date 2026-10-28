@@ -41,39 +41,42 @@ public enum PaneNaming {
         return nil
     }
 
-    /// One label per pane id, distinct within `panes`. A name nobody else in
-    /// the list shares is used as it is. Names that collide gain, in order
-    /// and only as far as needed, the pane's @role, its folder's last
-    /// component and the start of its id, so two "Claude" panes read
-    /// "Claude @reviewer" and "Claude @implementer", or "Claude · api" and
-    /// "Claude · web" when neither has a role.
+    /// One label per pane id, distinct across all of `panes`. A name nobody
+    /// else in the list shares is used as it is. A pane whose label collides
+    /// with any other gains, in order and only as far as needed, its @role,
+    /// its folder's last component and the start of its id, so two "Claude"
+    /// panes read "Claude @reviewer" and "Claude @implementer", or "Claude ·
+    /// api" and "Claude · web" when neither has a role. A decorated label
+    /// can equal another pane's literal name ("Claude @reviewer"), so every
+    /// label is compared with every other, and the full id ends any tie.
     public static func distinctLabels(for panes: [WorkbenchPane]) -> [String: String] {
-        var labels: [String: String] = [:]
-        var groups: [String: [WorkbenchPane]] = [:]
-        for pane in panes { groups[pane.displayName.lowercased(), default: []].append(pane) }
-        for group in groups.values {
-            let stages: [(WorkbenchPane) -> String] = [
-                { $0.displayName },
-                { pane in pane.role.map { "\(pane.displayName) @\($0)" } ?? pane.displayName },
-                { pane in
-                    let withRole = pane.role.map { "\(pane.displayName) @\($0)" } ?? pane.displayName
-                    return "\(withRole) · \(WorkspaceFolderIdentity.displayName(for: pane.cwd))"
-                },
-                { pane in
-                    let withRole = pane.role.map { "\(pane.displayName) @\($0)" } ?? pane.displayName
-                    return "\(withRole) · \(WorkspaceFolderIdentity.displayName(for: pane.cwd)) · \(shortID(pane.id))"
-                },
-            ]
-            // Distinct without case, as the broker matches names, so "claude"
-            // and "Claude" are told apart rather than left to look alike.
-            func distinct(_ labels: [String]) -> Bool { Set(labels.map { $0.lowercased() }).count == group.count }
-            var chosen = group.map(stages[0])
-            for stage in stages.dropFirst() where !distinct(chosen) {
-                chosen = group.map(stage)
-            }
-            for (pane, label) in zip(group, chosen) { labels[pane.id] = label }
+        func withRole(_ pane: WorkbenchPane) -> String {
+            pane.role.map { "\(pane.displayName) @\($0)" } ?? pane.displayName
         }
-        return labels
+        func withFolder(_ pane: WorkbenchPane) -> String {
+            "\(withRole(pane)) · \(WorkspaceFolderIdentity.displayName(for: pane.cwd))"
+        }
+        let stages: [(WorkbenchPane) -> String] = [
+            { $0.displayName },
+            withRole,
+            withFolder,
+            { "\(withFolder($0)) · \(shortID($0.id))" },
+            { "\(withFolder($0)) · \($0.id)" },
+        ]
+        var stage = [String: Int](panes.map { ($0.id, 0) }, uniquingKeysWith: { first, _ in first })
+        func label(_ pane: WorkbenchPane) -> String { stages[stage[pane.id] ?? 0](pane) }
+        // Distinct without case, as the broker matches names, so "claude"
+        // and "Claude" are told apart rather than left to look alike. Each
+        // round moves every colliding pane one stage on; stages are finite.
+        while true {
+            var holders: [String: [String]] = [:]
+            for pane in panes { holders[label(pane).lowercased(), default: []].append(pane.id) }
+            let advancing = holders.values.filter { $0.count > 1 }.joined()
+                .filter { (stage[$0] ?? 0) < stages.count - 1 }
+            guard !advancing.isEmpty else { break }
+            for id in Set(advancing) { stage[id, default: 0] += 1 }
+        }
+        return Dictionary(panes.map { ($0.id, label($0)) }, uniquingKeysWith: { first, _ in first })
     }
 
     /// The start of a pane id without its "pane-" prefix: enough to tell two

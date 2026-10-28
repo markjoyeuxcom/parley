@@ -442,9 +442,11 @@ Prax notes: "Parley roles, mobility…".
   `createPane(name:role:)` under the Rename and Set Role rules;
   `PaneNaming.defaultName` proposes "Claude 2" only once the label is
   taken; Ask menus and the palette label targets through
-  `PaneNaming.distinctLabels` (role, folder, id, only where names collide);
-  the broker's ambiguous-target refusal names each candidate's role, name
-  and id. `SavedWorkspaceLayout.pairTemplate` is built, never stored.
+  `PaneNaming.distinctLabels` (role, folder, id, only where labels collide,
+  across every label); the broker's ambiguous-target refusal offers each
+  candidate only addresses `RelayBroker.resolveTargets` takes, from that
+  sender, to it alone, and its id. `SavedWorkspaceLayout.pairTemplate` is
+  built, never stored.
 - Move preserves surface, pane id, process, session, credential and folder;
   refuse with an active handoff or a role collision. Saved layouts restore
   with their saved policy and roll back whole. Split trees live in

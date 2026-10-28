@@ -470,7 +470,7 @@ struct PermissionProfilePickerView: View {
     private var identityHint: String {
         let sameVendor = model.activeWorkspacePanes.filter { $0.kind == kind }.count
         if sameVendor > 0 {
-            return "This workspace already has \(sameVendor) \(kind.label) pane\(sameVendor == 1 ? "" : "s"). Agents cannot address “\(kind.label.lowercased())” alone once two share it; give this pane a role, and they address it as @\(trimmedRole.isEmpty ? "role" : trimmedRole)."
+            return "This workspace already has \(sameVendor) \(kind.label) pane\(sameVendor == 1 ? "" : "s"). “\(kind.label.lowercased())” alone reaches a pane only while it matches one pane besides the sender, so with several \(kind.label) panes agents need a role; give this pane one, and they address it as @\(trimmedRole.isEmpty ? "role" : trimmedRole)."
         }
         return "Optional. A role is a stable address for other agents, such as @reviewer; the name is what you see."
     }
