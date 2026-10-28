@@ -312,6 +312,11 @@ final class GhosttyPaneRegistry {
         return view
     }
 
+    /// Whether the pane's retained view is drawn in a window now.
+    func isInWindow(paneID: String) -> Bool {
+        entries[paneID]?.view.window != nil
+    }
+
     func setVisible(_ visible: Bool, paneID: String) {
         entries[paneID]?.view.setSurfaceVisible(visible)
     }

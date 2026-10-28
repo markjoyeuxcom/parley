@@ -483,7 +483,7 @@ public enum ParleyWorkbenchError: LocalizedError, Equatable {
         case .copilotTrustRequired:
             "Copilot needs folder trust before it can receive handoffs. Resolve its folder-trust prompt, then choose Confirm Copilot Folder Trust from the pane menu and retry."
         case let .focusedDeliveryNeedsVisiblePane(name):
-            "\(name) takes a handoff only while it is on screen, because Copilot submits only in a focused pane. Nothing was sent. Show \(name) (select its tab or workspace), then retry."
+            "\(name) takes a handoff only while it is on screen, because Copilot submits only in a focused pane. Nothing was sent. Show \(name) (select its tab or workspace), then send it again."
         case let .unsafeRelayTarget(name):
             "\(name) is not ready for safe relay input. Focus it and wait for its prompt, or restart the pane if its Relay badge is stale."
         }

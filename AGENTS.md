@@ -130,8 +130,9 @@ language: paper around glass".
   another workspace's panes do, and keep wire, attention and state on their
   tab. Presentation never changes the tree, a process or the protocol; Zoom
   and Balance are grid-only. A surface starts only once drawn, so a launch
-  from a hidden tab brings it forward. Only the host that last presented a
-  view (`NativeTerminalHost.owners`) may hide it on dismantle.
+  from a hidden tab brings it forward (background work without taking
+  focus). Only the host that last presented a view
+  (`NativeTerminalHost.owners`) may hide it on dismantle.
 - `workbench-state.json` holds metadata only; terminal bytes and vendor
   conversations are never serialized. Title writes are coalesced to one per
   second; a cwd report persists only when the folder changed.

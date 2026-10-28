@@ -573,9 +573,10 @@ other than the command shown.
 4. Switch to another workspace and back: it is still in Tabs, and a Grid workspace beside it is still a grid. Quit and relaunch: Tabs is kept per workspace. Press Command-Shift-T again: the grid returns with the same arrangement and divider position.
 5. Export a configuration backup with one workspace in Tabs, restore it: that workspace reopens in Tabs, the others in Grid.
 6. In Tabs, right-click a hidden stopped agent's tab and choose Start Fresh Session, then approve: its tab comes forward and the CLI starts at once. Repeat with Restart on a hidden running agent. Pane > Balance Panes and the compact toolbar's Actions > Balance Panes are dimmed.
-7. With a Copilot pane (folder trust confirmed) hidden behind a tab, Ask it from another pane: the Ask is refused with "Nothing was sent" and Status Center offers Retry; show the Copilot tab and Retry: it submits. Switch rapidly between tabs and Grid ten times: the shown terminal never stays blank.
+7. With a Copilot pane (folder trust confirmed) hidden behind a tab, Ask it from another pane through the composer: Parley says "Nothing was sent" and the draft stays open; show the Copilot tab and Send: it submits. Repeat with a dictated voice Ask: the same. From an agent pane, `parley relay` to the hidden Copilot is refused; show it and choose Retry Delivery in Status Center: it submits. Switch rapidly between tabs and Grid ten times: the shown terminal never stays blank.
+8. Start a container team member in Tabs and, while it prepares, show another tab and type in the handoff composer: when the member starts, its tab comes forward but your typing stays in the composer.
 
-**Fail:** a hidden pane stopped, restarted or lost scrollback; a shown terminal blank until clicked; a hidden pane's handoff, attention or failure visible nowhere on its tab; the grid arrangement changed by a round trip through Tabs; a pane started from a hidden tab that does not run until clicked; a hidden Copilot handoff reported delivered.
+**Fail:** a hidden pane stopped, restarted or lost scrollback; a shown terminal blank until clicked; a hidden pane's handoff, attention or failure visible nowhere on its tab; the grid arrangement changed by a round trip through Tabs; a pane started from a hidden tab that does not run until clicked; a hidden Copilot handoff reported delivered; a draft that cannot be sent again after showing Copilot; keystrokes taken from the composer by a background start.
 ---
 
 # After the pass

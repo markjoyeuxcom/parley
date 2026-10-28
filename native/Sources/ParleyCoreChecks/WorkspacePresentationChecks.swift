@@ -153,7 +153,7 @@ private func presentationRegistryFixture() throws -> (root: URL, registry: Works
     }),
     ("a pane started behind a hidden tab is brought forward so it runs", {
         let model = try presentationAppSource("AppModel.swift")
-        let show = try presentationBody(model, "private func showStartedTab(_ paneID: String)")
+        let show = try presentationBody(model, "private func showStartedTab(_ paneID: String, takingFocus: Bool")
         try presentationExpect(show.contains("presentation(for: workspace) == .tabs") && show.contains("workspace.isActive")
                                && show.contains("try controller.selectPane(paneID)"),
                                "a started pane is not brought forward in Tabs, or is in Grid too")
@@ -162,8 +162,18 @@ private func presentationRegistryFixture() throws -> (root: URL, registry: Works
         try presentationExpect(presentationOrdered(try presentationBody(model, "func restart(_ pane: WorkbenchPane)"),
                                                    "try controller.restartPane(pane.id)", "try showStartedTab(pane.id)"),
                                "restarting a Shell behind a hidden tab leaves it unlaunched")
-        try presentationExpect(try presentationBody(model, "private func presentTeamPane(").contains("try showStartedTab(pane.id)"),
-                               "a container team member started behind a hidden tab stays unlaunched")
+        try presentationExpect(try presentationBody(model, "private func presentTeamPane(").contains("try showStartedTab(pane.id, takingFocus: false)"),
+                               "a container team member started behind a hidden tab stays unlaunched, or takes keyboard focus")
+        // Background work brings a tab forward without taking focus, and a
+        // draft keeps focus whatever is drawn (review of 28 October 2026, 84-N1).
+        let attach = try presentationBody(model, "func focusNativeTerminalIfSelected(_ paneID: String")
+        try presentationExpect(presentationOrdered(attach, "if quietlyShownPaneID == paneID", "ghosttyRegistry.focusSelected(")
+                               && presentationOrdered(attach, "guard handoffComposerDraft == nil, !voice.session.isPresented", "ghosttyRegistry.focusSelected("),
+                               "a drawn terminal takes focus from background work or from a draft being written")
+        for signature in ["func select(_ pane: WorkbenchPane)", "func selectNativePane(_ paneID: String)"] {
+            try presentationExpect(try presentationBody(model, signature).contains("quietlyShownPaneID = nil"),
+                                   "\(signature) leaves a quiet showing to swallow the person's own focus")
+        }
     }),
     ("a delivery that needs focus refuses a pane drawn in no window before any input", {
         let refusal = ParleyWorkbenchError.focusedDeliveryNeedsVisiblePane("Copilot")
@@ -174,6 +184,19 @@ private func presentationRegistryFixture() throws -> (root: URL, registry: Works
         try presentationExpect(presentationOrdered(paste, "guard timing.focusesTarget else", "guard entry.view.window != nil else")
                                && presentationOrdered(paste, "guard entry.view.window != nil else", "deliveryFocus.deliver("),
                                "a focus-requiring delivery reaches a pane in no window without focus")
+        // A person's reviewed send is refused before the broker records an
+        // attempt, so the same draft can be sent once the pane is shown
+        // (review of 28 October 2026, 84-N2).
+        let model = try presentationAppSource("AppModel.swift")
+        try presentationExpect(presentationOrdered(try presentationBody(model, "private func submitVoiceHandoff(_ draft: HandoffComposerDraft)"),
+                                                   "try refuseFocusedDeliveryOffScreen(target.paneID)", "relayClient.voiceHandoffFromUI("),
+                               "a voice Ask or Delegate to an off-screen Copilot reaches the broker and cannot be sent again")
+        try presentationExpect(presentationOrdered(try presentationBody(model, "func submitHandoffComposer()"),
+                                                   "try refuseFocusedDeliveryOffScreen(target.id)", "submitOrOfferBusyQueue("),
+                               "a composer Ask to an off-screen Copilot reaches the broker before the person can show it")
+        let refuse = try presentationBody(model, "private func refuseFocusedDeliveryOffScreen(_ targetPaneID: String)")
+        try presentationExpect(refuse.contains(".focusesTarget") && refuse.contains("ghosttyRegistry.isInWindow(paneID: target.id)"),
+                               "the composer's off-screen refusal does not follow the registry's rule")
     }),
     ("a terminal host hides a retained surface only while it still presents it", {
         let host = try presentationAppSource("NativeTerminalHost.swift")
