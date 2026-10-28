@@ -124,6 +124,13 @@ language: paper around glass".
   `GhosttyPaneRegistry` retains views by pane id; `NativeTerminalHost` must
   return that exact view, never wrapped in a container that adopts it. Each
   pane id appears in a workspace's `NativeLayoutNode` at most once.
+- A workspace shows its panes as Grid or Tabs (`WorkspacePresentation` in
+  its registry record beside the split tree; absent is Grid). Tabs draws only
+  the shown pane's leaf: the rest stay retained and running, take delivery as
+  another workspace's panes do, and keep wire, attention and state on their
+  tab. Presentation never changes the tree, a process or the protocol; Zoom
+  and Balance are grid-only. `NativeTerminalHost` hides a dismantled surface
+  only once the update settles with its view in no window.
 - `workbench-state.json` holds metadata only; terminal bytes and vendor
   conversations are never serialized. Title writes are coalesced to one per
   second; a cwd report persists only when the folder changed.

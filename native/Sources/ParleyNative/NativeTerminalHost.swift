@@ -32,9 +32,18 @@ struct NativeTerminalHost: NSViewRepresentable {
 
     static func dismantleNSView(_ view: NSView, coordinator: ()) {
         guard let terminal = view as? AppTerminalView else { return }
-        terminal.setSurfaceVisible(false)
         // Deliberately do not clear its controller. GhosttyPaneRegistry retains
         // this exact view and its exec surface for workspace/window reattach.
+        //
+        // The same retained view can move between two hosts in one update (a
+        // pane becoming a tab, or Tabs becoming Grid), and SwiftUI may tear
+        // the old host down after the new one adopted the view. Hiding it
+        // here at once would then leave the shown terminal marked invisible,
+        // so the decision waits for the update to settle: a view that ended
+        // in no window is hidden, and one a new host adopted stays visible.
+        DispatchQueue.main.async {
+            if terminal.window == nil { terminal.setSurfaceVisible(false) }
+        }
     }
 }
 

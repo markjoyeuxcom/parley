@@ -38,7 +38,12 @@ struct ContentView: View {
                     handoffComposer
                     Divider()
                 }
-                if model.visiblePanes.count > 1, !sidebarVisible {
+                // In Tabs the tab strip is the only way to see the hidden
+                // panes, so it shows whether or not the sidebar does.
+                if model.activePresentation == .tabs, !model.visiblePanes.isEmpty {
+                    paneTabStrip
+                    Divider()
+                } else if model.visiblePanes.count > 1, !sidebarVisible {
                     paneFocusStrip
                     Divider()
                 }
@@ -769,6 +774,11 @@ struct ContentView: View {
                 .action("New Group…") { model.newWorkspaceGroup(moving: workspace) },
             ]),
             .action("Save Layout…") { model.saveLayout(of: workspace) },
+            .submenu("Show Panes as: \(model.presentation(for: workspace).label)", items: WorkspacePresentation.allCases.map { presentation in
+                .action(presentation.label, systemImage: presentation == model.presentation(for: workspace) ? "checkmark" : nil) {
+                    model.setPresentation(presentation, for: workspace)
+                }
+            }),
         ]
         if !model.savedLayouts.isEmpty {
             items.append(.submenu("Saved Layouts", items: model.savedLayouts.map { layout in
@@ -1212,18 +1222,22 @@ struct ContentView: View {
             WindowDragArea()
                 .frame(minWidth: 6, maxWidth: .infinity)
                 .frame(height: 42)
+            panePresentationButton(compact: false)
             Button(action: { model.toggleFocusCanvas() }) {
                 Label(
                     model.focusCanvasPaneID == nil ? "Zoom" : "Unzoom",
                     systemImage: model.focusCanvasPaneID == nil ? "rectangle.inset.filled" : "rectangle.grid.2x2"
                 )
             }
-            .disabled(model.activePane == nil)
+            .disabled(model.activePane == nil || model.activePresentation == .tabs)
             .accessibilityLabel(model.focusCanvasPaneID == nil ? "Zoom the selected pane" : "Unzoom")
-            .help(model.focusCanvasPaneID == nil ? "Enlarge the selected pane while keeping peers visible" : "Restore the pane proportions")
+            .help(model.activePresentation == .tabs
+                ? "Tabs already show one pane; switch to Grid to zoom"
+                : (model.focusCanvasPaneID == nil ? "Enlarge the selected pane while keeping peers visible" : "Restore the pane proportions"))
             Button(action: model.balance) { Image(systemName: "rectangle.grid.2x2") }
+                .disabled(model.activePresentation == .tabs)
                 .accessibilityLabel("Balance panes")
-                .help("Balance panes")
+                .help(model.activePresentation == .tabs ? "Balance applies to the grid; switch to Grid to use it" : "Balance panes")
                 .accessibilityHint("Make panes in the active workspace equal size")
             Button {
                 openWindow(id: "status-center")
@@ -1252,10 +1266,11 @@ struct ContentView: View {
             WindowDragArea()
                 .frame(minWidth: 6, maxWidth: .infinity)
                 .frame(height: 42)
+            panePresentationButton(compact: true)
             Button(action: { model.toggleFocusCanvas() }) {
                 Image(systemName: model.focusCanvasPaneID == nil ? "rectangle.inset.filled" : "rectangle.grid.2x2")
             }
-            .disabled(model.activePane == nil)
+            .disabled(model.activePane == nil || model.activePresentation == .tabs)
             .accessibilityLabel(model.focusCanvasPaneID == nil ? "Zoom the selected pane" : "Unzoom")
             Button {
                 openWindow(id: "status-center")
@@ -1876,6 +1891,130 @@ struct ContentView: View {
         }
     }
 
+    /// Switches the active workspace between Grid and Tabs. The icon shows
+    /// what a click gives, as Zoom's does.
+    private func panePresentationButton(compact: Bool) -> some View {
+        let next = model.activePresentation.toggled
+        let symbol = next == .tabs ? "rectangle.topthird.inset.filled" : "square.grid.2x2"
+        return Button(action: model.togglePanePresentation) {
+            if compact {
+                Image(systemName: symbol)
+            } else {
+                Label(next.label, systemImage: symbol)
+            }
+        }
+        .disabled(model.activeWorkspace == nil)
+        .accessibilityLabel(model.activePresentation.toggleTitle)
+        .help("\(model.activePresentation.toggleTitle) (Command-Shift-T)")
+        .accessibilityHint("Changes only how this workspace's panes are shown; every pane keeps running")
+    }
+
+    /// Tabs: one tab per pane in layout order, the shown one marked as the
+    /// focus strip marks the selection. A hidden pane's tab carries what the
+    /// person must not miss: its live handoff wire, its attention and its
+    /// state, so nothing behind a tab is invisible.
+    private var paneTabStrip: some View {
+        let wires = liveWireHandoffs
+        let shown = model.shownTabPaneID
+        return ScrollViewReader { reader in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(model.layoutOrderedVisiblePanes) { pane in
+                        paneTab(pane, shown: pane.id == shown, wire: wires[pane.id])
+                            .id(pane.id)
+                    }
+                }
+                .padding(.vertical, 3)
+                .padding(.horizontal, 12)
+            }
+            // A pane reached another way (Command-1…9, Next Pane, an Ask
+            // menu) may sit beyond the scrolled tabs; bring its tab into view.
+            .onChange(of: shown) { _, id in
+                guard let id else { return }
+                withAnimation(.easeOut(duration: 0.15)) { reader.scrollTo(id, anchor: .center) }
+            }
+        }
+        .frame(height: 34)
+        .background(Color.secondary.opacity(0.035))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Pane tabs")
+    }
+
+    private func paneTab(_ pane: WorkbenchPane, shown: Bool, wire: RelayHandoff?) -> some View {
+        Button {
+            model.select(pane)
+        } label: {
+            HStack(spacing: 6) {
+                ChromeMonogram(kind: pane.kind, size: 14)
+                Text(pane.displayName)
+                    .font(.system(size: 11, weight: shown ? .semibold : .regular))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: 160)
+                if let role = pane.role {
+                    Text("@\(role)")
+                        .font(ChromeFont.meta)
+                        .foregroundStyle(Color.accentColor)
+                        .lineLimit(1)
+                }
+                if let handoff = wire {
+                    let outgoing = handoff.sourcePaneID == pane.id
+                    let other = outgoing ? handoff.targetKind : handoff.sourceKind
+                    HStack(spacing: 3) {
+                        if !outgoing, let other { ChromeMonogram(kind: other, size: 12) }
+                        ChromeWireLine(color: ChromeColor.handoff(handoff), length: 10)
+                        if outgoing, let other { ChromeMonogram(kind: other, size: 12) }
+                    }
+                    .accessibilityHidden(true)
+                }
+                if let attention = model.paneAttention(for: pane.id) {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        ChromeChip(attention.label(at: context.date), color: ChromeColor.attention(attention.reason))
+                    }
+                } else if let state = paneFocusState(pane) {
+                    ChromeChip(state.label, color: state.color)
+                }
+            }
+            .foregroundStyle(shown ? .primary : .secondary)
+            .padding(.horizontal, 9)
+            .frame(height: 26)
+            .contentShape(Rectangle())
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(shown ? Color.accentColor.opacity(0.10) : Color.clear)
+            )
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(shown ? Color.accentColor : Color.clear)
+                    .frame(height: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .help(paneTabHelp(pane, wire: wire))
+        .accessibilityLabel("\(pane.displayName), \(pane.kind.label) pane tab")
+        .accessibilityValue(([shown ? "Shown" : "Hidden"] + [paneTabWireDescription(pane, wire: wire)].compactMap { $0 } + [paneAccessibilityValue(pane)])
+            .joined(separator: ", "))
+        .accessibilityHint(shown ? "This pane is shown" : "Show this pane; the others keep running")
+        .accessibilityAddTraits(shown ? .isSelected : [])
+        .snapshotContextMenu(paneMenuItems(pane))
+    }
+
+    private func paneTabWireDescription(_ pane: WorkbenchPane, wire: RelayHandoff?) -> String? {
+        guard let handoff = wire else { return nil }
+        let outgoing = handoff.sourcePaneID == pane.id
+        let otherName = outgoing ? handoff.targetName : handoff.sourceName
+        return "\(handoff.kind.label) \(outgoing ? "to" : "from") \(otherName), \(handoff.state.rawValue)"
+    }
+
+    private func paneTabHelp(_ pane: WorkbenchPane, wire: RelayHandoff?) -> String {
+        var details = ["Show this pane; hidden panes keep running and still receive handoffs", pane.cwd]
+        if let wire = paneTabWireDescription(pane, wire: wire) { details.insert(wire, at: 1) }
+        if let attention = model.paneAttention(for: pane.id) {
+            details.insert(attention.accessibilityDescription(), at: 1)
+        }
+        return details.joined(separator: "\n")
+    }
+
     private var paneFocusStrip: some View {
         HStack(spacing: 8) {
             ChromeHeading("Panes")
@@ -1993,7 +2132,11 @@ struct ContentView: View {
                 }
             }
         } else if !model.nativePaneSurfaces.isEmpty {
-            nativePaneSplit
+            if model.activePresentation == .tabs {
+                nativePaneTabs
+            } else {
+                nativePaneSplit
+            }
         } else {
             ContentUnavailableView(
                 "Native panes are unavailable",
@@ -2018,6 +2161,17 @@ struct ContentView: View {
                 nativePaneLeaf(representativePaneID: paneID, wire: wires[paneID])
             }
             .background(Color(nsColor: .windowBackgroundColor))
+        }
+    }
+
+    /// Tabs: the shown pane alone, as the same leaf the grid draws, so its
+    /// header, rings and menu are unchanged. The others stay retained and
+    /// running; only their views leave the window, as in another workspace.
+    @ViewBuilder
+    private var nativePaneTabs: some View {
+        if let shown = model.shownTabPaneID {
+            nativePaneLeaf(representativePaneID: shown, wire: liveWireHandoffs[shown])
+                .background(Color(nsColor: .windowBackgroundColor))
         }
     }
 
@@ -2154,12 +2308,12 @@ struct ContentView: View {
             }
             PaneActionsMenu(
                 accessibilityLabel: "Pane actions for \(pane.displayName)",
-                items: [
+                items: (model.activePresentation == .tabs ? [] : [
                     .action(model.focusCanvasPaneID == pane.id ? "Unzoom" : "Zoom Pane") {
                         model.toggleFocusCanvas(paneID: pane.id)
                     },
                     .separator,
-                ] + paneMenuItems(pane)
+                ]) + paneMenuItems(pane)
             )
         }
         .padding(.horizontal, 8)
@@ -2178,7 +2332,9 @@ struct ContentView: View {
         .focusable()
         .accessibilityLabel("Focus \(pane.displayName), \(pane.kind.label) pane")
         .accessibilityValue(paneAccessibilityValue(pane))
-        .accessibilityHint("Select this terminal; double-click to zoom or unzoom it")
+        .accessibilityHint(model.activePresentation == .tabs
+            ? "Select this terminal"
+            : "Select this terminal; double-click to zoom or unzoom it")
         .help(paneFocusHelp(pane))
     }
 

@@ -179,6 +179,7 @@ struct PaletteCommand: Identifiable, Sendable {
         case newWorkspace
         case openWorkspace
         case openStatusCenter
+        case togglePanePresentation
         case openSettings(ApplicationSettingsSection)
         case selectWorkspace(WorkbenchWorkspace)
         case selectPane(WorkbenchPane)
@@ -598,6 +599,9 @@ final class AppModel: ObservableObject {
         nativeSplitFractions = workspaceRecords.reduce(into: [:]) {
             $0[$1.workspaceID] = $1.splitFractions
         }
+        workspacePresentations = workspaceRecords.reduce(into: [:]) {
+            if $1.presentation != .grid { $0[$1.workspaceID] = $1.presentation }
+        }
         recipeStore = HandoffRecipeStore(
             file: applicationDirectory.appendingPathComponent("handoff-recipes.json")
         )
@@ -891,11 +895,47 @@ final class AppModel: ObservableObject {
     /// and persisted through it whenever the structure changes.
     @Published private var nativeLayouts: [String: NativeLayoutNode] = [:]
     @Published private var nativeSplitFractions: [String: [String: Double]] = [:]
+    /// Grid or Tabs per durable workspace id; absent is Grid. Presentation
+    /// only, persisted through the registry beside the split tree.
+    @Published private var workspacePresentations: [String: WorkspacePresentation] = [:]
 
     var nativeLayoutTree: NativeLayoutNode? {
         guard let workspace = activeWorkspace else { return nil }
         let leaves = nativePaneSurfaces.map(\.representativePaneID)
         return NativeLayoutNode.reconciled(nativeLayouts[workspace.workspaceID], with: leaves)
+    }
+
+    func presentation(for workspace: WorkbenchWorkspace) -> WorkspacePresentation {
+        workspacePresentations[workspace.workspaceID] ?? .grid
+    }
+
+    var activePresentation: WorkspacePresentation {
+        activeWorkspace.map(presentation(for:)) ?? .grid
+    }
+
+    /// The pane a Tabs workspace shows beneath its tab strip.
+    var shownTabPaneID: String? {
+        WorkspaceTabsProjection.shownPaneID(
+            activePaneID: activePane?.id,
+            orderedPaneIDs: layoutOrderedVisiblePanes.map(\.id)
+        )
+    }
+
+    /// Shows a workspace's panes as a grid or as tabs. The split tree, every
+    /// process and every handoff are untouched; switching back to Grid
+    /// restores the same arrangement. A zoom ends, since Tabs shows one pane.
+    func setPresentation(_ presentation: WorkspacePresentation, for workspace: WorkbenchWorkspace) {
+        guard self.presentation(for: workspace) != presentation else { return }
+        workspacePresentations[workspace.workspaceID] = presentation == .grid ? nil : presentation
+        _ = try? workspaceRegistry.updatePresentation(workspaceID: workspace.workspaceID, presentation: presentation)
+        guard workspace.workspaceID == activeWorkspace?.workspaceID else { return }
+        focusCanvasPaneID = nil
+        terminalHandle.focus()
+    }
+
+    func togglePanePresentation() {
+        guard let workspace = activeWorkspace else { return }
+        setPresentation(presentation(for: workspace).toggled, for: workspace)
     }
 
     var layoutOrderedVisiblePanes: [WorkbenchPane] {
@@ -1133,7 +1173,8 @@ final class AppModel: ObservableObject {
                     )
                 },
                 layout: layout,
-                splitFractions: unreadable.contains(.workspaceRegistry) ? [:] : (nativeSplitFractions[workspace.workspaceID] ?? [:])
+                splitFractions: unreadable.contains(.workspaceRegistry) ? [:] : (nativeSplitFractions[workspace.workspaceID] ?? [:]),
+                presentation: unreadable.contains(.workspaceRegistry) ? nil : workspacePresentations[workspace.workspaceID]
             )
         }
         var defaultProfileIDs: [String: String] = [:]
@@ -1510,20 +1551,24 @@ final class AppModel: ObservableObject {
         let liveWorkspaces = workspaces
         var layouts: [String: NativeLayoutNode] = [:]
         var fractions: [String: [String: Double]] = [:]
+        var presentations: [String: WorkspacePresentation] = [:]
         for archived in archive.workspaces {
             guard let live = liveWorkspaces.first(where: { $0.name == archived.name }) else { continue }
             let paneIDs = panes.filter { $0.workspaceID == live.workspaceID }.map(\.id)
             if let node = archived.layout?.restoring(paneIDs: paneIDs) { layouts[live.workspaceID] = node }
             if !archived.splitFractions.isEmpty { fractions[live.workspaceID] = archived.splitFractions }
+            if let presentation = archived.presentation, presentation != .grid { presentations[live.workspaceID] = presentation }
         }
         nativeLayouts = layouts
         nativeSplitFractions = fractions
+        workspacePresentations = presentations
         for record in try workspaceRegistry.records() where !liveWorkspaces.contains(where: { $0.workspaceID == record.workspaceID }) {
             try workspaceRegistry.remove(workspaceID: record.workspaceID)
         }
         _ = try workspaceRegistry.synchronize(workspaces: liveWorkspaces)
         for (workspaceID, node) in layouts { try workspaceRegistry.updateLayout(workspaceID: workspaceID, layout: node) }
         for (workspaceID, recorded) in fractions { try workspaceRegistry.updateSplitFractions(workspaceID: workspaceID, fractions: recorded) }
+        for (workspaceID, presentation) in presentations { try workspaceRegistry.updatePresentation(workspaceID: workspaceID, presentation: presentation) }
     }
 
     private static func configurationFilename(at date: Date = Date()) -> String {
@@ -3372,6 +3417,20 @@ final class AppModel: ObservableObject {
                 action: .openStatusCenter
             ),
         ]
+        if activeWorkspace != nil {
+            commands.append(PaletteCommand(
+                item: CommandPaletteItem(
+                    id: "action:toggle-pane-presentation",
+                    category: .action,
+                    title: activePresentation.toggleTitle,
+                    detail: activePresentation == .grid
+                        ? "Show one pane of this workspace at a time, with a tab for each"
+                        : "Show every pane of this workspace at once in its split layout",
+                    keywords: ["tabs", "grid", "layout", "view", "panes"]
+                ),
+                action: .togglePanePresentation
+            ))
+        }
         for section in ApplicationSettingsSection.allCases {
             commands.append(PaletteCommand(
                 item: CommandPaletteItem(
@@ -3506,6 +3565,8 @@ final class AppModel: ObservableObject {
             openWorkspacePicker()
         case .openStatusCenter:
             break
+        case .togglePanePresentation:
+            togglePanePresentation()
         case let .openSettings(section):
             showSettings(section)
         case let .selectWorkspace(workspace):
@@ -5862,7 +5923,8 @@ final class AppModel: ObservableObject {
             current: focusCanvasPaneID,
             requested: paneID,
             active: activePane?.id,
-            visible: visiblePanes.map(\.id)
+            visible: visiblePanes.map(\.id),
+            presentation: activePresentation
         )
         focusCanvasPaneID = next
         if let next, activePane?.id != next, let pane = visiblePanes.first(where: { $0.id == next }) {
