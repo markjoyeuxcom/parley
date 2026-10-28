@@ -382,7 +382,7 @@ func checkDelegationGitFactsAreRecordedWithoutChangingOutcomes() throws {
     legacy.removeValue(forKey: "gitFactsAtReturn")
     let decoded = try JSONDecoder().decode(RelayHandoff.self, from: try JSONSerialization.data(withJSONObject: legacy))
     try gitExpect(decoded.gitFactsAtDelegation == nil && decoded.gitFactsAtReturn == nil && decoded.id == firstID, "an old handoff without Git facts did not decode")
-    try gitExpect(AgentProtocol.version == "34", "Git facts checks did not use the current shared protocol")
+    try gitExpect(AgentProtocol.version == "35", "Git facts checks did not use the current shared protocol")
 }
 
 func checkDelegationGitFactsExportPreservesPathsOnly() throws {

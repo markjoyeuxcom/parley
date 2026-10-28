@@ -3528,6 +3528,7 @@ final class AppModel: ObservableObject {
             )
         }
 
+        let askLabels = askTargetLabels
         commands += askTargets.map { pane in
             let workspace = workspaces.first(where: { $0.workspaceID == pane.workspaceID })?.name
                 ?? pane.workspaceName
@@ -3536,9 +3537,9 @@ final class AppModel: ObservableObject {
                 item: CommandPaletteItem(
                     id: "ask:\(pane.id)",
                     category: .ask,
-                    title: "Ask \(pane.displayName)",
-                    detail: "\(workspace) · \(pane.kind.label)",
-                    keywords: [pane.cwd, "question", "consult"]
+                    title: "Ask \(askLabels[pane.id] ?? pane.displayName)",
+                    detail: "\(workspace) · \(pane.kind.label)\(pane.role.map { " · @\($0)" } ?? "")",
+                    keywords: [pane.cwd, "question", "consult"] + (pane.role.map { ["@\($0)"] } ?? [])
                 ),
                 action: .ask(pane)
             )
@@ -3813,6 +3814,19 @@ final class AppModel: ObservableObject {
     var localAskTargets: [WorkbenchPane] {
         guard let workspaceID = activeWorkspace?.workspaceID else { return [] }
         return askTargets.filter { $0.workspaceID == workspaceID }
+    }
+
+    /// Every pane of the active workspace, the one a new pane joins.
+    var activeWorkspacePanes: [WorkbenchPane] {
+        guard let workspaceID = activeWorkspace?.workspaceID else { return [] }
+        return panes.filter { $0.workspaceID == workspaceID }
+    }
+
+    /// Labels for Ask targets that stay distinct when panes share a name,
+    /// as every pane of one vendor does until it is renamed: the name alone
+    /// where it is unique, otherwise with the role, folder or id appended.
+    var askTargetLabels: [String: String] {
+        PaneNaming.distinctLabels(for: askTargets)
     }
 
     var workspaceLead: WorkbenchPane? {
@@ -5692,12 +5706,16 @@ final class AppModel: ObservableObject {
     /// the person's approvals choice, so a Claude pane reviewed as "Vendor's
     /// automatic reviewer" launched in accept-edits mode while the review
     /// said auto mode.
+    /// `name` and `role` are read for a creation review only; the controller
+    /// applies the Rename and Set Routing Role rules to them.
     func applyPermissionProfile(
         to request: PanePermissionRequest,
         profileID: String,
         approvedRoots: [String],
         approvals: PermissionApprovalHandling,
-        containerConfiguration: ContainerConfiguration? = nil
+        containerConfiguration: ContainerConfiguration? = nil,
+        name: String? = nil,
+        role: String? = nil
     ) async {
         guard !applyingPanePermissions else { return }
         applyingPanePermissions = true
@@ -5735,7 +5753,9 @@ final class AppModel: ObservableObject {
                     kind: request.kind,
                     cwd: request.folder,
                     permissionProfile: effective,
-                    containerConfiguration: containerConfiguration
+                    containerConfiguration: containerConfiguration,
+                    name: name,
+                    role: role
                 )
                 recordNativeSplit(created: created, target: splitTarget, direction: direction)
                 rememberFolder(request.folder)
@@ -9170,6 +9190,41 @@ final class AppModel: ObservableObject {
                 detail: "Created from saved layout \(layout.name); shells started and agent panes left stopped."
             ))
             rememberFolder(layout.defaultFolder)
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
+    /// New Workspace from Template: a pair of one vendor, @implementer (the
+    /// lead) and @reviewer, in a folder the person chooses now. The template
+    /// is a saved layout Parley builds and never stores, so the workspace is
+    /// created exactly as one from a saved layout is: agent panes stopped
+    /// until each Start is reviewed, nothing launched here.
+    func createWorkspace(fromPairTemplate vendor: PaneKind) {
+        guard vendor.isAgent else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Choose the folder for the \(vendor.label) pair"
+        panel.message = "Both panes open in this folder: an @implementer marked as the workspace lead and a @reviewer. They stay stopped until you review each Start."
+        panel.prompt = "Create Workspace"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: activePane?.cwd ?? defaultFolder)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let folder = WorkspaceFolderIdentity.normalized(url.standardizedFileURL.path)
+        let layout = SavedWorkspaceLayout.pairTemplate(vendor: vendor, folder: folder)
+        perform {
+            guard let controller else { return }
+            try SavedWorkspaceLayoutStore.validate(layout)
+            let restored = try controller.restoreWorkspaceLayout(layout)
+            recordRestoredNativeLayout(layout.root, workspace: restored)
+            try recordSuccessfulActivity(RelayActivityEventRequest(
+                kind: .workspaceRestored,
+                workspaceID: restored.workspaceID,
+                workspaceName: restored.name,
+                detail: "Created from the \(layout.name) template; both agent panes left stopped for their Start reviews."
+            ))
+            rememberFolder(folder)
             try refresh()
             terminalHandle.focus()
         }

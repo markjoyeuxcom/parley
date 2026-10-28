@@ -69,7 +69,7 @@ handoffs work. Agy reports hook state as Unknown by design.
    /home/parley/.gemini: permission denied"; Copilot: "EACCES … .cache"),
    which every image with a `/home/parley` directory did before 14
    September 2026 until the home volume was mounted with nocopy.
-3. Confirm protocol uptake (`parley whoami`, protocol 34) fresh and resumed.
+3. Confirm protocol uptake (`parley whoami`, protocol 35) fresh and resumed.
 4. Send an Ask and a Delegate between a container pane and a host pane,
    including a `done --file` result and a reviewed context pack.
 5. Check normal permission prompts appear (unless you chose bypass — then the
@@ -127,7 +127,7 @@ question, or the refusal is a bare error.
 
 **Fail:** a submission is reported that never arrived.
 
-## P1.7 Images in handoffs (protocol 34)
+## P1.7 Images in handoffs (protocol 35)
 
 Use the packaged app: the window picker and macOS's own consent need a bundle.
 
@@ -646,3 +646,38 @@ successful dictation test.
    explicitly sent handoffs; no audio recording files should have been added.
 
 Record failures and untested configurations explicitly before a release.
+
+## Single-vendor workspaces (v0.1.72)
+
+A workspace whose panes all use one vendor, as a work laptop limited to Claude
+does. Use Shell panes or a vendor you are logged into; never spend quota to
+test routing.
+
+1. **Identity at creation.** In a workspace with one Claude pane, choose
+   Pane > Agent. The review shows IDENTITY with the name proposed as
+   "Claude 2" and an empty role, and the hint says the vendor alone reaches
+   a pane only while it matches one pane besides the sender. Change the vendor to Codex and back: the
+   proposal follows while untouched, and a name you typed stays. Enter the
+   role of the existing pane: Start Pane is held with "already assigned".
+   Enter `@x` or `a/b` as the name: held with the reason. Start with name
+   "API" and role `api`: the header reads API @api.
+2. **Refusal that teaches.** With three Claude panes in one workspace,
+   from one of them run `parley ask claude "test"`. The refusal lists each
+   other Claude pane as `Workspace/Name @role (address as @role or pane-id)`,
+   says they share the vendor, and `parley ask @api "test"` resolves
+   instead. With only two, `claude` reaches the other one. Give a pane in a
+   second workspace the role `api`: from the first workspace, its listed
+   address is `Workspace/@api`, never bare `@api`. `parley whoami` shows the
+   role.
+3. **Distinct labels.** With two panes both named Claude, one with a role,
+   the Ask toolbar menu and ⌘K Ask rows read "Ask Claude @role" and "Ask
+   Claude"; rename one and both revert to plain names. With neither roled and
+   different folders, the folder leaf is appended; same folder, the id start.
+4. **Pair template.** Sidebar + > New Workspace from Template > Claude Pair…,
+   choose a folder. The workspace holds Implementer @implementer (Lead) and
+   Reviewer @reviewer, both stopped; each Start opens its own review; nothing
+   is added to Saved Layouts. Save Layout… then stores it as an ordinary
+   layout under the name you give.
+5. **Protocol 35.** Panes started before the update show RESTART FOR
+   PROTOCOL; a restarted pane's `parley protocol` contains the shared-vendor
+   paragraph.

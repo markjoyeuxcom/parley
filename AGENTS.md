@@ -447,6 +447,16 @@ Prax notes: "Parley roles, mobility…".
 - Roles are lowercase slugs, unique per workspace (`@reviewer`,
   `workspace/@reviewer`); vendor names and `lead` are reserved; never fall
   through from a role to a display name.
+- Identity never comes from the vendor: a workspace may hold several panes
+  of one vendor. The creation review sets name and role through
+  `createPane(name:role:)` under the Rename and Set Role rules;
+  `PaneNaming.defaultName` proposes "Claude 2" only once the label is
+  taken; Ask menus and the palette label targets through
+  `PaneNaming.distinctLabels` (role, folder, id, only where labels collide,
+  across every label); the broker's ambiguous-target refusal offers each
+  candidate only addresses `RelayBroker.resolveTargets` takes, from that
+  sender, to it alone, and its id. `SavedWorkspaceLayout.pairTemplate` is
+  built, never stored.
 - Move preserves surface, pane id, process, session, credential and folder;
   refuse with an active handoff or a role collision. Saved layouts restore
   with their saved policy and roll back whole. Split trees live in

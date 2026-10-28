@@ -842,7 +842,9 @@ func checkContainerLinkedWorktree() throws {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let repository = directory.appendingPathComponent("repository"), tree = directory.appendingPathComponent("linked")
-    let git = ProcessCommandRunner()
+    // The same allowance as the submodule fixture: a cold hosted runner's
+    // first git init has exceeded ten seconds.
+    let git = ProcessCommandRunner(timeout: 60)
     func run(_ args: [String]) throws {
         let output = try git.run(executable: URL(fileURLWithPath: "/usr/bin/git"), arguments: args,
             environment: ["PATH": "/usr/bin:/bin", "HOME": directory.path, "GIT_CONFIG_NOSYSTEM": "1"])
@@ -925,7 +927,10 @@ func checkContainerGitReviewRefusals() throws {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let parent = root.appendingPathComponent("parent"), child = root.appendingPathComponent("child")
-    let runner = ProcessCommandRunner()
+    // A cold hosted runner has taken over ten seconds for the first git init
+    // (PR #83's CI, 28 October 2026); the bound is for a hung process, not a
+    // slow one, so it matches the other Git fixtures' allowance.
+    let runner = ProcessCommandRunner(timeout: 60)
     func git(_ arguments: [String]) throws {
         let result = try runner.run(executable: URL(fileURLWithPath: "/usr/bin/git"), arguments: arguments,
             environment: ["PATH": "/usr/bin:/bin", "HOME": root.path, "GIT_CONFIG_NOSYSTEM": "1"])
