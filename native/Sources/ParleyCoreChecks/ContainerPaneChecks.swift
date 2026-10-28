@@ -925,7 +925,10 @@ func checkContainerGitReviewRefusals() throws {
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let parent = root.appendingPathComponent("parent"), child = root.appendingPathComponent("child")
-    let runner = ProcessCommandRunner()
+    // A cold hosted runner has taken over ten seconds for the first git init
+    // (PR #83's CI, 28 October 2026); the bound is for a hung process, not a
+    // slow one, so it matches the other Git fixtures' allowance.
+    let runner = ProcessCommandRunner(timeout: 60)
     func git(_ arguments: [String]) throws {
         let result = try runner.run(executable: URL(fileURLWithPath: "/usr/bin/git"), arguments: arguments,
             environment: ["PATH": "/usr/bin:/bin", "HOME": root.path, "GIT_CONFIG_NOSYSTEM": "1"])
