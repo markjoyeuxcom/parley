@@ -116,6 +116,9 @@ public struct ArchivedWorkspace: Codable, Equatable, Sendable {
     /// The split structure over `panes` by index, when one was recorded.
     public var layout: ArchivedLayoutNode?
     public var splitFractions: [String: Double]
+    /// Tabs, when the workspace showed its panes as tabs; absent means Grid,
+    /// which is also how an archive from before Tabs reads.
+    public var presentation: WorkspacePresentation?
 
     public init(
         name: String,
@@ -126,7 +129,8 @@ public struct ArchivedWorkspace: Codable, Equatable, Sendable {
         groupName: String?,
         panes: [ArchivedPane],
         layout: ArchivedLayoutNode?,
-        splitFractions: [String: Double]
+        splitFractions: [String: Double],
+        presentation: WorkspacePresentation? = nil
     ) {
         self.name = name
         self.attachedFolders = attachedFolders
@@ -137,6 +141,7 @@ public struct ArchivedWorkspace: Codable, Equatable, Sendable {
         self.panes = panes
         self.layout = layout
         self.splitFractions = splitFractions
+        self.presentation = presentation
     }
 }
 

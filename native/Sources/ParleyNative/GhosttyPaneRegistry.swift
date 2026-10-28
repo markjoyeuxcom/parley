@@ -312,6 +312,11 @@ final class GhosttyPaneRegistry {
         return view
     }
 
+    /// Whether the pane's retained view is drawn in a window now.
+    func isInWindow(paneID: String) -> Bool {
+        entries[paneID]?.view.window != nil
+    }
+
     func setVisible(_ visible: Bool, paneID: String) {
         entries[paneID]?.view.setSurfaceVisible(visible)
     }
@@ -367,6 +372,13 @@ final class GhosttyPaneRegistry {
         guard timing.focusesTarget else {
             try deliver(text, to: entry, paneID: paneID, name: pane.displayName, submit: submit, timing: timing, validate: validate)
             return
+        }
+        // A view in no window (a hidden tab, another workspace) cannot take
+        // focus, and `DeliveryFocus` would then deliver without it, so text
+        // could be left unsubmitted while every step reported success.
+        // Refuse before any input; the person can show the pane and retry.
+        guard entry.view.window != nil else {
+            throw ParleyWorkbenchError.focusedDeliveryNeedsVisiblePane(pane.displayName)
         }
         try deliveryFocus.deliver(focusing: entry.view, paneID: paneID, beforeRestoring: timing.beforeRestoringFocus,
                                   settle: { settleTerminalInput(for: $0) }) {

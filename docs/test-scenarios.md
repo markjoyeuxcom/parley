@@ -69,7 +69,7 @@ handoffs work. Agy reports hook state as Unknown by design.
    /home/parley/.gemini: permission denied"; Copilot: "EACCES … .cache"),
    which every image with a `/home/parley` directory did before 14
    September 2026 until the home volume was mounted with nocopy.
-3. Confirm protocol uptake (`parley whoami`, protocol 34) fresh and resumed.
+3. Confirm protocol uptake (`parley whoami`, protocol 35) fresh and resumed.
 4. Send an Ask and a Delegate between a container pane and a host pane,
    including a `done --file` result and a reviewed context pack.
 5. Check normal permission prompts appear (unless you chose bypass — then the
@@ -127,7 +127,7 @@ question, or the refusal is a bare error.
 
 **Fail:** a submission is reported that never arrived.
 
-## P1.7 Images in handoffs (protocol 34)
+## P1.7 Images in handoffs (protocol 35)
 
 Use the packaged app: the window picker and macOS's own consent need a bundle.
 
@@ -564,6 +564,19 @@ other than the command shown.
 4. Remove the two files and relaunch: Configuration reads "Every configuration store loaded"; recipes and layouts are defaults.
 
 **Fail:** the app refusing to start over a layouts file; a corrupt file silently replaced by defaults; favourites lost after a corrupt continuity value.
+
+## P3.9 Workspace tabs (28 October 2026)
+
+1. In a workspace with three panes (two agents and a shell), split unevenly and drag one divider. Press Command-Shift-T. A tab strip appears with one tab per pane in grid order; the selected pane fills the area beneath with its usual header. Zoom and Balance are dimmed; the toolbar button now reads Grid.
+2. Click each tab, then use Command-1…3, Control-Option-Right and the sidebar. Each brings that pane forward with keyboard focus in its terminal, and the strip scrolls a far tab into view in a narrow window. Type in one pane, switch away and back: scrollback and the cursor are where you left them, and no process restarted.
+3. With pane A shown, Ask pane B (hidden) from A. B's tab shows the wire and its state; the answer arrives while B stays hidden. Trigger a permission prompt in a hidden agent: its tab shows the attention chip and the menu-bar count rises. Right-click a hidden tab: that pane's menu opens and Rename applies to it.
+4. Switch to another workspace and back: it is still in Tabs, and a Grid workspace beside it is still a grid. Quit and relaunch: Tabs is kept per workspace. Press Command-Shift-T again: the grid returns with the same arrangement and divider position.
+5. Export a configuration backup with one workspace in Tabs, restore it: that workspace reopens in Tabs, the others in Grid.
+6. In Tabs, right-click a hidden stopped agent's tab and choose Start Fresh Session, then approve: its tab comes forward and the CLI starts at once. Repeat with Restart on a hidden running agent. Pane > Balance Panes and the compact toolbar's Actions > Balance Panes are dimmed.
+7. With a Copilot pane (folder trust confirmed) hidden behind a tab, Ask it from another pane through the composer: Parley says "Nothing was sent" and the draft stays open; show the Copilot tab and Send: it submits. Repeat with a dictated voice Ask: the same. From an agent pane, `parley relay` to the hidden Copilot is refused; show it and choose Retry Delivery in Status Center: it submits. Switch rapidly between tabs and Grid ten times: the shown terminal never stays blank.
+8. Start a container team member in Tabs and, while it prepares, show another tab and type in the handoff composer: when the member starts, its tab comes forward but your typing stays in the composer.
+
+**Fail:** a hidden pane stopped, restarted or lost scrollback; a shown terminal blank until clicked; a hidden pane's handoff, attention or failure visible nowhere on its tab; the grid arrangement changed by a round trip through Tabs; a pane started from a hidden tab that does not run until clicked; a hidden Copilot handoff reported delivered; a draft that cannot be sent again after showing Copilot; keystrokes taken from the composer by a background start.
 ---
 
 # After the pass
@@ -633,3 +646,38 @@ successful dictation test.
    explicitly sent handoffs; no audio recording files should have been added.
 
 Record failures and untested configurations explicitly before a release.
+
+## Single-vendor workspaces (v0.1.72)
+
+A workspace whose panes all use one vendor, as a work laptop limited to Claude
+does. Use Shell panes or a vendor you are logged into; never spend quota to
+test routing.
+
+1. **Identity at creation.** In a workspace with one Claude pane, choose
+   Pane > Agent. The review shows IDENTITY with the name proposed as
+   "Claude 2" and an empty role, and the hint says the vendor alone reaches
+   a pane only while it matches one pane besides the sender. Change the vendor to Codex and back: the
+   proposal follows while untouched, and a name you typed stays. Enter the
+   role of the existing pane: Start Pane is held with "already assigned".
+   Enter `@x` or `a/b` as the name: held with the reason. Start with name
+   "API" and role `api`: the header reads API @api.
+2. **Refusal that teaches.** With three Claude panes in one workspace,
+   from one of them run `parley ask claude "test"`. The refusal lists each
+   other Claude pane as `Workspace/Name @role (address as @role or pane-id)`,
+   says they share the vendor, and `parley ask @api "test"` resolves
+   instead. With only two, `claude` reaches the other one. Give a pane in a
+   second workspace the role `api`: from the first workspace, its listed
+   address is `Workspace/@api`, never bare `@api`. `parley whoami` shows the
+   role.
+3. **Distinct labels.** With two panes both named Claude, one with a role,
+   the Ask toolbar menu and ⌘K Ask rows read "Ask Claude @role" and "Ask
+   Claude"; rename one and both revert to plain names. With neither roled and
+   different folders, the folder leaf is appended; same folder, the id start.
+4. **Pair template.** Sidebar + > New Workspace from Template > Claude Pair…,
+   choose a folder. The workspace holds Implementer @implementer (Lead) and
+   Reviewer @reviewer, both stopped; each Start opens its own review; nothing
+   is added to Saved Layouts. Save Layout… then stores it as an ordinary
+   layout under the name you give.
+5. **Protocol 35.** Panes started before the update show RESTART FOR
+   PROTOCOL; a restarted pane's `parley protocol` contains the shared-vendor
+   paragraph.

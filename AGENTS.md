@@ -124,6 +124,15 @@ language: paper around glass".
   `GhosttyPaneRegistry` retains views by pane id; `NativeTerminalHost` must
   return that exact view, never wrapped in a container that adopts it. Each
   pane id appears in a workspace's `NativeLayoutNode` at most once.
+- A workspace shows its panes as Grid or Tabs (`WorkspacePresentation` in
+  its registry record beside the split tree; absent is Grid). Tabs draws only
+  the shown pane's leaf: the rest stay retained and running, take delivery as
+  another workspace's panes do, and keep wire, attention and state on their
+  tab. Presentation never changes the tree, a process or the protocol; Zoom
+  and Balance are grid-only. A surface starts only once drawn, so a launch
+  from a hidden tab brings it forward (background work without taking
+  focus). Only the host that last presented a view
+  (`NativeTerminalHost.owners`) may hide it on dismantle.
 - `workbench-state.json` holds metadata only; terminal bytes and vendor
   conversations are never serialized. Title writes are coalesced to one per
   second; a cwd report persists only when the folder changed.
@@ -228,8 +237,9 @@ threading…"; "Parley reviewed Ask drafts…"; "Parley review loop practice…"
   one delivery per pane at a time. Before the paste a failure is
   `refusedBeforeInput` (Retry allowed); after it, `deliveryInterrupted`.
   Delivery neither focuses nor selects the target (only Copilot briefly
-  focuses) and restores focus through the target's own window. Refuse
-  delivery at Copilot's folder-trust prompt until the person confirms it.
+  focuses, and refuses before input a pane in no window) and restores focus
+  through the target's own window. Refuse delivery at Copilot's folder-trust
+  prompt until the person confirms it.
 
 ## Voice input and spoken handoffs
 
@@ -439,6 +449,16 @@ Prax notes: "Parley roles, mobility…".
 - Roles are lowercase slugs, unique per workspace (`@reviewer`,
   `workspace/@reviewer`); vendor names and `lead` are reserved; never fall
   through from a role to a display name.
+- Identity never comes from the vendor: a workspace may hold several panes
+  of one vendor. The creation review sets name and role through
+  `createPane(name:role:)` under the Rename and Set Role rules;
+  `PaneNaming.defaultName` proposes "Claude 2" only once the label is
+  taken; Ask menus and the palette label targets through
+  `PaneNaming.distinctLabels` (role, folder, id, only where labels collide,
+  across every label); the broker's ambiguous-target refusal offers each
+  candidate only addresses `RelayBroker.resolveTargets` takes, from that
+  sender, to it alone, and its id. `SavedWorkspaceLayout.pairTemplate` is
+  built, never stored.
 - Move preserves surface, pane id, process, session, credential and folder;
   refuse with an active handoff or a role collision. Saved layouts restore
   with their saved policy and roll back whole. Split trees live in

@@ -161,14 +161,16 @@ public enum ParleyHelpGuide {
                         "Ghostty retains authoritative terminal modes and scrollback while a leaf is hidden and restores the same surface when it reattaches.",
                         "Moving keyboard focus between leaves does not send DEC focus-out to a background agent. Safe relay readiness stays independent from which leaf receives the person's typing.",
                         "Divider positions are kept per workspace and reopen where you left them; Balance Panes rebuilds an even native split tree.",
-                        "The pane focus strip is navigation, not hidden tabs: every leaf remains a real interactive process.",
+                        "In Grid, the pane focus strip is navigation, not hidden tabs: every leaf remains a real interactive process.",
                     ]
                 ),
                 ParleyHelpSection(
                     id: "workspaces-canvas-dock",
-                    title: "Zoom and the Collaboration Dock",
+                    title: "Zoom, Tabs and the Collaboration Dock",
                     paragraphs: [
                         "Use Zoom in the workbench toolbar, Navigate > Zoom Pane, a pane's own menu, a double-click on its header, or Command-Shift-F to enlarge the selected pane while keeping peers visible. Unzoom restores the split proportions. Both keep the same terminal processes and sessions.",
+                        "Each workspace shows its panes as a grid or as tabs. Choose Show Panes as Tabs with the Tabs button in the workbench toolbar, Navigate > Show Panes as Tabs, Show Panes as in the workspace's menu, the command palette, or Command-Shift-T. Tabs shows the selected pane full size beneath a strip with one tab per pane in layout order. Each tab keeps the pane's live handoff wire, attention and state, so nothing behind a tab goes unseen, and right-clicking a tab opens that pane's menu.",
+                        "Hidden panes keep running and still receive handoffs, exactly as panes in another workspace do; a tab is how a pane is shown, never a stopped or paused pane. Copilot is the exception for handoffs: it submits only in a focused pane, so a handoff to a hidden Copilot pane is refused before anything is sent. Show that pane, then send it again: a draft you wrote stays open to send, a relay offers Retry Delivery in Status Center, and an Ask or Delegate offers Ask This Again or Delegate This Again. A pane's terminal starts once it is shown, so Start, Resume or Restart on a hidden tab brings that tab forward. Command-1…9, Next Pane, the sidebar and anything else that selects a pane brings its tab forward. Zoom and Balance apply to the grid, so they are unavailable in Tabs. Switching back to Grid restores the same split arrangement. The choice is kept per workspace across relaunch and in a configuration backup; a saved layout does not record it.",
                         "Navigate > Show Collaboration Dock (Command-Shift-D) opens the side panel for the current workspace’s waiting work, active handoffs, recipes and recent results. It offers a route to Status Center for the full record. Hide Collaboration Dock with the same shortcut to recover the space.",
                         "Command-1…9 focuses an existing pane by its position in the current workspace. Command-Option-T returns keyboard focus to the active terminal.",
                     ]
@@ -211,6 +213,7 @@ public enum ParleyHelpGuide {
                     title: "Saved layouts",
                     paragraphs: [
                         "A saved layout remembers the split shape, pane kind, pane name, folder, workspace lead and automation policy. It never stores a live process or terminal-surface id.",
+                        "New Workspace from Template offers a Pair for each vendor: an @implementer marked as the lead and a @reviewer, side by side in a folder you choose. It is a saved layout Parley builds rather than one it stores, so it follows the same rules: shells start, agent panes stay stopped until you review each Start, and nothing is written to your saved layouts.",
                     ],
                     items: [
                         "Restoring a layout starts shell panes automatically.",
@@ -225,7 +228,7 @@ public enum ParleyHelpGuide {
                         "A routing role such as implementer, reviewer or tester is an optional workspace-scoped address for one agent pane. It is separate from the display name, so renaming a pane does not change how another agent reaches its role.",
                     ],
                     items: [
-                        "Set or clear a role from the agent pane's context menu. Roles use lowercase letters, numbers and hyphens.",
+                        "Set a name and a role when you create an agent pane, in the launch review, or later from the agent pane's context menu. Roles use lowercase letters, numbers and hyphens. When the workspace already has a pane of that vendor, the review proposes a numbered name such as Claude 2 so the two can be told apart; a role is the better address.",
                         "A role must be unique inside its workspace. Parley refuses ambiguity rather than silently choosing another live pane.",
                         "Use @reviewer in the same workspace or workspace/@reviewer across workspaces. The @ keeps a stable role separate from mutable pane names.",
                         "lead remains the special address for the explicitly marked Workspace Lead. Vendor names and lead are reserved and cannot be assigned as ordinary roles.",
@@ -353,7 +356,7 @@ public enum ParleyHelpGuide {
                     id: "handoffs-routing",
                     title: "Naming the target",
                     paragraphs: [
-                        "Use a unique pane name, an explicit stable role such as @reviewer, vendor name or pane id. A renamed pane is addressed by its new display name while its routing role remains unchanged. The special name lead resolves to the marked lead in the sender's workspace.",
+                        "Use a unique pane name, an explicit stable role such as @reviewer, vendor name or pane id. A renamed pane is addressed by its new display name while its routing role remains unchanged. The special name lead resolves to the marked lead in the sender's workspace. A name, role or vendor never matches the sender's own pane, and is looked up in the sender's workspace first, then across workspaces only when nothing there matches. So the bare vendor name resolves only while that finds exactly one pane: one other Claude pane beside a Claude sender resolves, but once several panes share the vendor, as in a workspace that uses one vendor only, Parley refuses the vendor as ambiguous and lists each pane's workspace, name and role with the addresses that reach it alone. Ask menus and the command palette add the role, folder or id to panes whose names collide.",
                     ],
                     items: [
                         "Parley refuses ambiguous names instead of guessing.",
@@ -1095,6 +1098,7 @@ public enum ParleyHelpGuide {
                         "Command-Shift-J — cycle authoritative permission, result and interruption attention.",
                         "Command-1…9 — focus pane 1 through 9 in the current workspace, when that pane exists.",
                         "Command-Shift-F — zoom the selected pane, or unzoom.",
+                        "Command-Shift-T — show the current workspace's panes as tabs, or as a grid again.",
                         "Command-Shift-D — show or hide the Collaboration Dock.",
                         "Command-Option-T — focus the active terminal.",
                         "Command-? — open this detailed help window.",

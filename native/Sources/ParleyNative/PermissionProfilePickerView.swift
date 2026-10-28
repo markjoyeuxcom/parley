@@ -24,6 +24,13 @@ struct PermissionProfilePickerView: View {
     /// change it; every other action reviews an existing pane, whose vendor
     /// cannot change.
     @State private var kind: PaneKind
+    /// The identity a creation review gives the new pane. The name starts
+    /// as Parley's proposal (empty while the vendor label is free in the
+    /// workspace, "Claude 2" once it is taken) and is the person's as soon
+    /// as they type; the role starts empty.
+    @State private var name: String
+    @State private var proposedName: String
+    @State private var role = ""
     private let existingContainer: ContainerConfiguration?
 
     init(model: AppModel, request: PanePermissionRequest) {
@@ -35,6 +42,14 @@ struct PermissionProfilePickerView: View {
         case let .restart(id), let .start(id), let .folderAccess(id): paneID = id
         case let .resume(id, _): paneID = id
         }
+        let proposed: String
+        if case .create = request.action {
+            proposed = PaneNaming.defaultName(for: request.kind, among: model.activeWorkspacePanes) ?? ""
+        } else {
+            proposed = ""
+        }
+        _name = State(initialValue: proposed)
+        _proposedName = State(initialValue: proposed)
         existingContainer = model.panes.first(where: { $0.id == paneID })?.containerConfiguration
         _runInContainer = State(initialValue: existingContainer != nil)
         _bypassVendorPermissions = State(initialValue: existingContainer?.bypassVendorPermissions ?? false)
@@ -89,6 +104,7 @@ struct PermissionProfilePickerView: View {
                 HStack(alignment: .top, spacing: 20) {
                     VStack(alignment: .leading, spacing: 18) {
                         if isCreation { vendorSection }
+                        if isCreation, kind.isAgent { identitySection }
                         runsSection
                         if !(runInContainer && bypassVendorPermissions) { profileChoice }
                         if let profile = selectedProfile {
@@ -139,7 +155,9 @@ struct PermissionProfilePickerView: View {
                         profileID: selectedProfileID,
                         approvedRoots: approvedRoots,
                         approvals: approvals,
-                        containerConfiguration: runInContainer ? containerConfiguration : nil
+                        containerConfiguration: runInContainer ? containerConfiguration : nil,
+                        name: isCreation ? name : nil,
+                        role: isCreation ? trimmedRole : nil
                     ) }
                 }
                 .keyboardShortcut(.defaultAction)
@@ -361,8 +379,100 @@ struct PermissionProfilePickerView: View {
                 if newKind == .agy { approvals = .person }
                 containerConfiguration = nil
                 codexConfigurationFact = nil
+                // A name the person has not touched follows the vendor; one
+                // they typed is theirs whichever vendor they settle on.
+                if name == proposedName {
+                    let fresh = PaneNaming.defaultName(for: newKind, among: model.activeWorkspacePanes) ?? ""
+                    name = fresh
+                    proposedName = fresh
+                }
             }
         }
+    }
+
+    /// Who this pane is to the person and to other agents. The vendor is
+    /// the default name, which stops telling panes apart as soon as a
+    /// workspace holds two of one vendor; the broker then refuses the bare
+    /// vendor as a target, so the role is the address that always works.
+    private var identitySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("IDENTITY")
+                .permissionSectionLabel()
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Name")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    TextField("Name", text: $name, prompt: Text(kind.label))
+                        .textFieldStyle(.roundedBorder)
+                        .labelsHidden()
+                        .accessibilityLabel("Pane name")
+                        .accessibilityHint("Optional. Shown in the pane header and menus and used as a target name; the vendor name when empty")
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Routing role")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 3) {
+                        Text("@")
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                        TextField("Routing role", text: $role, prompt: Text("reviewer"))
+                            .textFieldStyle(.roundedBorder)
+                            .labelsHidden()
+                            .autocorrectionDisabled()
+                            .accessibilityLabel("Routing role")
+                            .accessibilityHint("Optional. Lowercase letters, numbers and hyphens, unique in this workspace; agents address the pane as at-role")
+                    }
+                }
+            }
+            if let issue = identityIssue ?? identityNote {
+                Text(issue)
+                    .font(.caption)
+                    .foregroundStyle(Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(identityHint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var trimmedRole: String { role.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// Why Start Pane is held back by the identity, under the same rules the
+    /// controller applies, so the review never proposes what it would refuse.
+    private var identityIssue: String? {
+        if let error = PaneNaming.nameValidationError(name) { return "Name: \(error)." }
+        let role = trimmedRole
+        guard !role.isEmpty else { return nil }
+        if let error = PaneRoleRules.validationError(role) { return "Role: \(error)." }
+        if model.activeWorkspacePanes.contains(where: { $0.role == role }) {
+            return "The role @\(role) is already assigned in this workspace."
+        }
+        return nil
+    }
+
+    /// A name another pane here already has is allowed, as Rename allows
+    /// it, but agents will then need the role or id; the person hears so
+    /// before Start rather than from a refusal later.
+    private var identityNote: String? {
+        let typed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !typed.isEmpty,
+              let other = model.activeWorkspacePanes.first(where: { $0.displayName.caseInsensitiveCompare(typed) == .orderedSame }) else {
+            return nil
+        }
+        return "Another pane here is already named \(other.displayName); agents will need this pane's role or id to tell them apart."
+    }
+
+    private var identityHint: String {
+        let sameVendor = model.activeWorkspacePanes.filter { $0.kind == kind }.count
+        if sameVendor > 0 {
+            return "This workspace already has \(sameVendor) \(kind.label) pane\(sameVendor == 1 ? "" : "s"). “\(kind.label.lowercased())” alone reaches a pane only while it matches one pane besides the sender, so with several \(kind.label) panes agents need a role; give this pane one, and they address it as @\(trimmedRole.isEmpty ? "role" : trimmedRole)."
+        }
+        return "Optional. A role is a stable address for other agents, such as @reviewer; the name is what you see."
     }
 
     /// Where the pane's process runs. Every agent vendor has a container
@@ -679,6 +789,7 @@ struct PermissionProfilePickerView: View {
 
     private var canContinue: Bool {
         guard let effectiveProfile else { return false }
+        if isCreation, identityIssue != nil { return false }
         if runInContainer && (containerConfiguration == nil || effectiveProfile.approvedRoots != [canonical(request.folder)]) { return false }
         guard effectiveProfile.approvedRoots.contains(canonical(request.folder)) else { return false }
         return !request.isFolderAccessReview || hasChanges

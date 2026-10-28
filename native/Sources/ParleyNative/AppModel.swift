@@ -179,6 +179,7 @@ struct PaletteCommand: Identifiable, Sendable {
         case newWorkspace
         case openWorkspace
         case openStatusCenter
+        case togglePanePresentation
         case openSettings(ApplicationSettingsSection)
         case selectWorkspace(WorkbenchWorkspace)
         case selectPane(WorkbenchPane)
@@ -598,6 +599,9 @@ final class AppModel: ObservableObject {
         nativeSplitFractions = workspaceRecords.reduce(into: [:]) {
             $0[$1.workspaceID] = $1.splitFractions
         }
+        workspacePresentations = workspaceRecords.reduce(into: [:]) {
+            if $1.presentation != .grid { $0[$1.workspaceID] = $1.presentation }
+        }
         recipeStore = HandoffRecipeStore(
             file: applicationDirectory.appendingPathComponent("handoff-recipes.json")
         )
@@ -891,11 +895,77 @@ final class AppModel: ObservableObject {
     /// and persisted through it whenever the structure changes.
     @Published private var nativeLayouts: [String: NativeLayoutNode] = [:]
     @Published private var nativeSplitFractions: [String: [String: Double]] = [:]
+    /// Grid or Tabs per durable workspace id; absent is Grid. Presentation
+    /// only, persisted through the registry beside the split tree.
+    @Published private var workspacePresentations: [String: WorkspacePresentation] = [:]
 
     var nativeLayoutTree: NativeLayoutNode? {
         guard let workspace = activeWorkspace else { return nil }
         let leaves = nativePaneSurfaces.map(\.representativePaneID)
         return NativeLayoutNode.reconciled(nativeLayouts[workspace.workspaceID], with: leaves)
+    }
+
+    func presentation(for workspace: WorkbenchWorkspace) -> WorkspacePresentation {
+        workspacePresentations[workspace.workspaceID] ?? .grid
+    }
+
+    var activePresentation: WorkspacePresentation {
+        activeWorkspace.map(presentation(for:)) ?? .grid
+    }
+
+    /// The pane a Tabs workspace shows beneath its tab strip.
+    var shownTabPaneID: String? {
+        WorkspaceTabsProjection.shownPaneID(
+            activePaneID: activePane?.id,
+            orderedPaneIDs: layoutOrderedVisiblePanes.map(\.id)
+        )
+    }
+
+    /// Shows a workspace's panes as a grid or as tabs. The split tree, every
+    /// process and every handoff are untouched; switching back to Grid
+    /// restores the same arrangement. A zoom ends, since Tabs shows one pane.
+    func setPresentation(_ presentation: WorkspacePresentation, for workspace: WorkbenchWorkspace) {
+        guard self.presentation(for: workspace) != presentation else { return }
+        perform {
+            // Saved before shown, so a choice the registry could not record
+            // never looks kept and then reverts at relaunch. A workspace with
+            // no registry record yet changes for this session only.
+            do {
+                try workspaceRegistry.updatePresentation(workspaceID: workspace.workspaceID, presentation: presentation)
+            } catch {
+                throw RelayUIError.message("\(workspace.name) still shows its panes as \(self.presentation(for: workspace).label): Parley could not save the change. \(error.localizedDescription)")
+            }
+            workspacePresentations[workspace.workspaceID] = presentation == .grid ? nil : presentation
+            guard workspace.workspaceID == activeWorkspace?.workspaceID else { return }
+            focusCanvasPaneID = nil
+            terminalHandle.focus()
+        }
+    }
+
+    /// A pane brought forward by background work, whose first draw must not
+    /// take keyboard focus (`focusNativeTerminalIfSelected`).
+    private var quietlyShownPaneID: String?
+
+    /// Ghostty creates a pane's surface only once the pane is drawn in the
+    /// window, so in Tabs a pane started behind a hidden tab would be marked
+    /// started yet not run until someone showed it. A launch the person
+    /// asked for (Start, Resume, Restart, new folder access) and a team
+    /// member Parley has just started bring their tab forward instead; the
+    /// team member's, being background work, without taking focus. Grid
+    /// draws every pane of the active workspace, so it changes nothing there.
+    private func showStartedTab(_ paneID: String, takingFocus: Bool = true) throws {
+        guard let controller,
+              let pane = try controller.listPanes().first(where: { $0.id == paneID }), !pane.isActive,
+              let workspace = try controller.listWorkspaces().first(where: { $0.workspaceID == pane.workspaceID }),
+              workspace.isActive, presentation(for: workspace) == .tabs else { return }
+        try controller.selectPane(paneID)
+        _ = try? workspaceRegistry.updateSelectedPane(workspaceID: pane.workspaceID, paneID: paneID)
+        quietlyShownPaneID = takingFocus ? nil : paneID
+    }
+
+    func togglePanePresentation() {
+        guard let workspace = activeWorkspace else { return }
+        setPresentation(presentation(for: workspace).toggled, for: workspace)
     }
 
     var layoutOrderedVisiblePanes: [WorkbenchPane] {
@@ -983,7 +1053,28 @@ final class AppModel: ObservableObject {
 
     func focusNativeTerminalIfSelected(_ paneID: String, in window: NSWindow?) {
         guard activePane?.id == paneID else { return }
+        // A tab brought forward by background work (a container team member
+        // finishing its start) is drawn without taking keyboard focus, and a
+        // draft being written keeps focus whatever was drawn. Checked when the
+        // queued attach runs, not when the work finished.
+        if quietlyShownPaneID == paneID {
+            quietlyShownPaneID = nil
+            return
+        }
+        guard handoffComposerDraft == nil, !voice.session.isPresented else { return }
         _ = ghosttyRegistry.focusSelected(in: window)
+    }
+
+    /// Copilot submits only in a focused pane, and a pane drawn in no window
+    /// (behind a tab, in another workspace) cannot take focus. A person's
+    /// reviewed send is refused here, before the broker records an attempt,
+    /// so the draft stays open to send once the pane is shown; the registry
+    /// refuses the same delivery on every other route.
+    private func refuseFocusedDeliveryOffScreen(_ targetPaneID: String) throws {
+        guard let target = panes.first(where: { $0.id == targetPaneID }),
+              PaneSubmissionTiming.forKind(target.kind, submit: true).focusesTarget,
+              !ghosttyRegistry.isInWindow(paneID: target.id) else { return }
+        throw ParleyWorkbenchError.focusedDeliveryNeedsVisiblePane(target.displayName)
     }
 
     func repairNativeTerminalFocus(for event: NSEvent) {
@@ -1133,7 +1224,8 @@ final class AppModel: ObservableObject {
                     )
                 },
                 layout: layout,
-                splitFractions: unreadable.contains(.workspaceRegistry) ? [:] : (nativeSplitFractions[workspace.workspaceID] ?? [:])
+                splitFractions: unreadable.contains(.workspaceRegistry) ? [:] : (nativeSplitFractions[workspace.workspaceID] ?? [:]),
+                presentation: unreadable.contains(.workspaceRegistry) ? nil : workspacePresentations[workspace.workspaceID]
             )
         }
         var defaultProfileIDs: [String: String] = [:]
@@ -1510,20 +1602,24 @@ final class AppModel: ObservableObject {
         let liveWorkspaces = workspaces
         var layouts: [String: NativeLayoutNode] = [:]
         var fractions: [String: [String: Double]] = [:]
+        var presentations: [String: WorkspacePresentation] = [:]
         for archived in archive.workspaces {
             guard let live = liveWorkspaces.first(where: { $0.name == archived.name }) else { continue }
             let paneIDs = panes.filter { $0.workspaceID == live.workspaceID }.map(\.id)
             if let node = archived.layout?.restoring(paneIDs: paneIDs) { layouts[live.workspaceID] = node }
             if !archived.splitFractions.isEmpty { fractions[live.workspaceID] = archived.splitFractions }
+            if let presentation = archived.presentation, presentation != .grid { presentations[live.workspaceID] = presentation }
         }
         nativeLayouts = layouts
         nativeSplitFractions = fractions
+        workspacePresentations = presentations
         for record in try workspaceRegistry.records() where !liveWorkspaces.contains(where: { $0.workspaceID == record.workspaceID }) {
             try workspaceRegistry.remove(workspaceID: record.workspaceID)
         }
         _ = try workspaceRegistry.synchronize(workspaces: liveWorkspaces)
         for (workspaceID, node) in layouts { try workspaceRegistry.updateLayout(workspaceID: workspaceID, layout: node) }
         for (workspaceID, recorded) in fractions { try workspaceRegistry.updateSplitFractions(workspaceID: workspaceID, fractions: recorded) }
+        for (workspaceID, presentation) in presentations { try workspaceRegistry.updatePresentation(workspaceID: workspaceID, presentation: presentation) }
     }
 
     private static func configurationFilename(at date: Date = Date()) -> String {
@@ -3372,6 +3468,20 @@ final class AppModel: ObservableObject {
                 action: .openStatusCenter
             ),
         ]
+        if activeWorkspace != nil {
+            commands.append(PaletteCommand(
+                item: CommandPaletteItem(
+                    id: "action:toggle-pane-presentation",
+                    category: .action,
+                    title: activePresentation.toggleTitle,
+                    detail: activePresentation == .grid
+                        ? "Show one pane of this workspace at a time, with a tab for each"
+                        : "Show every pane of this workspace at once in its split layout",
+                    keywords: ["tabs", "grid", "layout", "view", "panes"]
+                ),
+                action: .togglePanePresentation
+            ))
+        }
         for section in ApplicationSettingsSection.allCases {
             commands.append(PaletteCommand(
                 item: CommandPaletteItem(
@@ -3418,6 +3528,7 @@ final class AppModel: ObservableObject {
             )
         }
 
+        let askLabels = askTargetLabels
         commands += askTargets.map { pane in
             let workspace = workspaces.first(where: { $0.workspaceID == pane.workspaceID })?.name
                 ?? pane.workspaceName
@@ -3426,9 +3537,9 @@ final class AppModel: ObservableObject {
                 item: CommandPaletteItem(
                     id: "ask:\(pane.id)",
                     category: .ask,
-                    title: "Ask \(pane.displayName)",
-                    detail: "\(workspace) · \(pane.kind.label)",
-                    keywords: [pane.cwd, "question", "consult"]
+                    title: "Ask \(askLabels[pane.id] ?? pane.displayName)",
+                    detail: "\(workspace) · \(pane.kind.label)\(pane.role.map { " · @\($0)" } ?? "")",
+                    keywords: [pane.cwd, "question", "consult"] + (pane.role.map { ["@\($0)"] } ?? [])
                 ),
                 action: .ask(pane)
             )
@@ -3506,6 +3617,8 @@ final class AppModel: ObservableObject {
             openWorkspacePicker()
         case .openStatusCenter:
             break
+        case .togglePanePresentation:
+            togglePanePresentation()
         case let .openSettings(section):
             showSettings(section)
         case let .selectWorkspace(workspace):
@@ -3701,6 +3814,19 @@ final class AppModel: ObservableObject {
     var localAskTargets: [WorkbenchPane] {
         guard let workspaceID = activeWorkspace?.workspaceID else { return [] }
         return askTargets.filter { $0.workspaceID == workspaceID }
+    }
+
+    /// Every pane of the active workspace, the one a new pane joins.
+    var activeWorkspacePanes: [WorkbenchPane] {
+        guard let workspaceID = activeWorkspace?.workspaceID else { return [] }
+        return panes.filter { $0.workspaceID == workspaceID }
+    }
+
+    /// Labels for Ask targets that stay distinct when panes share a name,
+    /// as every pane of one vendor does until it is renamed: the name alone
+    /// where it is unique, otherwise with the role, folder or id appended.
+    var askTargetLabels: [String: String] {
+        PaneNaming.distinctLabels(for: askTargets)
     }
 
     var workspaceLead: WorkbenchPane? {
@@ -4235,6 +4361,10 @@ final class AppModel: ObservableObject {
         workspaces = try controller.listWorkspaces()
         _ = try ghosttyRegistry.view(for: pane.id)
         if NSApp.isActive { ghosttyRegistry.select(paneID: pane.id) }
+        // A container member starts only after its preparation, by when the
+        // person may have shown another tab, or be writing a draft.
+        try showStartedTab(pane.id, takingFocus: false)
+        panes = try controller.listPanes()
         rememberFolder(pane.cwd)
     }
 
@@ -5576,12 +5706,16 @@ final class AppModel: ObservableObject {
     /// the person's approvals choice, so a Claude pane reviewed as "Vendor's
     /// automatic reviewer" launched in accept-edits mode while the review
     /// said auto mode.
+    /// `name` and `role` are read for a creation review only; the controller
+    /// applies the Rename and Set Routing Role rules to them.
     func applyPermissionProfile(
         to request: PanePermissionRequest,
         profileID: String,
         approvedRoots: [String],
         approvals: PermissionApprovalHandling,
-        containerConfiguration: ContainerConfiguration? = nil
+        containerConfiguration: ContainerConfiguration? = nil,
+        name: String? = nil,
+        role: String? = nil
     ) async {
         guard !applyingPanePermissions else { return }
         applyingPanePermissions = true
@@ -5619,7 +5753,9 @@ final class AppModel: ObservableObject {
                     kind: request.kind,
                     cwd: request.folder,
                     permissionProfile: effective,
-                    containerConfiguration: containerConfiguration
+                    containerConfiguration: containerConfiguration,
+                    name: name,
+                    role: role
                 )
                 recordNativeSplit(created: created, target: splitTarget, direction: direction)
                 rememberFolder(request.folder)
@@ -5732,6 +5868,7 @@ final class AppModel: ObservableObject {
         } else {
             try controller.startPane(paneID, permissionProfile: profile, launchMode: mode)
         }
+        try showStartedTab(paneID)
     }
 
     /// Docker may be unavailable for seconds. Keep the main actor and the
@@ -5783,6 +5920,7 @@ final class AppModel: ObservableObject {
     }
 
     func select(_ pane: WorkbenchPane) {
+        quietlyShownPaneID = nil
         if focusCanvasPaneID != nil { focusCanvasPaneID = pane.id }
         perform {
             try controller?.selectPane(pane.id)
@@ -5802,6 +5940,7 @@ final class AppModel: ObservableObject {
     func selectNativePane(_ paneID: String) {
         guard activePane?.id != paneID,
               let pane = panes.first(where: { $0.id == paneID }) else { return }
+        quietlyShownPaneID = nil
         if focusCanvasPaneID != nil { focusCanvasPaneID = paneID }
         perform {
             try controller?.selectPane(pane.id)
@@ -5862,7 +6001,8 @@ final class AppModel: ObservableObject {
             current: focusCanvasPaneID,
             requested: paneID,
             active: activePane?.id,
-            visible: visiblePanes.map(\.id)
+            visible: visiblePanes.map(\.id),
+            presentation: activePresentation
         )
         focusCanvasPaneID = next
         if let next, activePane?.id != next, let pane = visiblePanes.first(where: { $0.id == next }) {
@@ -5970,6 +6110,7 @@ final class AppModel: ObservableObject {
             guard let source = draft.voiceSource, let target = draft.voiceTarget, let kind = draft.voiceKind,
                   let relayClient else { throw VoiceError.unavailable("The reviewed voice handoff is incomplete.") }
             _ = try source.resolve(in: panes); _ = try target.resolve(in: panes)
+            try refuseFocusedDeliveryOffScreen(target.paneID)
             let request = VoiceHandoffRequest(source: source, target: target, text: draft.text, kind: kind, idempotencyKey: draft.id.uuidString.lowercased())
             submittingHandoffComposer = true
             Task { [weak self] in
@@ -6233,6 +6374,7 @@ final class AppModel: ObservableObject {
             }) else {
                 throw RelayUIError.message("The reviewed source or target pane is no longer available. Nothing was sent.")
             }
+            try refuseFocusedDeliveryOffScreen(target.id)
             let submission = try submitOrOfferBusyQueue(
                 edited,
                 from: source,
@@ -8284,6 +8426,7 @@ final class AppModel: ObservableObject {
         perform {
             guard let controller else { return }
             try controller.restartPane(pane.id)
+            try showStartedTab(pane.id)
             try recordSuccessfulActivity(RelayActivityEventRequest(
                 kind: .paneRestarted,
                 workspaceID: pane.workspaceID,
@@ -8466,7 +8609,9 @@ final class AppModel: ObservableObject {
     }
 
     func balance() {
-        guard let workspace = activeWorkspace else { return }
+        // Tabs keep the grid's split tree to restore it; a balance there
+        // would replace the arrangement the person cannot even see.
+        guard let workspace = activeWorkspace, presentation(for: workspace) == .grid else { return }
         let leaves = representativeLeaves(workspaceID: workspace.workspaceID, in: panes)
         guard let tiled = NativeLayoutNode.tiled(leaves) else { return }
         nativeLayouts[workspace.workspaceID] = tiled
@@ -9045,6 +9190,41 @@ final class AppModel: ObservableObject {
                 detail: "Created from saved layout \(layout.name); shells started and agent panes left stopped."
             ))
             rememberFolder(layout.defaultFolder)
+            try refresh()
+            terminalHandle.focus()
+        }
+    }
+
+    /// New Workspace from Template: a pair of one vendor, @implementer (the
+    /// lead) and @reviewer, in a folder the person chooses now. The template
+    /// is a saved layout Parley builds and never stores, so the workspace is
+    /// created exactly as one from a saved layout is: agent panes stopped
+    /// until each Start is reviewed, nothing launched here.
+    func createWorkspace(fromPairTemplate vendor: PaneKind) {
+        guard vendor.isAgent else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Choose the folder for the \(vendor.label) pair"
+        panel.message = "Both panes open in this folder: an @implementer marked as the workspace lead and a @reviewer. They stay stopped until you review each Start."
+        panel.prompt = "Create Workspace"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: activePane?.cwd ?? defaultFolder)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let folder = WorkspaceFolderIdentity.normalized(url.standardizedFileURL.path)
+        let layout = SavedWorkspaceLayout.pairTemplate(vendor: vendor, folder: folder)
+        perform {
+            guard let controller else { return }
+            try SavedWorkspaceLayoutStore.validate(layout)
+            let restored = try controller.restoreWorkspaceLayout(layout)
+            recordRestoredNativeLayout(layout.root, workspace: restored)
+            try recordSuccessfulActivity(RelayActivityEventRequest(
+                kind: .workspaceRestored,
+                workspaceID: restored.workspaceID,
+                workspaceName: restored.name,
+                detail: "Created from the \(layout.name) template; both agent panes left stopped for their Start reviews."
+            ))
+            rememberFolder(folder)
             try refresh()
             terminalHandle.focus()
         }

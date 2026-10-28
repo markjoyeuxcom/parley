@@ -298,6 +298,7 @@ struct ParleyNativeApp: App {
                         case .previousPane: model.selectAdjacentPane(by: -1)
                         case let .selectPane(index): model.selectPane(at: index)
                         case .toggleFocusCanvas: model.toggleFocusCanvas()
+                        case .togglePanePresentation: model.togglePanePresentation()
                         case .focusActiveTerminal: model.focusActiveTerminal()
                         case .toggleCollaborationDock: model.toggleCollaborationDock()
                         case .quickRelaySelection: model.quickRelaySelection()
@@ -398,7 +399,10 @@ struct ParleyNativeApp: App {
                     model.toggleFocusCanvas()
                 }
                 .keyboardShortcut("f", modifiers: [.command, .shift])
-                .disabled(model.activePane == nil)
+                .disabled(model.activePane == nil || model.activePresentation == .tabs)
+                Button(model.activePresentation.toggleTitle) { model.togglePanePresentation() }
+                    .keyboardShortcut("t", modifiers: [.command, .shift])
+                    .disabled(model.activeWorkspace == nil)
                 Button("Focus Active Terminal") { model.focusActiveTerminal() }
                     .keyboardShortcut("t", modifiers: [.command, .option])
                 Button(model.collaborationDockVisible ? "Hide Collaboration Dock" : "Show Collaboration Dock") {
@@ -477,6 +481,7 @@ struct ParleyNativeApp: App {
                     .keyboardShortcut(.return, modifiers: [.command, .shift])
                     .disabled(!model.canReturn)
                 Button("Balance Panes") { model.balance() }
+                    .disabled(model.activePresentation == .tabs)
                 Divider()
                 Button("Terminal Appearance…") { model.showTerminalFontSettings() }
             }
