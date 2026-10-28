@@ -47,7 +47,7 @@ public enum ApprovedCommandProcess {
         var argv = command.argv.map { strdup($0) } + [nil]
         // Never lend the requester's or worker's coordination authority to the
         // command. Its permissions are those of the person-approved Shell run.
-        var env = environment.filter { !$0.key.hasPrefix("PARLEY_") && !["TMUX", "TMUX_PANE"].contains($0.key) }
+        var env = InheritedSessionEnvironment.removing(from: environment.filter { !$0.key.hasPrefix("PARLEY_") })
         env["PWD"] = command.folder
         var envp = env.sorted { $0.key < $1.key }.map { strdup("\($0.key)=\($0.value)") } + [nil]
         defer {
