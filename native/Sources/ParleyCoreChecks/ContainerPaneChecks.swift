@@ -842,7 +842,9 @@ func checkContainerLinkedWorktree() throws {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: directory) }
     let repository = directory.appendingPathComponent("repository"), tree = directory.appendingPathComponent("linked")
-    let git = ProcessCommandRunner()
+    // The same allowance as the submodule fixture: a cold hosted runner's
+    // first git init has exceeded ten seconds.
+    let git = ProcessCommandRunner(timeout: 60)
     func run(_ args: [String]) throws {
         let output = try git.run(executable: URL(fileURLWithPath: "/usr/bin/git"), arguments: args,
             environment: ["PATH": "/usr/bin:/bin", "HOME": directory.path, "GIT_CONFIG_NOSYSTEM": "1"])
