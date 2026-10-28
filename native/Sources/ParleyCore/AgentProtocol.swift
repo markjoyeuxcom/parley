@@ -3,7 +3,7 @@ import Foundation
 /// The one cross-vendor contract every agent pane receives at launch.
 /// Vendor adapters may change how it is injected, but never its contents.
 public enum AgentProtocol {
-    public static let version = "34"
+    public static let version = "35"
 
     public static let text = """
     # Parley cross-vendor protocol v\(version)
@@ -215,10 +215,16 @@ public enum AgentProtocol {
       A result file may use `## Implemented`, `## Tested` and
       `## Unable to test` headings. These are agent-declared completion
       evidence shown as unchecked claims, never verification or a human verdict.
-    - Name one agent pane by vendor, pane name or pane id. Same-vendor routes
-      are allowed only when source and target are different panes; self-targeting
-      is refused. A stable workspace role is explicit: use `@reviewer`, or
-      `workspace/@reviewer` across workspaces.
+    - Name one agent pane by pane name, `@role` or pane id. The bare vendor
+      name resolves only while exactly one other pane of that vendor exists;
+      when several panes share a vendor, as in a workspace that uses one
+      vendor only, the vendor alone is refused as ambiguous, so use the
+      `@role`, pane name or pane id that `parley panes` lists. Your own name
+      and role are in `parley whoami`; when you ask or delegate, say which
+      pane you are by role or name, so a same-vendor peer can tell you apart.
+      Same-vendor routes are allowed only when source and target are
+      different panes; self-targeting is refused. A stable workspace role is
+      explicit: use `@reviewer`, or `workspace/@reviewer` across workspaces.
       Never drop the `@`, because roles do not share the mutable pane-name
       namespace. `lead` names the marked workspace lead when another pane needs
       to return to it. Let Parley refuse ambiguity. The workspace's visible

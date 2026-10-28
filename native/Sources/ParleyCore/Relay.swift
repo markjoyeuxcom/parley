@@ -4455,6 +4455,30 @@ public final class RelayBroker: @unchecked Sendable {
         }
     }
 
+    /// The refusal for a target several panes match. Each candidate is named
+    /// by the forms that would have resolved it alone, @role first, so a
+    /// workspace whose panes share a vendor learns the address that works
+    /// instead of two identical "Claude (pane-…)" entries.
+    public static func ambiguousTargetMessage(_ requested: String, candidates: [WorkbenchPane]) -> String {
+        let listed = candidates.map { pane -> String in
+            var forms: [String] = []
+            if let role = pane.role { forms.append("@\(role)") }
+            let qualified = pane.workspaceName.map { "\($0)/\(pane.displayName)" } ?? pane.displayName
+            forms.append(qualified)
+            forms.append(pane.id)
+            return forms.joined(separator: " = ")
+        }.joined(separator: "; ")
+        let sharedVendor = Set(candidates.map(\.kind)).count == 1
+            && candidates.allSatisfy { pane in
+                requested.caseInsensitiveCompare(pane.kind.rawValue) == .orderedSame
+                    || requested.caseInsensitiveCompare(pane.kind.label) == .orderedSame
+            }
+        let advice = sharedVendor
+            ? " These panes share the vendor \(requested), so the vendor alone never resolves; address one by @role, pane name or pane id."
+            : " Address one by @role, pane name or pane id."
+        return "ambiguous target \(requested); choose one of: \(listed).\(advice)"
+    }
+
     private func route(token: String, requestedTarget: String) throws -> (WorkbenchPane, WorkbenchPane) {
         let sender = try authenticatedSender(token: token)
         let livePanes = try panes()
@@ -4463,11 +4487,7 @@ public final class RelayBroker: @unchecked Sendable {
         let candidates = resolve(requested, panes: livePanes, sender: sender)
         guard candidates.count == 1, let target = candidates.first else {
             if candidates.isEmpty { throw BrokerFailure(status: 400, message: "no pane named \(requested)") }
-            let names = candidates.map { pane in
-                let qualified = pane.workspaceName.map { "\($0)/\(pane.displayName)" } ?? pane.displayName
-                return "\(qualified) (\(pane.id))"
-            }.joined(separator: ", ")
-            throw BrokerFailure(status: 400, message: "ambiguous target; choose \(names)")
+            throw BrokerFailure(status: 400, message: Self.ambiguousTargetMessage(requested, candidates: candidates))
         }
         guard target.kind.isAgent else {
             throw BrokerFailure(status: 400, message: "relay target must be an agent pane")

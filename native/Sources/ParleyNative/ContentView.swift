@@ -737,13 +737,19 @@ struct ContentView: View {
         .fixedSize()
         .accessibilityLabel("Create workspace")
         .help("Create workspace")
-        .accessibilityHint("Create a folderless workspace, one from a saved layout, or a group")
+        .accessibilityHint("Create a folderless workspace, one from a template or a saved layout, or a group")
     }
 
     @ViewBuilder
     private var workspaceCreationMenuItems: some View {
         Button("New Workspace", action: model.createWorkspace)
         Button("New Group…") { model.newWorkspaceGroup(moving: nil) }
+        Menu("New Workspace from Template") {
+            ForEach(PaneKind.allCases.filter(\.isAgent), id: \.self) { vendor in
+                Button("\(vendor.label) Pair…") { model.createWorkspace(fromPairTemplate: vendor) }
+                    .help("Two \(vendor.label) panes side by side, @implementer as the lead and @reviewer, in a folder you choose")
+            }
+        }
         if !model.savedLayouts.isEmpty {
             Menu("From Saved Layout") {
                 ForEach(model.savedLayouts) { layout in
@@ -1308,15 +1314,18 @@ struct ContentView: View {
         if model.askTargets.isEmpty {
             items.append(.message(model.askUnavailableReason ?? "No agent pane can be asked right now."))
         } else {
+            // Panes of one vendor share a name until renamed; the labels add
+            // the role, folder or id only where names collide.
+            let labels = model.askTargetLabels
             if !model.localAskTargets.isEmpty {
                 items.append(.heading("This Workspace"))
                 items += model.localAskTargets.map { target in
-                    .action("Ask \(target.displayName)") { model.ask(target) }
+                    .action("Ask \(labels[target.id] ?? target.displayName)") { model.ask(target) }
                 }
             }
             items += model.otherWorkspaceAskGroups.map { group in
                 .submenu(group.workspace.name, items: group.panes.map { target in
-                    .action("Ask \(target.displayName)") { model.ask(target) }
+                    .action("Ask \(labels[target.id] ?? target.displayName)") { model.ask(target) }
                 })
             }
         }

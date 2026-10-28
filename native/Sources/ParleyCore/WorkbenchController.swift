@@ -703,18 +703,42 @@ public final class WorkbenchController: @unchecked Sendable {
         }
     }
 
+    /// `name` and `role` are the identity the creation review chose; both are
+    /// optional and checked here under the same rules as Rename and Set
+    /// Routing Role, so a pane never exists with an identity those would
+    /// refuse. A workspace of one vendor needs them: the vendor label is the
+    /// default name, and the broker refuses the bare vendor as a target once
+    /// two panes share it.
     @discardableResult
     public func createPane(
         kind: PaneKind,
         cwd: String,
         permissionProfile: EffectivePermissionProfile? = nil,
-        containerConfiguration: ContainerConfiguration? = nil
+        containerConfiguration: ContainerConfiguration? = nil,
+        name: String? = nil,
+        role: String? = nil
     ) throws -> WorkbenchPane {
         try requireDirectory(cwd)
+        let trimmedName = name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if let error = PaneNaming.nameValidationError(trimmedName) {
+            throw ParleyWorkbenchError.commandFailed(error)
+        }
+        let trimmedRole = role?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmedRole.isEmpty {
+            guard kind.isAgent else { throw ParleyWorkbenchError.notAgentPane }
+            if let error = PaneRoleRules.validationError(trimmedRole) {
+                throw ParleyWorkbenchError.commandFailed(error)
+            }
+        }
         return try lock.withLock {
             try requireNoTerminationInProgress()
             guard let activeWorkspace = document.workspaces.first(where: \.isActive) else {
                 throw ParleyWorkbenchError.workspaceNotFound("active")
+            }
+            if !trimmedRole.isEmpty, document.panes.contains(where: {
+                $0.workspaceID == activeWorkspace.workspaceID && $0.role == trimmedRole
+            }) {
+                throw ParleyWorkbenchError.commandFailed("That role is already assigned in this workspace.")
             }
             let profile = try effectivePermissionProfile(
                 for: kind,
@@ -730,6 +754,8 @@ public final class WorkbenchController: @unchecked Sendable {
                 permissionProfile: profile
             )
             pane.containerConfiguration = containerConfiguration
+            pane.customName = trimmedName.isEmpty ? nil : trimmedName
+            pane.role = trimmedRole.isEmpty ? nil : trimmedRole
             // Creating an inert placeholder is local metadata only. Docker preparation
             // is an explicit background operation before startPane may activate it.
             if containerConfiguration != nil { confirmedContainerStops[pane.id] = pane.launchGeneration }
@@ -884,7 +910,12 @@ public final class WorkbenchController: @unchecked Sendable {
         }
     }
 
+    /// The same name rules as a creation review: a slash or a leading @ would
+    /// make the name unaddressable as a target.
     public func renamePane(_ paneID: String, name: String) throws {
+        if let error = PaneNaming.nameValidationError(name) {
+            throw ParleyWorkbenchError.commandFailed(error)
+        }
         try lock.withLock {
             guard let index = document.panes.firstIndex(where: { $0.id == paneID }) else {
                 throw ParleyWorkbenchError.paneNotFound(paneID)

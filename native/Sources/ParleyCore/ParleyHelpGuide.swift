@@ -211,6 +211,7 @@ public enum ParleyHelpGuide {
                     title: "Saved layouts",
                     paragraphs: [
                         "A saved layout remembers the split shape, pane kind, pane name, folder, workspace lead and automation policy. It never stores a live process or terminal-surface id.",
+                        "New Workspace from Template offers a Pair for each vendor: an @implementer marked as the lead and a @reviewer, side by side in a folder you choose. It is a saved layout Parley builds rather than one it stores, so it follows the same rules: shells start, agent panes stay stopped until you review each Start, and nothing is written to your saved layouts.",
                     ],
                     items: [
                         "Restoring a layout starts shell panes automatically.",
@@ -225,7 +226,7 @@ public enum ParleyHelpGuide {
                         "A routing role such as implementer, reviewer or tester is an optional workspace-scoped address for one agent pane. It is separate from the display name, so renaming a pane does not change how another agent reaches its role.",
                     ],
                     items: [
-                        "Set or clear a role from the agent pane's context menu. Roles use lowercase letters, numbers and hyphens.",
+                        "Set a name and a role when you create an agent pane, in the launch review, or later from the agent pane's context menu. Roles use lowercase letters, numbers and hyphens. When the workspace already has a pane of that vendor, the review proposes a numbered name such as Claude 2 so the two can be told apart; a role is the better address.",
                         "A role must be unique inside its workspace. Parley refuses ambiguity rather than silently choosing another live pane.",
                         "Use @reviewer in the same workspace or workspace/@reviewer across workspaces. The @ keeps a stable role separate from mutable pane names.",
                         "lead remains the special address for the explicitly marked Workspace Lead. Vendor names and lead are reserved and cannot be assigned as ordinary roles.",
@@ -353,7 +354,7 @@ public enum ParleyHelpGuide {
                     id: "handoffs-routing",
                     title: "Naming the target",
                     paragraphs: [
-                        "Use a unique pane name, an explicit stable role such as @reviewer, vendor name or pane id. A renamed pane is addressed by its new display name while its routing role remains unchanged. The special name lead resolves to the marked lead in the sender's workspace.",
+                        "Use a unique pane name, an explicit stable role such as @reviewer, vendor name or pane id. A renamed pane is addressed by its new display name while its routing role remains unchanged. The special name lead resolves to the marked lead in the sender's workspace. The bare vendor name resolves only while one other pane of that vendor exists: in a workspace that uses one vendor only, every pane of it matches, so Parley refuses the vendor as ambiguous and names each pane's role, name and id in the refusal. Ask menus and the command palette add the role, folder or id to panes whose names collide.",
                     ],
                     items: [
                         "Parley refuses ambiguous names instead of guessing.",
