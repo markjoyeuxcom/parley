@@ -450,9 +450,14 @@ public enum StatusCenterSegmentProjection {
 /// zooms that pane or, if it is already zoomed, unzooms. The global action
 /// (toolbar, Navigate menu, Command-Shift-F) always unzooms while any pane is
 /// zoomed, whatever the selection has moved to since, and zooms the active
-/// pane otherwise. A pane that is not visible can never be zoomed.
+/// pane otherwise. A pane that is not visible can never be zoomed, and a
+/// workspace showing its panes as tabs never zooms: it already shows one.
 public enum WorkbenchZoomPolicy {
-    public static func next(current: String?, requested: String?, active: String?, visible: [String]) -> String? {
+    public static func next(
+        current: String?, requested: String?, active: String?, visible: [String],
+        presentation: WorkspacePresentation = .grid
+    ) -> String? {
+        guard presentation == .grid else { return nil }
         if let requested {
             guard visible.contains(requested) else { return nil }
             return current == requested ? nil : requested

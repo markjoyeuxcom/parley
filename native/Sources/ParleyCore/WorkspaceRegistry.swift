@@ -14,6 +14,8 @@ public struct WorkspaceRegistryRecord: Codable, Equatable, Sendable {
     public var layoutRevision: Int
     public var layout: NativeLayoutNode?
     public var splitFractions: [String: Double]
+    /// Grid or Tabs. Presentation only; a record without one is Grid.
+    public var presentation: WorkspacePresentation
     public var updatedAt: Date
 
     public init(
@@ -26,6 +28,7 @@ public struct WorkspaceRegistryRecord: Codable, Equatable, Sendable {
         layoutRevision: Int = 0,
         layout: NativeLayoutNode? = nil,
         splitFractions: [String: Double] = [:],
+        presentation: WorkspacePresentation = .grid,
         updatedAt: Date = Date()
     ) {
         self.workspaceID = workspaceID
@@ -37,6 +40,7 @@ public struct WorkspaceRegistryRecord: Codable, Equatable, Sendable {
         self.layoutRevision = layoutRevision
         self.layout = layout
         self.splitFractions = splitFractions
+        self.presentation = presentation
         self.updatedAt = updatedAt
     }
 
@@ -53,6 +57,7 @@ public struct WorkspaceRegistryRecord: Codable, Equatable, Sendable {
         case layoutRevision
         case layout
         case splitFractions
+        case presentation
         case updatedAt
     }
 
@@ -81,6 +86,7 @@ public struct WorkspaceRegistryRecord: Codable, Equatable, Sendable {
         layoutRevision = try values.decodeIfPresent(Int.self, forKey: .layoutRevision) ?? 0
         layout = try values.decodeIfPresent(NativeLayoutNode.self, forKey: .layout)
         splitFractions = try values.decodeIfPresent([String: Double].self, forKey: .splitFractions) ?? [:]
+        presentation = try values.decodeIfPresent(WorkspacePresentation.self, forKey: .presentation) ?? .grid
         updatedAt = try values.decodeIfPresent(Date.self, forKey: .updatedAt) ?? .distantPast
     }
 
@@ -95,6 +101,9 @@ public struct WorkspaceRegistryRecord: Codable, Equatable, Sendable {
         try values.encode(layoutRevision, forKey: .layoutRevision)
         try values.encodeIfPresent(layout, forKey: .layout)
         try values.encode(splitFractions, forKey: .splitFractions)
+        // Grid is the default and is left out, so a registry written by this
+        // build reads the same in a Parley that predates Tabs.
+        if presentation != .grid { try values.encode(presentation, forKey: .presentation) }
         try values.encode(updatedAt, forKey: .updatedAt)
     }
 }
@@ -292,6 +301,25 @@ public final class WorkspaceRegistry {
         }
     }
 
+    /// Stores whether the workspace shows its panes as a grid or as tabs.
+    /// Like the layout, this is presentation state: a workspace without a
+    /// durable record is a quiet no-op, and the split tree is untouched.
+    /// Returns true when the file changed.
+    @discardableResult
+    public func updatePresentation(workspaceID: String, presentation: WorkspacePresentation) throws -> Bool {
+        try lock.withLock {
+            var document = try readDocument()
+            guard let index = document.records.firstIndex(where: {
+                $0.workspaceID == workspaceID
+            }) else { return false }
+            guard document.records[index].presentation != presentation else { return false }
+            document.records[index].presentation = presentation
+            document.records[index].updatedAt = Date()
+            try write(document)
+            return true
+        }
+    }
+
     private func isDurable(_ workspaceID: String) -> Bool {
         !workspaceID.isEmpty && !workspaceID.hasPrefix("@")
     }
@@ -308,6 +336,7 @@ public final class WorkspaceRegistry {
             && left.layoutRevision == right.layoutRevision
             && left.layout == right.layout
             && left.splitFractions == right.splitFractions
+            && left.presentation == right.presentation
     }
 
     private func readDocument() throws -> Document {

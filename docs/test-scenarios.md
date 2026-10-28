@@ -564,6 +564,19 @@ other than the command shown.
 4. Remove the two files and relaunch: Configuration reads "Every configuration store loaded"; recipes and layouts are defaults.
 
 **Fail:** the app refusing to start over a layouts file; a corrupt file silently replaced by defaults; favourites lost after a corrupt continuity value.
+
+## P3.9 Workspace tabs (28 October 2026)
+
+1. In a workspace with three panes (two agents and a shell), split unevenly and drag one divider. Press Command-Shift-T. A tab strip appears with one tab per pane in grid order; the selected pane fills the area beneath with its usual header. Zoom and Balance are dimmed; the toolbar button now reads Grid.
+2. Click each tab, then use Command-1…3, Control-Option-Right and the sidebar. Each brings that pane forward with keyboard focus in its terminal, and the strip scrolls a far tab into view in a narrow window. Type in one pane, switch away and back: scrollback and the cursor are where you left them, and no process restarted.
+3. With pane A shown, Ask pane B (hidden) from A. B's tab shows the wire and its state; the answer arrives while B stays hidden. Trigger a permission prompt in a hidden agent: its tab shows the attention chip and the menu-bar count rises. Right-click a hidden tab: that pane's menu opens and Rename applies to it.
+4. Switch to another workspace and back: it is still in Tabs, and a Grid workspace beside it is still a grid. Quit and relaunch: Tabs is kept per workspace. Press Command-Shift-T again: the grid returns with the same arrangement and divider position.
+5. Export a configuration backup with one workspace in Tabs, restore it: that workspace reopens in Tabs, the others in Grid.
+6. In Tabs, right-click a hidden stopped agent's tab and choose Start Fresh Session, then approve: its tab comes forward and the CLI starts at once. Repeat with Restart on a hidden running agent. Pane > Balance Panes and the compact toolbar's Actions > Balance Panes are dimmed.
+7. With a Copilot pane (folder trust confirmed) hidden behind a tab, Ask it from another pane through the composer: Parley says "Nothing was sent" and the draft stays open; show the Copilot tab and Send: it submits. Repeat with a dictated voice Ask: the same. From an agent pane, `parley relay` to the hidden Copilot is refused; show it and choose Retry Delivery in Status Center: it submits. Switch rapidly between tabs and Grid ten times: the shown terminal never stays blank.
+8. Start a container team member in Tabs and, while it prepares, show another tab and type in the handoff composer: when the member starts, its tab comes forward but your typing stays in the composer.
+
+**Fail:** a hidden pane stopped, restarted or lost scrollback; a shown terminal blank until clicked; a hidden pane's handoff, attention or failure visible nowhere on its tab; the grid arrangement changed by a round trip through Tabs; a pane started from a hidden tab that does not run until clicked; a hidden Copilot handoff reported delivered; a draft that cannot be sent again after showing Copilot; keystrokes taken from the composer by a background start.
 ---
 
 # After the pass
