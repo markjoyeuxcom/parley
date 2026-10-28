@@ -5,6 +5,29 @@ private func presentationExpect(_ condition: @autoclosure () throws -> Bool, _ m
     if try !condition() { throw NSError(domain: "WorkspacePresentation", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
 }
 
+/// The source of an app file, comments removed; the app target cannot be
+/// imported here, so its wiring is checked as written.
+private func presentationAppSource(_ file: String) throws -> SwiftSourceReader {
+    let url = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("ParleyNative").appendingPathComponent(file)
+    return SwiftSourceReader(try String(contentsOf: url, encoding: .utf8))
+}
+
+private func presentationBody(_ reader: SwiftSourceReader, _ signature: String) throws -> Substring {
+    guard let found = reader.text.range(of: signature),
+          let open = reader.text[found.upperBound...].firstIndex(of: "{"),
+          let body = reader.balanced(at: open) else {
+        throw NSError(domain: "WorkspacePresentation", code: 2, userInfo: [NSLocalizedDescriptionKey: "\(signature) was not found"])
+    }
+    return body
+}
+
+/// Whether `first` occurs in `text` and `second` occurs after it.
+private func presentationOrdered(_ text: Substring, _ first: String, _ second: String) -> Bool {
+    guard let a = text.range(of: first) else { return false }
+    return text[a.upperBound...].contains(second)
+}
+
 private func presentationRegistryFixture() throws -> (root: URL, registry: WorkspaceRegistry) {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("parley-presentation-\(UUID().uuidString.lowercased().prefix(8))", isDirectory: true)
@@ -109,6 +132,61 @@ private func presentationRegistryFixture() throws -> (root: URL, registry: Works
                                "Command-T was claimed from the terminal")
         try presentationExpect(WorkbenchKeyboardShortcut.resolve(key: "t", command: true, shift: false, option: true, control: false) == .focusActiveTerminal,
                                "Command-Option-T no longer focuses the active terminal")
+    }),
+    ("tabs keep the grid's arrangement: Balance is refused and a presentation is saved before it shows", {
+        let model = try presentationAppSource("AppModel.swift")
+        try presentationExpect(try presentationBody(model, "func balance()").contains("presentation(for: workspace) == .grid"),
+                               "Balance could replace the split tree from Tabs")
+        let set = try presentationBody(model, "func setPresentation(_ presentation: WorkspacePresentation")
+        try presentationExpect(presentationOrdered(set, "try workspaceRegistry.updatePresentation(", "workspacePresentations[workspace.workspaceID] ="),
+                               "a presentation is shown before the registry saved it")
+        try presentationExpect(!set.contains("try? workspaceRegistry.updatePresentation("), "a failed presentation save is swallowed")
+        let view = try presentationAppSource("ContentView.swift")
+        try presentationExpect(try presentationBody(view, "private var compactActionsMenu").contains("\"Balance Panes\", isEnabled: model.activePresentation == .grid"),
+                               "the compact Actions menu offers Balance in Tabs")
+        let app = try presentationAppSource("ParleyNativeApp.swift").text
+        guard let balance = app.range(of: "Button(\"Balance Panes\") { model.balance() }") else {
+            throw NSError(domain: "WorkspacePresentation", code: 3, userInfo: [NSLocalizedDescriptionKey: "the Pane menu's Balance Panes was not found"])
+        }
+        try presentationExpect(app[balance.upperBound...].prefix(120).contains(".disabled(model.activePresentation == .tabs)"),
+                               "the Pane menu offers Balance in Tabs")
+    }),
+    ("a pane started behind a hidden tab is brought forward so it runs", {
+        let model = try presentationAppSource("AppModel.swift")
+        let show = try presentationBody(model, "private func showStartedTab(_ paneID: String)")
+        try presentationExpect(show.contains("presentation(for: workspace) == .tabs") && show.contains("workspace.isActive")
+                               && show.contains("try controller.selectPane(paneID)"),
+                               "a started pane is not brought forward in Tabs, or is in Grid too")
+        try presentationExpect(try presentationBody(model, "private func launchReviewedPane(").contains("try showStartedTab(paneID)"),
+                               "Start, Resume, Restart and new folder access leave a hidden tab unlaunched")
+        try presentationExpect(presentationOrdered(try presentationBody(model, "func restart(_ pane: WorkbenchPane)"),
+                                                   "try controller.restartPane(pane.id)", "try showStartedTab(pane.id)"),
+                               "restarting a Shell behind a hidden tab leaves it unlaunched")
+        try presentationExpect(try presentationBody(model, "private func presentTeamPane(").contains("try showStartedTab(pane.id)"),
+                               "a container team member started behind a hidden tab stays unlaunched")
+    }),
+    ("a delivery that needs focus refuses a pane drawn in no window before any input", {
+        let refusal = ParleyWorkbenchError.focusedDeliveryNeedsVisiblePane("Copilot")
+        try presentationExpect(ParleyWorkbenchError.refusedBeforeInput(refusal), "the off-screen refusal does not offer Retry")
+        try presentationExpect(refusal.localizedDescription.contains("Nothing was sent") && refusal.localizedDescription.contains("select its tab or workspace"),
+                               "the off-screen refusal does not say what happened or what to do")
+        let paste = try presentationBody(try presentationAppSource("GhosttyPaneRegistry.swift"), "func paste(_ text: String, into paneID: String, submit: Bool, validate: () throws -> Void = {}) throws")
+        try presentationExpect(presentationOrdered(paste, "guard timing.focusesTarget else", "guard entry.view.window != nil else")
+                               && presentationOrdered(paste, "guard entry.view.window != nil else", "deliveryFocus.deliver("),
+                               "a focus-requiring delivery reaches a pane in no window without focus")
+    }),
+    ("a terminal host hides a retained surface only while it still presents it", {
+        let host = try presentationAppSource("NativeTerminalHost.swift")
+        let dismantle = try presentationBody(host, "static func dismantleNSView(")
+        try presentationExpect(presentationOrdered(dismantle, "guard owners[key] == ObjectIdentifier(coordinator)", "terminal.setSurfaceVisible(false)"),
+                               "a host torn down after another adopted its view can hide the shown terminal")
+        try presentationExpect(!dismantle.contains("DispatchQueue"), "hiding depends on the next main-queue turn rather than ownership")
+        for signature in ["func makeNSView(context: Context)", "func updateNSView(_ view: NSView"] {
+            try presentationExpect(try presentationBody(host, signature).contains("Self.owners[ObjectIdentifier("),
+                                   "\(signature) does not record which host presents the view")
+        }
+        try presentationExpect(try presentationBody(try presentationAppSource("ContentView.swift"), "private var paneTabStrip").contains(".task(id: shown)"),
+                               "the shown tab is not scrolled into view when the strip appears")
     }),
     ("the in-app guide explains Tabs", {
         let searchable = ParleyHelpGuide.topics.map(\.searchableText).joined(separator: "\n").lowercased()

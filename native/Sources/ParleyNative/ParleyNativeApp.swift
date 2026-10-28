@@ -481,6 +481,7 @@ struct ParleyNativeApp: App {
                     .keyboardShortcut(.return, modifiers: [.command, .shift])
                     .disabled(!model.canReturn)
                 Button("Balance Panes") { model.balance() }
+                    .disabled(model.activePresentation == .tabs)
                 Divider()
                 Button("Terminal Appearance…") { model.showTerminalFontSettings() }
             }

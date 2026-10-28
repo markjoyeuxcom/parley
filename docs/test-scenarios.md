@@ -572,8 +572,10 @@ other than the command shown.
 3. With pane A shown, Ask pane B (hidden) from A. B's tab shows the wire and its state; the answer arrives while B stays hidden. Trigger a permission prompt in a hidden agent: its tab shows the attention chip and the menu-bar count rises. Right-click a hidden tab: that pane's menu opens and Rename applies to it.
 4. Switch to another workspace and back: it is still in Tabs, and a Grid workspace beside it is still a grid. Quit and relaunch: Tabs is kept per workspace. Press Command-Shift-T again: the grid returns with the same arrangement and divider position.
 5. Export a configuration backup with one workspace in Tabs, restore it: that workspace reopens in Tabs, the others in Grid.
+6. In Tabs, right-click a hidden stopped agent's tab and choose Start Fresh Session, then approve: its tab comes forward and the CLI starts at once. Repeat with Restart on a hidden running agent. Pane > Balance Panes and the compact toolbar's Actions > Balance Panes are dimmed.
+7. With a Copilot pane (folder trust confirmed) hidden behind a tab, Ask it from another pane: the Ask is refused with "Nothing was sent" and Status Center offers Retry; show the Copilot tab and Retry: it submits. Switch rapidly between tabs and Grid ten times: the shown terminal never stays blank.
 
-**Fail:** a hidden pane stopped, restarted or lost scrollback; a shown terminal blank until clicked; a hidden pane's handoff, attention or failure visible nowhere on its tab; the grid arrangement changed by a round trip through Tabs.
+**Fail:** a hidden pane stopped, restarted or lost scrollback; a shown terminal blank until clicked; a hidden pane's handoff, attention or failure visible nowhere on its tab; the grid arrangement changed by a round trip through Tabs; a pane started from a hidden tab that does not run until clicked; a hidden Copilot handoff reported delivered.
 ---
 
 # After the pass

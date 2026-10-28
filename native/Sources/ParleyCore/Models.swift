@@ -428,6 +428,10 @@ public enum ParleyWorkbenchError: LocalizedError, Equatable {
     case workspaceNotFound(String)
     case cannotCloseLastWorkspace
     case copilotTrustRequired
+    /// The named pane's delivery needs it focused (Copilot's submission), and
+    /// a pane drawn in no window (behind a tab, in another workspace) cannot
+    /// take focus. Nothing was sent.
+    case focusedDeliveryNeedsVisiblePane(String)
     case unsafeRelayTarget(String)
     /// A native worktree removal is in flight for this folder; no process may
     /// start or be created inside it until that finishes.
@@ -446,7 +450,8 @@ public enum ParleyWorkbenchError: LocalizedError, Equatable {
     public static func refusedBeforeInput(_ error: Error) -> Bool {
         if error is VoiceError { return true }
         switch error as? ParleyWorkbenchError {
-        case .copilotTrustRequired, .unsafeRelayTarget, .paneNotFound, .noRelayText, .deliveryInProgress: return true
+        case .copilotTrustRequired, .focusedDeliveryNeedsVisiblePane, .unsafeRelayTarget, .paneNotFound, .noRelayText,
+             .deliveryInProgress: return true
         default: return false
         }
     }
@@ -477,6 +482,8 @@ public enum ParleyWorkbenchError: LocalizedError, Equatable {
             "Keep one workspace open so the workbench remains available."
         case .copilotTrustRequired:
             "Copilot needs folder trust before it can receive handoffs. Resolve its folder-trust prompt, then choose Confirm Copilot Folder Trust from the pane menu and retry."
+        case let .focusedDeliveryNeedsVisiblePane(name):
+            "\(name) takes a handoff only while it is on screen, because Copilot submits only in a focused pane. Nothing was sent. Show \(name) (select its tab or workspace), then retry."
         case let .unsafeRelayTarget(name):
             "\(name) is not ready for safe relay input. Focus it and wait for its prompt, or restart the pane if its Relay badge is stale."
         }

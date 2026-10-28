@@ -1487,7 +1487,9 @@ struct ContentView: View {
         var items = [reviewMenu.asSubmenu, contextPackMenu.asSubmenu, recipeMenu.asSubmenu]
         if model.canReturn { items.append(returnMenu.asSubmenu) }
         if hasWaitingWork { items.append(waitingMenu.asSubmenu) }
-        items += [.separator, .action("Balance Panes", perform: model.balance)]
+        items += [.separator, .action("Balance Panes", isEnabled: model.activePresentation == .grid,
+                                      help: model.activePresentation == .tabs ? "Balance applies to the grid; switch to Grid to use it" : nil,
+                                      perform: model.balance)]
         return ToolbarActionMenu(
             title: "Actions", systemImage: "ellipsis.circle",
             accessibilityLabel: "Pane actions",
@@ -1927,11 +1929,13 @@ struct ContentView: View {
                 .padding(.vertical, 3)
                 .padding(.horizontal, 12)
             }
-            // A pane reached another way (Command-1…9, Next Pane, an Ask
-            // menu) may sit beyond the scrolled tabs; bring its tab into view.
-            .onChange(of: shown) { _, id in
-                guard let id else { return }
-                withAnimation(.easeOut(duration: 0.15)) { reader.scrollTo(id, anchor: .center) }
+            // The shown pane may sit beyond the scrolled tabs: when the strip
+            // first appears (entering Tabs, or a workspace kept as Tabs) and
+            // whenever a pane is reached another way (Command-1…9, Next Pane,
+            // an Ask menu). The task runs after the tabs are laid out.
+            .task(id: shown) {
+                guard let shown else { return }
+                withAnimation(.easeOut(duration: 0.15)) { reader.scrollTo(shown, anchor: .center) }
             }
         }
         .frame(height: 34)

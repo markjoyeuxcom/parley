@@ -926,11 +926,35 @@ final class AppModel: ObservableObject {
     /// restores the same arrangement. A zoom ends, since Tabs shows one pane.
     func setPresentation(_ presentation: WorkspacePresentation, for workspace: WorkbenchWorkspace) {
         guard self.presentation(for: workspace) != presentation else { return }
-        workspacePresentations[workspace.workspaceID] = presentation == .grid ? nil : presentation
-        _ = try? workspaceRegistry.updatePresentation(workspaceID: workspace.workspaceID, presentation: presentation)
-        guard workspace.workspaceID == activeWorkspace?.workspaceID else { return }
-        focusCanvasPaneID = nil
-        terminalHandle.focus()
+        perform {
+            // Saved before shown, so a choice the registry could not record
+            // never looks kept and then reverts at relaunch. A workspace with
+            // no registry record yet changes for this session only.
+            do {
+                try workspaceRegistry.updatePresentation(workspaceID: workspace.workspaceID, presentation: presentation)
+            } catch {
+                throw RelayUIError.message("\(workspace.name) still shows its panes as \(self.presentation(for: workspace).label): Parley could not save the change. \(error.localizedDescription)")
+            }
+            workspacePresentations[workspace.workspaceID] = presentation == .grid ? nil : presentation
+            guard workspace.workspaceID == activeWorkspace?.workspaceID else { return }
+            focusCanvasPaneID = nil
+            terminalHandle.focus()
+        }
+    }
+
+    /// Ghostty creates a pane's surface only once the pane is drawn in the
+    /// window, so in Tabs a pane started behind a hidden tab would be marked
+    /// started yet not run until someone showed it. A launch the person
+    /// asked for (Start, Resume, Restart, new folder access) and a team
+    /// member Parley has just started bring their tab forward instead. Grid
+    /// draws every pane of the active workspace, so it changes nothing there.
+    private func showStartedTab(_ paneID: String) throws {
+        guard let controller,
+              let pane = try controller.listPanes().first(where: { $0.id == paneID }), !pane.isActive,
+              let workspace = try controller.listWorkspaces().first(where: { $0.workspaceID == pane.workspaceID }),
+              workspace.isActive, presentation(for: workspace) == .tabs else { return }
+        try controller.selectPane(paneID)
+        _ = try? workspaceRegistry.updateSelectedPane(workspaceID: pane.workspaceID, paneID: paneID)
     }
 
     func togglePanePresentation() {
@@ -4296,6 +4320,10 @@ final class AppModel: ObservableObject {
         workspaces = try controller.listWorkspaces()
         _ = try ghosttyRegistry.view(for: pane.id)
         if NSApp.isActive { ghosttyRegistry.select(paneID: pane.id) }
+        // A container member starts only after its preparation, by when the
+        // person may have shown another tab.
+        try showStartedTab(pane.id)
+        panes = try controller.listPanes()
         rememberFolder(pane.cwd)
     }
 
@@ -5793,6 +5821,7 @@ final class AppModel: ObservableObject {
         } else {
             try controller.startPane(paneID, permissionProfile: profile, launchMode: mode)
         }
+        try showStartedTab(paneID)
     }
 
     /// Docker may be unavailable for seconds. Keep the main actor and the
@@ -8346,6 +8375,7 @@ final class AppModel: ObservableObject {
         perform {
             guard let controller else { return }
             try controller.restartPane(pane.id)
+            try showStartedTab(pane.id)
             try recordSuccessfulActivity(RelayActivityEventRequest(
                 kind: .paneRestarted,
                 workspaceID: pane.workspaceID,
@@ -8528,7 +8558,9 @@ final class AppModel: ObservableObject {
     }
 
     func balance() {
-        guard let workspace = activeWorkspace else { return }
+        // Tabs keep the grid's split tree to restore it; a balance there
+        // would replace the arrangement the person cannot even see.
+        guard let workspace = activeWorkspace, presentation(for: workspace) == .grid else { return }
         let leaves = representativeLeaves(workspaceID: workspace.workspaceID, in: panes)
         guard let tiled = NativeLayoutNode.tiled(leaves) else { return }
         nativeLayouts[workspace.workspaceID] = tiled

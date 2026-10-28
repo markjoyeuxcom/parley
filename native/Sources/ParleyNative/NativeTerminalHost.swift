@@ -11,9 +11,22 @@ struct NativeTerminalHost: NSViewRepresentable {
     let model: AppModel
     let focusOnAttach: Bool
 
+    /// Identifies one host, so a host torn down late can tell whether a newer
+    /// one has taken its retained view.
+    final class Coordinator {}
+
+    /// The host that last presented each retained view. The same view can
+    /// move between two hosts in one update (a pane becoming a tab, or Tabs
+    /// becoming Grid), and SwiftUI may tear the old host down before or after
+    /// the new one adopted it; only the current owner may hide the surface.
+    @MainActor private static var owners: [ObjectIdentifier: ObjectIdentifier] = [:]
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeNSView(context: Context) -> NSView {
         do {
             let terminal = try model.ghosttyView(paneID: paneID)
+            Self.owners[ObjectIdentifier(terminal)] = ObjectIdentifier(context.coordinator)
             if focusOnAttach {
                 DispatchQueue.main.async {
                     model.focusNativeTerminalIfSelected(paneID, in: terminal.window)
@@ -27,23 +40,22 @@ struct NativeTerminalHost: NSViewRepresentable {
 
     func updateNSView(_ view: NSView, context: Context) {
         guard view is AppTerminalView else { return }
+        Self.owners[ObjectIdentifier(view)] = ObjectIdentifier(context.coordinator)
         model.setGhosttyPaneVisible(true, paneID: paneID)
     }
 
-    static func dismantleNSView(_ view: NSView, coordinator: ()) {
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) {
         guard let terminal = view as? AppTerminalView else { return }
         // Deliberately do not clear its controller. GhosttyPaneRegistry retains
         // this exact view and its exec surface for workspace/window reattach.
         //
-        // The same retained view can move between two hosts in one update (a
-        // pane becoming a tab, or Tabs becoming Grid), and SwiftUI may tear
-        // the old host down after the new one adopted the view. Hiding it
-        // here at once would then leave the shown terminal marked invisible,
-        // so the decision waits for the update to settle: a view that ended
-        // in no window is hidden, and one a new host adopted stays visible.
-        DispatchQueue.main.async {
-            if terminal.window == nil { terminal.setSurfaceVisible(false) }
-        }
+        // A newer host already presents this view, so it stays visible. Torn
+        // down first, this host hides it, and the newer host's request for the
+        // view (`GhosttyPaneRegistry.view(for:)`) shows it again.
+        let key = ObjectIdentifier(terminal)
+        guard owners[key] == ObjectIdentifier(coordinator) else { return }
+        owners[key] = nil
+        terminal.setSurfaceVisible(false)
     }
 }
 
