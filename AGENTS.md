@@ -286,7 +286,9 @@ Prax notes: "Parley process boundary…"; "Parley host vendor launches…";
   staging and captures use it, and OSC cwd reports never widen them. Parley
   never writes a vendor's settings. Transport path spelling in permission
   rules must match the shim. Apply `LANG=C.UTF-8` only when every locale
-  variable is empty; strip parent multiplexer markers.
+  variable is empty. Every pane and command run unsets the parent session's
+  multiplexer and Claude Code markers (`InheritedSessionEnvironment`, an
+  exact list: the person's own Claude configuration passes through).
 
 ## Reviewed command runs
 

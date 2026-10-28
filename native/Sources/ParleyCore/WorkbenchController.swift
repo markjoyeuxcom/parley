@@ -1576,7 +1576,8 @@ public final class WorkbenchController: @unchecked Sendable {
                 // inherited authority before the login shell starts.
                 let metadataKeys = Set(launchEnvironment.keys)
                 let inheritedKeys = Set(ProcessInfo.processInfo.environment.keys.filter { $0.hasPrefix("PARLEY_") })
-                    .union(["PARLEY_RELAY_TOKEN", "PARLEY_PROTOCOL_VERSION", "PARLEY_COMMAND", "PARLEY_RUNTIME", "PARLEY_SWIFT_COMMAND", "PARLEY_SWIFTPM_COMPATIBILITY", "TMUX", "TMUX_PANE"])
+                    .union(["PARLEY_RELAY_TOKEN", "PARLEY_PROTOCOL_VERSION", "PARLEY_COMMAND", "PARLEY_RUNTIME", "PARLEY_SWIFT_COMMAND", "PARLEY_SWIFTPM_COMPATIBILITY"])
+                    .union(InheritedSessionEnvironment.names)
                     .subtracting(metadataKeys)
                 argv = ["/usr/bin/env"] + inheritedKeys.sorted().flatMap { ["-u", $0] }
                 if let marker = relayRuntime?.runtimeMarker { argv += ["PARLEY_RUNTIME=\(marker)"] }
@@ -1604,7 +1605,8 @@ public final class WorkbenchController: @unchecked Sendable {
                         protectedControlEndpoint: applicationDirectory.appendingPathComponent("relay.sock"),
                         transportDirectory: relayRuntime.transportDirectory, paneToken: token, fileManager: fileManager)
                     let stripped = Set(ProcessInfo.processInfo.environment.keys.filter { $0.hasPrefix("DOCKER_") || ($0.hasPrefix("PARLEY_") && launchEnvironment[$0] == nil) })
-                        .union(["DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH", "TMUX", "TMUX_PANE"])
+                        .union(["DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"])
+                        .union(InheritedSessionEnvironment.names)
                     let command = boundary.arguments + ["/usr/bin/env"] + stripped.sorted().flatMap { ["-u", $0] } + [container.dockerExecutable] + (try ContainerLaunchProjection.attachArguments(configuration: container, containerID: receipt.id))
                     launchEnvironment["PATH"] = environment["PATH"] ?? "/usr/bin:/bin"
                     launchEnvironment["HOME"] = NSHomeDirectory()
@@ -1634,7 +1636,7 @@ public final class WorkbenchController: @unchecked Sendable {
                 ) { launchEnvironment[key] = value }
                 let endpoint = try RelayFileTransport.prepareEndpoint(
                     runtimeDirectory: relayRuntime.transportDirectory, paneToken: token, fileManager: fileManager)
-                argv = ["/usr/bin/env", "-u", "TMUX", "-u", "TMUX_PANE", "-u", "PARLEY_RUNTIME"]
+                argv = ["/usr/bin/env"] + InheritedSessionEnvironment.unsetArguments + ["-u", "PARLEY_RUNTIME"]
                 if let marker = relayRuntime.runtimeMarker { argv.append("PARLEY_RUNTIME=\(marker)") }
                 if let assignment = terminalType.launchAssignment { argv.append(assignment) }
                 let launchMode = agentLaunchRequests[pane.id].flatMap {
@@ -2248,9 +2250,7 @@ public final class WorkbenchController: @unchecked Sendable {
             scrubbed["PATH"] = path.split(separator: ":", omittingEmptySubsequences: false)
                 .filter { !managedBins.contains(String($0)) }.joined(separator: ":")
         }
-        scrubbed["TMUX"] = nil
-        scrubbed["TMUX_PANE"] = nil
-        return scrubbed
+        return InheritedSessionEnvironment.removing(from: scrubbed)
     }
 }
 
