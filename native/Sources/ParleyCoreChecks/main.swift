@@ -10332,6 +10332,16 @@ if let image = argument(named: "--container-transport-spike") {
     }
 }
 
+if let vm = argument(named: "--tart-pane-spike") {
+    do {
+        try checkTartPaneSpike(vm: vm, tart: argument(named: "--tart") ?? "/opt/homebrew/bin/tart")
+        exit(0)
+    } catch {
+        print("FAIL Tart pane spike (requires Tart, a stopped local macOS VM with the Tart Guest Agent, and a GUI login session): \(error.localizedDescription)")
+        exit(1)
+    }
+}
+
 // `--only <substring>` runs the matching checks alone during local iteration.
 // `--skip <substring>[,<substring>…]` leaves the matching checks out and says
 // so, one SKIP line each plus the count in the summary. It exists for a

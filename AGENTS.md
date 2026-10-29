@@ -397,6 +397,8 @@ Prax notes: "Parley container panes…"; "Parley container lifecycle…";
   the tick. Volumes are deleted only from Status Center › Health.
 - The Docker checks (`--container-{transport,ghostty,bypass}-spike <image>`)
   are explicit and fail when prerequisites are missing; they never pass unrun.
+  So is `--tart-pane-spike <stopped VM>`: it boots and deletes a clone, never
+  the VM named (Tart panes are not a feature; Prax has its findings).
 
 ## SwiftPM inside agent panes and terminal type
 
